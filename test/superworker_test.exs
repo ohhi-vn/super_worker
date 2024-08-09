@@ -1,8 +1,8 @@
-defmodule SuperworkerTest do
+defmodule SuperWorkerTest do
   use ExUnit.Case
-  doctest Superworker
+  doctest SuperWorker
 
   test "greets the world" do
-    assert Superworker.hello() == :world
+    assert SuperWorker.hello() == :world
   end
 end
