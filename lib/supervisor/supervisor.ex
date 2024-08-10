@@ -29,41 +29,127 @@ defmodule SuperWorker.Supervisor do
 
   import SuperWorker.Supervisor.Utils
 
+  @name __MODULE__
+
   ## Public APIs
 
   def start_link(opts) do
-    # Start the supervisor
-    spawn_link(__MODULE__, :init, [opts])
+    case Process.whereis(@name) do
+      nil ->
+        Logger.error("Starting supervisor...")
+        # Start the supervisor
+        spawn_link(__MODULE__, :init, [opts])
+      pid ->
+        Logger.error("Supervisor is already running (pid: #{inspect(pid)}).")
+        {:error, :already_running}
+    end
   end
 
   @doc """
   Start supervisor for run standalone.
   """
   def start(opts) do
-    # Start the supervisor
-    spawn(__MODULE__, :init, [opts])
+    case Process.whereis(@name) do
+      nil ->
+        Logger.debug("Starting supervisor...")
+        # Start the supervisor
+        spawn(__MODULE__, :init, [opts])
+      pid ->
+        Logger.error("Supervisor is already running (pid: #{inspect(pid)}).")
+        {:error, :already_running}
+    end
+
   end
 
-  def start_child({_, _, _} = mfa, opts) when is_list(opts) do
+  @doc """
+  Start a child process.
+  Can run standalone or in a group/chain.
+  """
+  def start_child(mfa_or_fun, opts, timeout \\ 5_000)
+  def start_child({_, _, _} = mfa, opts, timeout) when is_list(opts) do
+    do_start_child(mfa, opts, timeout)
+  end
+  def start_child(fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
+    do_start_child({:fun, fun}, opts, timeout)
+  end
 
-    case validate_opts(opts) do
-      {:ok, opts} ->
-        spawn_link(__MODULE__, :start_child, [mfa, opts])
-      {:error, reason} = result ->
-        Logger.error("Invalid options: #{inspect(reason)}")
-        result
+  defp do_start_child(mfa_or_fun, opts, timeout) do
+    with {:ok, opts} <- validate_child_opts(opts),
+         {:ok, opts} <- validate_strategy(opts, :child) do
+        case Process.whereis(@name) do
+          nil ->
+            Logger.error("Supervisor is not running.")
+            {:error, :supervisor_not_running}
+          pid ->
+            ref = make_ref()
+            send(pid, {:start_child, self(), ref, mfa_or_fun, opts})
+            api_receiver(ref, timeout)
+        end
+      else
+       {:error, reason} = result ->
+          Logger.error("Invalid group options: #{inspect(reason)}")
+          result
     end
   end
-  def start_child(fun, opts) when is_list(opts) and is_function(fun, 0) do
-    case validate_opts(opts) do
-      {:ok, opts} ->
-        spawn_link(__MODULE__, :start_child, [{:func, fun}, opts])
-      {:error, reason} = result ->
-        Logger.error("Invalid options: #{inspect(reason)}")
-        result
+
+  @doc """
+  Add a group of processes to the supervisor.
+  """
+  def add_group(opts, timeout \\ 5_000) do
+    with {:ok, opts} <- validate_group_opts(opts),
+         {:ok, opts} <- validate_strategy(opts, :group) do
+        case Process.whereis(@name) do
+          nil ->
+            Logger.error("Supervisor is not running.")
+            {:error, :not_running}
+          pid ->
+            ref = make_ref()
+            send(pid, {:add_group, self(), ref, opts})
+            api_receiver(ref, timeout)
+        end
+      else
+       {:error, reason} = result ->
+          Logger.error("Invalid group options: #{inspect(reason)}")
+          result
     end
   end
 
+  @doc """
+  get group info
+  """
+  def get_group_info(group_id) do
+    case Process.whereis(@name) do
+      nil ->
+        Logger.error("Supervisor is not running.")
+        {:error, :not_running}
+      pid ->
+        ref = make_ref()
+        send(pid, {:get_group_info, self(), ref, group_id})
+        api_receiver(ref, 5000)
+    end
+  end
+
+  @doc """
+  Start a chain of processes.
+  """
+  def add_chain(opts, timeout \\ 5_000) do
+    with {:ok, opts} <- validate_group_opts(opts),
+         {:ok, opts} <- validate_strategy(opts, :chain) do
+        case Process.whereis(@name) do
+          nil ->
+            Logger.error("Supervisor is not running.")
+            {:error, :not_running}
+          pid ->
+            ref = make_ref()
+            send(pid, {:add_chain, self(), ref, opts})
+            api_receiver(ref, timeout)
+        end
+      else
+        {:error, reason} = failed ->
+          Logger.error("Invalid chain options: #{inspect(reason)}")
+          failed
+    end
+  end
 
   ## GenServer callbacks
 
@@ -75,6 +161,9 @@ defmodule SuperWorker.Supervisor do
       childs: %{},
       id: nil
     }
+
+    Process.register(self(), __MODULE__)
+
     # Start the main loop
     main_loop(state, opts)
   end
@@ -82,29 +171,109 @@ defmodule SuperWorker.Supervisor do
 
   ## Private functions
 
-  defp main_loop(state, opts) do
-    # Loop through the processes
-
+  # Main loop for the supervisor.
+  defp main_loop(state, sup_opts) do
     receive do
-      {:call, from, {:start, group_id, mfa = {_, _, _}}} ->
-        # Start the process
-        # Send the response to the caller
-        state = start_child(mfa, group_id, state)
+      {:start_child, from, ref, mfa_or_fun, opts} ->
+        runable =
+          case opts.type do
+            :group ->
+              Map.has_key?(state.groups, opts.group_id)
+            :chain ->
+              Map.has_key?(state.chains, opts.chain_id)
+            :standalone ->
+              true
+          end
+        if runable do # start child process.
+          state
+          |> sup_start_child(mfa_or_fun, opts)
+          |> main_loop(sup_opts)
+        else # not found group or chain, return error to the caller.
+          reason = case opts.type do
+            :group ->
+              Logger.error("Group not found: #{inspect(opts.group_id)}")
+              :group_not_found
+            :chain ->
+              Logger.error("Chain not found: #{inspect(opts.chain_id)}")
+              :chain_not_found
+          end
+          send(from, {ref, {:error, reason}})
 
-        main_loop(state, opts)
-      {:cast, :stop, child_id} ->
-        # TO-DO: Stop the child process.
-        main_loop(state, opts)
-      {:cast, :stop, :group_id} ->
-        :ok
+          main_loop(state, sup_opts)
+        end
+
+      {:DOWN, ref, :process, pid, reason} ->
+        Logger.debug("Child process died: #{inspect(pid)}, reason: #{inspect(reason)}")
+
+        state
+        |> process_child_down(pid, ref)
+        |> main_loop(sup_opts)
+
+      # add group from api.
+      {:add_group, from, ref, opts} ->
+        case Map.has_key?(state.groups, opts.id) do
+          true ->
+            Logger.error("Group already exists: #{inspect(opts.id)}")
+            send(from, {ref, {:error, :already_exists}})
+            main_loop(state, sup_opts)
+          false ->
+            Logger.debug("Adding group: #{inspect(opts.id)}")
+
+            # Send the response to the caller.
+            send(from, {ref, {:ok, opts.id}})
+
+            state
+            |> add_new_group(opts)
+            |> main_loop(sup_opts)
+        end
+
+    # get group info from api.
+    {:get_group_info, from, ref, group_id} ->
+      group =
+        case Map.get(state.groups, group_id, nil) do
+          nil ->
+            Logger.error("Group not found: #{inspect(group_id)}")
+            {:error, :not_found}
+          group ->
+            %{id: group.id, count: map_size(group.children), stats: nil}
+        end
+      send(from, {ref, group})
+      main_loop(state, sup_opts)
+
+    # add chain from api.
+    {:add_chain, from, ref, opts} ->
+      case Map.has_key?(state.chains, opts.id) do
+        true ->
+          Logger.error("Chain already exists: #{inspect(opts.id)}")
+          send(from, {ref, {:error, :already_exists}})
+          main_loop(state, sup_opts)
+        false ->
+          Logger.debug("Adding chain: #{inspect(opts.id)}")
+
+          # Send the response to the caller.
+          send(from, {ref, {:ok, opts.id}})
+
+          state
+          |> add_new_chain(opts)
+          |> main_loop(sup_opts)
+      end
+
+
       unknown ->
         Logger.warning("#{inspect state.id}, unknown message: #{inspect(unknown)}")
-        main_loop(state, opts)
+        main_loop(state, sup_opts)
     end
 
   end
 
-  defp start_child({m, f, a}, %{id: id, group_id: nil} = opts, state) do
+  defp process_child_down(state, pid, ref) do
+
+    # TO-DO: decide to restart the process or not.
+
+    state
+  end
+
+  defp sup_start_child(state, {m, f, a}, %{id: id, group_id: nil} = opts) do
     # Start a child process
     Logger.debug("Starting freedom child process(#{inspect(id)}): #{inspect({m, f, a})}")
 
@@ -115,7 +284,7 @@ defmodule SuperWorker.Supervisor do
     |> Map.put(id, %{id: id, pid: pid, ref: ref, mfa: {m, f, a}, opts: opts})
   end
 
-  defp start_child({m, f, a} = mfa, %{id: id, group_id: group_id, type: :group} = _opts, state) do
+  defp sup_start_child(state, {m, f, a} = mfa, %{id: id, group_id: group_id, type: :group} = _opts) do
     # Start a child process
     Logger.debug("Starting child process(#{inspect(id)}) for group #{inspect(group_id)}: #{inspect({m, f, a})}")
 
@@ -131,7 +300,7 @@ defmodule SuperWorker.Supervisor do
     |> Map.put(group_id, group)
   end
 
-  defp start_child({m, f, a} = mfa, %{id: id, chain_id: chain_id, type: :chain} = _opts, state) do
+  defp sup_start_child(state, {m, f, a} = mfa, %{id: id, chain_id: chain_id, type: :chain} = _opts) do
     Logger.debug("Starting child process(#{inspect(id)}) for chain #{inspect(chain_id)}: #{inspect({m, f, a})}")
 
     chain = Map.get(state.chains, chain_id, %{children: %{}, child_pids: []})
@@ -208,5 +377,32 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  defp api_receiver(ref, timeout) do
+    receive do
+      {^ref, result} ->
+        result
+      after timeout ->
+        {:error, :timeout}
+    end
+  end
 
+  defp add_new_group(state, opts) do
+    group = %{id: opts.id, children: %{}, child_pids: []}
+
+    groups = Map.put(state.groups, opts.id, group)
+
+    # Update the state
+    state
+    |> Map.put(:groups, groups)
+  end
+
+  defp add_new_chain(state, opts) do
+    chain = %{id: opts.id, children: %{}, child_pids: []}
+
+    chains = Map.put(state.chains, opts.id, chain)
+
+    # Update the state
+    state
+    |> Map.put(:chains, chains)
+  end
 end
