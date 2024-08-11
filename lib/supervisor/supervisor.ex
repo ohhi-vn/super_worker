@@ -73,25 +73,6 @@ defmodule SuperWorker.Supervisor do
     do_start_child({:fun, fun}, opts, timeout)
   end
 
-  defp do_start_child(mfa_or_fun, opts, timeout) do
-    with {:ok, opts} <- validate_child_opts(opts),
-         {:ok, opts} <- validate_strategy(opts, :child) do
-        case Process.whereis(@name) do
-          nil ->
-            Logger.error("Supervisor is not running.")
-            {:error, :supervisor_not_running}
-          pid ->
-            ref = make_ref()
-            send(pid, {:start_child, self(), ref, mfa_or_fun, opts})
-            api_receiver(ref, timeout)
-        end
-      else
-       {:error, reason} = result ->
-          Logger.error("Invalid group options: #{inspect(reason)}")
-          result
-    end
-  end
-
   @doc """
   Add a group of processes to the supervisor.
   """
@@ -404,5 +385,28 @@ defmodule SuperWorker.Supervisor do
     # Update the state
     state
     |> Map.put(:chains, chains)
+  end
+
+
+  defp do_start_child(mfa_or_fun, opts, timeout) do
+    with {:ok, opts} <- validate_child_opts(opts),
+         {:ok, opts} <- validate_strategy(opts, :child),
+         {:ok, opts} <- ignore_opt(opts, :restart_strategy),
+         {:ok, opts} <- ignore_opt(opts, :group_id),
+         {:ok, opts} <- ignore_opt(opts, :chain_id) do
+        case Process.whereis(@name) do
+          nil ->
+            Logger.error("Supervisor is not running.")
+            {:error, :supervisor_not_running}
+          pid ->
+            ref = make_ref()
+            send(pid, {:start_child, self(), ref, mfa_or_fun, opts})
+            api_receiver(ref, timeout)
+        end
+      else
+       {:error, reason} = result ->
+          Logger.error("Invalid group options: #{inspect(reason)}")
+          result
+    end
   end
 end

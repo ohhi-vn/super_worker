@@ -1,6 +1,8 @@
 defmodule SuperWorker.Supervisor.Utils do
   @moduledoc false
 
+  require Logger
+
   # Define the parameters for worker options
   @child_params [:id, :group_id, :chain_id, :restart_strategy, :type]
 
@@ -79,7 +81,32 @@ defmodule SuperWorker.Supervisor.Utils do
     if strategy in @child_restart_strategies do
       {:ok, opts}
     else
-      {:error, "Invalid child restart strategy, #{inspect strategy}"}
+      if Map.has_key?(opts, :group_id) do
+        {:ok, opts}
+      else
+        {:error, "Invalid child restart strategy, #{inspect strategy}"}
+      end
     end
+  end
+
+  # Ignore unsupported options.
+  def ignore_opt(%{type: type} = opts, :restart_strategy) when type in [:group, :chain] do
+    if Map.has_key?(opts, :restart_strategy) do
+      Logger.warning("Ignoring restart_strategy option for #{type}")
+      {:ok, Map.delete(opts, :restart_strategy)}
+    else
+      {:ok, opts}
+    end
+  end
+  def ignore_opt(%{type: :standalone} = opts, opt) when opt in [:group_id, :chain_id] do
+    if Map.has_key?(opts, opt) do
+      Logger.warning("Ignoring #{inspect opt} option for standalone worker")
+      {:ok, Map.delete(opts, opt)}
+    else
+      {:ok, opts}
+    end
+  end
+  def ignore_opt(opts, _opt) do
+    {:ok, opts}
   end
 end
