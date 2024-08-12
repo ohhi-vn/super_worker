@@ -4,15 +4,7 @@ defmodule SuperWorker.Supervisor.Utils do
   require Logger
 
   # Define the parameters for worker options
-  @child_params [:id, :group_id, :chain_id, :restart_strategy, :type]
-
-  @group_params [:id, :restart_strategy, :type]
-
-  @group_restart_strategies [:one_for_one, :one_for_all]
-
-  @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
-
-  @child_restart_strategies [:permanent, :transient, :temporary]
+  @child_params [:id, :group_id, :chain_id,  :type]
 
   def validate_child_opts(opts) do
     # Validate the options
@@ -39,74 +31,47 @@ defmodule SuperWorker.Supervisor.Utils do
   def get_keyword(:standalone) do
     {:type, :standalone}
   end
-
-  def validate_group_opts(opts) do
-
-    if Enum.all?(opts, fn
-      {key, _} -> key in @group_params
-      key -> key in @group_params
-    end) do
-      # Validate the group options
-      result = Enum.reduce(opts, %{}, fn
-        {key, value}, acc -> Map.put(acc, key, value)
-        value, acc ->
-          {k, v} = get_keyword(value)
-          Map.put(acc, k, v)
-      end)
-
-      {:ok, result}
-    else
-      {:error, "Invalid group options"}
-    end
+  def get_keyword(value) do
+    {:error, "Invalid type, #{inspect value}"}
   end
 
-  def validate_strategy(opts, :group) do
-    strategy = opts[:restart_strategy]
-    if strategy in @group_restart_strategies do
-      {:ok, opts}
-    else
-      {:error, "Invalid group restart strategy, #{inspect strategy}"}
-    end
-  end
-  def validate_strategy(opts, :chain) do
-    strategy = opts[:restart_strategy]
-    if strategy in @chain_restart_strategies do
-      {:ok, opts}
-    else
-      {:error, "Invalid chain restart strategy, #{inspect strategy}"}
-    end
-  end
-  def validate_strategy(opts, :child) do
-    strategy = opts[:restart_strategy]
-    if strategy in @child_restart_strategies do
-      {:ok, opts}
-    else
-      if Map.has_key?(opts, :group_id) do
-        {:ok, opts}
+  def default_sup_opts(opts) do
+    opts
+    |> fn opts -> if Keyword.has_key?(opts, :owner) do
+        opts
       else
-        {:error, "Invalid child restart strategy, #{inspect strategy}"}
+       [{:owner, self()} | opts]
       end
-    end
+    end.()
   end
 
-  # Ignore unsupported options.
-  def ignore_opt(%{type: type} = opts, :restart_strategy) when type in [:group, :chain] do
-    if Map.has_key?(opts, :restart_strategy) do
-      Logger.warning("Ignoring restart_strategy option for #{type}")
-      {:ok, Map.delete(opts, :restart_strategy)}
+  def normalize_opts(opts, params) do
+    do_normalize_opts(opts, params, %{}, [])
+  end
+
+  defp do_normalize_opts([], _params, valid, invalid) do
+    if Enum.empty?(invalid) do
+      {:ok, valid}
     else
-      {:ok, opts}
+      {:error, "Invalid group options: #{inspect invalid}"}
     end
   end
-  def ignore_opt(%{type: :standalone} = opts, opt) when opt in [:group_id, :chain_id] do
-    if Map.has_key?(opts, opt) do
-      Logger.warning("Ignoring #{inspect opt} option for standalone worker")
-      {:ok, Map.delete(opts, opt)}
+  defp do_normalize_opts([{key, value}|rest], params, valid, invalid) do
+    if key in params do
+      do_normalize_opts(rest, params, Map.put(valid, key, value), invalid)
     else
-      {:ok, opts}
+      do_normalize_opts(rest, params, valid, [key | invalid])
     end
   end
-  def ignore_opt(opts, _opt) do
-    {:ok, opts}
+  defp do_normalize_opts([short_opt|rest], params, valid, invalid) when is_atom(short_opt) do
+    if short_opt in params do
+      {key, value} = get_keyword(short_opt)
+      do_normalize_opts(rest, params, Map.put(valid, key, value), invalid)
+    else
+      do_normalize_opts(rest, params, valid, [short_opt | invalid])
+    end
+  end
+  defp do_normalize_opts([opt|rest], params, valid, invalid) do
+    do_normalize_opts(rest, params, valid, [opt | invalid])
   end
 end
