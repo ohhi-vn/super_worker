@@ -11,6 +11,7 @@ defmodule SuperWorker.Supervisor.Standalone do
   defstruct id: nil, restart_strategy: :permanent
 
   import SuperWorker.Supervisor.Utils
+
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @standalone_params),
          {:ok, opts} <- validate_restart_strategy(opts),

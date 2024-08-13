@@ -53,7 +53,7 @@ defmodule SuperWorker.Supervisor.Utils do
     if Enum.empty?(invalid) do
       {:ok, valid}
     else
-      {:error, "Invalid group options: #{inspect invalid}"}
+      {:error, "Invalid options: #{inspect invalid}"}
     end
   end
   defp do_normalize_opts([{key, value}|rest], params, valid, invalid) do

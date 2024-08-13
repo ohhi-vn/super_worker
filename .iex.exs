@@ -7,13 +7,13 @@ defmodule Dev do
   # Start the supervisor, add a group and a chain.
   def init_sup do
     Sup.start([])
-    Sup.add_group([id: 1, restart_strategy: :one_for_all])
+    Sup.add_group([id: :group1, restart_strategy: :one_for_one])
     # Sup.add_chain([id: 1, restart_strategy: :one_for_all])
 
     # Add a worker to the group.
-    result = Sup.add_worker({__MODULE__, :task, [15]}, [id: 1, group_id: 1, type: :group])
+    result = Sup.add_group_worker(:group1, {__MODULE__, :task, [15]}, [id: 1])
     IO.inspect result
-    result = Sup.add_worker({__MODULE__, :task_crash, [15, 5]}, [id: 1, group_id: 1, type: :group])
+    result = Sup.add_group_worker(:group1, {__MODULE__, :task_crash, [15, 3]}, [id: 2])
     IO.inspect result
     # result = Sup.add_worker({__MODULE__, :task, [15]}, [id: 1, restart_strategy: :permanent, type: :standalone])
     # IO.inspect result

@@ -31,6 +31,7 @@ defmodule SuperWorker.Supervisor do
 
   import SuperWorker.Supervisor.Utils
 
+  # TO-DO: Move to option for flexibility.
   @name __MODULE__
 
   ## Public APIs
@@ -72,13 +73,31 @@ defmodule SuperWorker.Supervisor do
   Start a child process.
   Can run standalone or in a group/chain.
   """
-  def add_worker(mfa_or_fun, opts, timeout \\ 5_000)
-  def add_worker({m, f, a} = mfa, opts, timeout)
+  def add_standalone_worker(mfa_or_fun, opts, timeout \\ 5_000)
+  def add_standalone_worker({m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_start_child(mfa, opts, timeout)
+    do_start_child(:standalone, mfa, opts, timeout)
   end
-  def add_worker(fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
-    do_start_child({:fun, fun}, opts, timeout)
+  def add_standalone_worker(fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
+    do_start_child(:standalone, {:fun, fun}, opts, timeout)
+  end
+
+  def add_group_worker(group_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_group_worker(group_id, {m, f, a} = mfa, opts, timeout)
+   when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
+    do_start_child({:group, group_id}, mfa, opts, timeout)
+  end
+  def add_group_worker(group_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
+    do_start_child({:group, group_id}, {:fun, fun}, opts, timeout)
+  end
+
+  def add_chain_worker(chain_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_chain_worker(chain_id, {m, f, a} = mfa, opts, timeout)
+   when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
+    do_start_child({:chain, chain_id}, mfa, opts, timeout)
+  end
+  def add_chain_worker(chain_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
+    do_start_child({:chain, chain_id}, {:fun, fun}, opts, timeout)
   end
 
   @doc """
@@ -127,8 +146,8 @@ defmodule SuperWorker.Supervisor do
     state = %{
       groups: %{}, # storage for group processes
       chains: %{}, # storage for chain processes
-      children: %{}, # storage for standalone processes
-      refs: %{}, # storage for refs to id & type
+      standalone: %{}, # storage for standalone processes
+      ref_to_id: %{}, # storage for refs to id & type
       id: nil,
       owner: opts[:owner]
     }
@@ -151,34 +170,33 @@ defmodule SuperWorker.Supervisor do
         runable =
           case opts.type do
             :group ->
-              Map.has_key?(state.groups, opts.group_id)
+              if Map.has_key?(state.groups, opts.group_id) do
+                group = Map.get(state.groups, opts.group_id)
+                if Group.worker_exists?(group, opts.id) do
+                  :worker_already_exists
+                else
+                  true
+                end
+              else
+                :group_not_found
+              end
             :chain ->
-              Map.has_key?(state.chains, opts.chain_id)
+               # TO-DO: Implement the chain process.
+               :not_implemented
             :standalone ->
-              true
+              if Map.has_key?(state.standalone, opts.id) do
+                true
+              else
+                :worker_already_exists
+              end
           end
-        if runable do # start child process.
-          if Map.has_key?(state.children, opts.id) do
-            Logger.error("Child already exists: #{inspect(opts.id)}")
-            send(from, {ref, {:error, :already_exists}})
-            main_loop(state, sup_opts)
-          else
+        if runable == true do # start child process.
             state = sup_start_child(state, mfa_or_fun, opts)
-
             send(from, {ref, {:ok, opts.id}})
-            main_loop(state, sup_opts)
-          end
 
+            main_loop(state, sup_opts)
         else # not found group or chain, return error to the caller.
-          reason = case opts.type do
-            :group ->
-              Logger.error("Group not found: #{inspect(opts.group_id)}")
-              :group_not_found
-            :chain ->
-              Logger.error("Chain not found: #{inspect(opts.chain_id)}")
-              :chain_not_found
-          end
-          send(from, {ref, {:error, reason}})
+          send(from, {ref, {:error, runable}})
 
           main_loop(state, sup_opts)
         end
@@ -248,12 +266,21 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp process_child_down(state, pid, ref, reason) do
-    {id, type} = state.refs[ref]
-    child =  case type do
-      :standalone -> Map.get(state.children, id)
-      :group -> Map.get(state.groups, id)
-      :chain -> Map.get(state.chains, id)
+    {id, type} = state.ref_to_id[ref]
+    case type do
+      :standalone ->
+        child = Map.get(state, id)
+        restart_standalone(state, child, {pid, reason})
+      {:group, group_id} ->
+        group = Map.get(state.groups, group_id)
+        restart_group(state, group, id, {pid, reason})
+      {:chain, chain_id} ->
+        Map.get(state.chains, chain_id)
+        |> Map.get(id)
     end
+  end
+
+  defp restart_standalone(state, child, {pid, reason}) do
     opts = child.opts
 
     case opts.restart_strategy do
@@ -276,6 +303,49 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  defp restart_group(state, %{restart_strategy: :one_for_one} = group, child_id, {pid, reason}) do
+    case reason do
+      :normal ->
+        Logger.debug("Child process(#{inspect(pid)}) is normal, ignore restarting.")
+        state
+      _ ->
+        Logger.debug("Child process(#{inspect(pid)}) is down, restarting.")
+        {:ok, group} = Group.restart_worker(group, child_id)
+        {:ok, worker} = Group.get_worker(group, child_id)
+        groups = Map.put(state.groups, group.id, group)
+
+        ref_to_id = Map.put(state.ref_to_id, worker.ref, {child_id, {:group, group.id}})
+
+        state
+        |> Map.put(:groups, groups)
+        |> Map.put(:ref_to_id, ref_to_id)
+    end
+  end
+
+  defp restart_group(state, %{restart_strategy: :one_for_all} = group, child_id, {pid, reason}) do
+    case reason do
+      :normal ->
+        Logger.debug("Child process(#{inspect(pid)}) is normal, ignore restarting.")
+        state
+      _ ->
+        Logger.debug("Child process(#{inspect(pid)}) is down, restarting.")
+        {:ok, group} = Group.restart_worker(group, child_id)
+        {:ok, worker} = Group.get_worker(group, child_id)
+        groups = Map.put(state.groups, group.id, group)
+
+        ref_to_id = Map.put(state.ref_to_id, worker.ref, {child_id, {:group, group.id}})
+
+        state
+        |> Map.put(:groups, groups)
+        |> Map.put(:ref_to_id, ref_to_id)
+    end
+  end
+
+  defp restart_chain(state, chain, {pid, reason}) do
+    # TO-DO: Implement the chain process.
+    state
+  end
+
   defp sup_start_child(state, mfa, %{id: id, type: :standalone} = opts) do
     # Start a child process
     Logger.debug("Starting standalone worker process(#{inspect(id)})")
@@ -291,13 +361,13 @@ defmodule SuperWorker.Supervisor do
       end
 
     # add/update ref to id.
-    refs = Map.put(state.refs, ref, {id, :standalone})
-    children = Map.put(state.children, id, %{id: id, pid: pid, ref: ref, mfa: mfa, opts: opts})
+    ref_to_id = Map.put(state.ref_to_id, ref, {id, :standalone})
+    standalone = Map.put(state.standalone, id, %{id: id, pid: pid, ref: ref, mfa: mfa, opts: opts})
 
     # return new state, including the new child
     state
-    |> Map.put(:children, children)
-    |> Map.put(:refs, refs)
+    |> Map.put(:standalone, standalone)
+    |> Map.put(:ref_to_id, ref_to_id)
   end
 
   defp sup_start_child(state, fun_mfa, %{id: id, group_id: group_id, type: :group} = opts) do
@@ -306,24 +376,16 @@ defmodule SuperWorker.Supervisor do
 
     group = Map.get(state.groups, group_id, :not_found_group)
 
-    child_pid =
-      case Enum.take(group.children, 1) do
-        [] -> nil
-        [child] -> child.pid
-      end
-
-    {pid, ref} = spawn_group(fun_mfa, group.restart_strategy, child_pid)
-
     # update group.
-    group = Map.put(group, id, %{id: id, pid: pid, ref: ref, mfa: fun_mfa, opts: opts})
+    {:ok, group} = Group.add_worker(group, %{id: id, mfa: fun_mfa, opts: opts})
     groups = Map.put(state.groups, group_id, group)
+    {:ok, worker} = Group.get_worker(group, id)
 
-    # add/update ref to id.
-    refs = Map.put(state.refs, ref, {id, :group})
+    ref_to_id = Map.put(state.ref_to_id, worker.ref, {id, {:group, group_id}})
 
     state
     |> Map.put(:groups, groups)
-    |> Map.put(:refs, refs)
+    |> Map.put(:ref_to_id, ref_to_id)
   end
 
   defp sup_start_child(state, mfa, %{id: id, chain_id: chain_id, type: :chain} = opts) do
@@ -337,48 +399,11 @@ defmodule SuperWorker.Supervisor do
     chain = Map.put(chain, id, %{id: id, pid: pid, ref: ref, mfa: mfa, opts: opts})
 
     # add/update ref to id.
-    refs = Map.put(state.refs, ref, {id, :chain})
+    refs = Map.put(state.refs, ref, {id, {:chain, chain_id}})
 
     state
     |> Map.put(chain_id, chain)
     |> Map.put(:refs, refs)
-  end
-
-  defp spawn_group({m, f, a}, restart_strategy, child_pid) do
-    # Start a new process in the group
-    spawn_monitor(fn ->
-      # Link to other child process.
-      # So, if the child process dies, the new process will also die.
-      # Avoid turning on trap_exit.
-      case restart_strategy do
-        :one_for_all ->
-          if child_pid do
-            Process.link(child_pid)
-          end
-        :one_for_one ->
-          :ok
-      end
-
-      apply(m, f, a)
-    end)
-  end
-  defp spawn_group({:fun, f}, restart_strategy, child_pid) do
-    # Start a new process in the group
-    spawn_monitor(fn ->
-      # Link to a child process.
-      # So, if the child process dies, the new process will also die.
-      # Avoid turning on trap_exit.
-      case restart_strategy do
-        :one_for_all ->
-          if child_pid do
-            Process.link(child_pid)
-          end
-        :one_for_one ->
-          :ok
-      end
-
-      f.()
-    end)
   end
 
   defp spawn_chain(mfa, [], opts) do
@@ -459,10 +484,42 @@ defmodule SuperWorker.Supervisor do
     |> Map.put(:chains, chains)
   end
 
-  defp do_start_child(mfa_or_fun, opts, timeout) do
+  defp do_start_child(:standalone, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Standalone.check_options(opts),
       {:ok, pid} <- verify_running() do
+        opts =
+          opts
+          |> Map.put(:type, :standalone)
+
+        ref = make_ref()
+        send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
+        api_receiver(ref, timeout)
+    end
+  end
+  defp do_start_child({:group, group_id}, mfa_or_fun, opts, timeout) do
+    Logger.debug("Starting child process with options: #{inspect(opts)}")
+    with {:ok, opts} <- Group.check_worker_opts([{:group_id, group_id} | opts]),
+      {:ok, pid} <- verify_running() do
+        opts =
+          opts
+          |> Map.put(:group_id, group_id)
+          |> Map.put(:type, :group)
+
+        ref = make_ref()
+        send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
+        api_receiver(ref, timeout)
+    end
+  end
+  defp do_start_child({:chain, chain_id}, mfa_or_fun, opts, timeout) do
+    Logger.debug("Starting child process with options: #{inspect(opts)}")
+    with {:ok, opts} <- Chain.check_worker_options([{:chain_id, chain_id} | opts] ),
+      {:ok, pid} <- verify_running() do
+        opts =
+          opts
+          |> Map.put(:chain_id, chain_id)
+          |> Map.put(:type, :chain)
+
         ref = make_ref()
         send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
         api_receiver(ref, timeout)
