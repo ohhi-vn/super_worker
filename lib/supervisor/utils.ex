@@ -49,6 +49,15 @@ defmodule SuperWorker.Supervisor.Utils do
     do_normalize_opts(opts, params, %{}, [])
   end
 
+  def get_item(map, key) do
+    case Map.get(map, key) do
+      nil -> {:error, :not_found}
+      value -> {:ok, value}
+    end
+  end
+
+  ## Private functions
+
   defp do_normalize_opts([], _params, valid, invalid) do
     if Enum.empty?(invalid) do
       {:ok, valid}

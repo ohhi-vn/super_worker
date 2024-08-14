@@ -7,38 +7,41 @@ defmodule Dev do
   # Start the supervisor, add a group and a chain.
   def init_sup do
     Sup.start([])
-    Sup.add_group([id: :group1, restart_strategy: :one_for_one])
-    # Sup.add_chain([id: 1, restart_strategy: :one_for_all])
+    #{:ok, _} = Sup.add_group([id: :group1, restart_strategy: :one_for_all])
+    # {:ok, _} = Sup.add_group([id: :group2, restart_strategy: :one_for_one])
+    {:ok, _} = Sup.add_chain([id: :chain1, restart_strategy: :one_for_all])
 
     # Add a worker to the group.
-    result = Sup.add_group_worker(:group1, {__MODULE__, :task, [15]}, [id: 1])
-    IO.inspect result
-    result = Sup.add_group_worker(:group1, {__MODULE__, :task_crash, [15, 3]}, [id: 2])
-    IO.inspect result
-    # result = Sup.add_worker({__MODULE__, :task, [15]}, [id: 1, restart_strategy: :permanent, type: :standalone])
-    # IO.inspect result
-    # result = Sup.add_worker({__MODULE__, :task_crash, [15, 3]}, [id: 2, restart_strategy: :transient, type: :standalone])
-    # IO.inspect result
-    # result = Sup.add_worker({__MODULE__, :task_crash, [15, 5]}, [id: 3, restart_strategy: :temporary, type: :standalone])
-    # IO.inspect result
+    #{:ok, _} = Sup.add_group_worker(:group1, {__MODULE__, :task, [15]}, [id: :a])
+    #  Sup.add_group_worker(:group1, {__MODULE__, :task_crash, [15, 5]}, [id: :b])
+    # {:ok, _} = Sup.add_group_worker(:group2, {__MODULE__, :task, [1500]}, [id: :c])
+    # {:ok, _} = Sup.add_group_worker(:group2, {__MODULE__, :task_crash, [1500, 5]}, [id: :d])
+
+    # r = Sup.add_standalone_worker({__MODULE__, :task, [1500]}, [id: 1, restart_strategy: :permanent])
+    # IO.inspect r
+
+    # {:ok, _ } = Sup.add_standalone_worker({__MODULE__, :task_crash, [15, 5]}, [id: 2, restart_strategy: :transient])
+
+     {:ok, _} = Sup.add_chain_worker(:chain1, {__MODULE__, :task, []}, [id: 3, restart_strategy: :permanent])
+
     :ok
   end
 
   # function to add a worker to the supervisor.
   def task(n) do
-    IO.puts "Task is running"
+    IO.puts "#{inspect self()}, Task is started"
     for i <- 1..n do
       IO.puts "#{inspect self()}, Task #{i}"
-      :timer.sleep(1000)
+      :timer.sleep(1500)
     end
   end
 
   def task_crash(n, at) do
-    IO.puts "Task is running"
+    IO.puts "#{inspect self()}, Task is started"
     for i <- 1..n do
       if i == at, do: raise "Task crashed"
       IO.puts "#{inspect self()}, Task #{i}"
-      :timer.sleep(1000)
+      :timer.sleep(1500)
     end
 
   end
@@ -46,10 +49,10 @@ defmodule Dev do
   # return a anonymous function.
   def anonymous do
     fn ->
-      IO.puts "Anonymous function"
+      IO.puts "#{inspect self()}, Anonymous function"
       for i <- 1..5 do
         IO.puts "#{inspect self()}, Task #{i}"
-        :timer.sleep(1000)
+        :timer.sleep(1500)
       end
     end
   end
