@@ -13,7 +13,8 @@ defmodule SuperWorker.Supervisor.Group do
   defstruct [
     :id, # group id, unique in supervior.
     restart_strategy: :one_for_all,
-    workers: %{}
+    workers: %{},
+    supervisor: nil,
   ]
 
   import SuperWorker.Supervisor.Utils
@@ -58,9 +59,8 @@ defmodule SuperWorker.Supervisor.Group do
 
   def restart_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
-      group
-      |> kill_worker(worker_id)
-      |> spawn_worker(worker_id)
+      kill_worker(group, worker_id)
+      spawn_worker(group, worker_id)
     else
       {:error, :not_found}
     end
@@ -71,7 +71,7 @@ defmodule SuperWorker.Supervisor.Group do
       {:ok, _} ->
         workers = Map.delete(group.workers, worker_id)
         {:ok, %{group | workers: workers}}
-      {:error, _} -> {:error, "Worker not found"}
+      {:error, _} -> {:error, :not_found}
     end
   end
 
@@ -79,10 +79,10 @@ defmodule SuperWorker.Supervisor.Group do
     case get_worker(group, worker_id) do
       {:ok, worker} ->
         case Process.whereis(worker.pid) do
-          nil -> {:error, "Worker is not running"}
+          nil -> {:error, :not_running}
           pid -> Process.exit(pid, :kill)
         end
-      {:error, _} -> {:error, "Worker not found"}
+      {:error, _} -> {:error, :not_found}
     end
   end
 
@@ -100,7 +100,7 @@ defmodule SuperWorker.Supervisor.Group do
       Enum.map(group.workers, fn {id, worker} ->
         Logger.info("Restarting worker #{id}, pid: #{inspect worker.pid}")
         Process.exit(worker.pid, :kill)
-        new_worker = do_spawn_worker(worker)
+        new_worker = do_spawn_worker(group, worker)
         {id, new_worker}
       end)
 
@@ -109,31 +109,38 @@ defmodule SuperWorker.Supervisor.Group do
 
   defp spawn_worker(group, worker_id) do
     {:ok, worker} = get_worker(group, worker_id)
-    worker = do_spawn_worker(worker)
+    worker = do_spawn_worker(group, worker)
     workers = Map.put(group.workers, worker.id, worker)
 
     {:ok, %{group | workers: workers}}
   end
 
-  defp do_spawn_worker(worker) do
-    case worker.mfa do
-      {module, function, args} ->
-        {pid, ref} = spawn_monitor(module, function, args)
-
-        worker
-        |> Map.put(:pid, pid)
-        |> Map.put(:ref, ref)
-
-      {:fun, fun} ->
-        {pid, ref} = spawn_monitor(fun)
-
-        worker
-        |> Map.put(:pid, pid)
-        |> Map.put(:ref, ref)
-    end
+  def broadcast(group, message) do
+    Enum.each(group.workers, fn {_id, worker} ->
+      send(worker.pid, message)
+    end)
   end
 
   ## Private functions
+
+  defp do_spawn_worker(group, worker) do
+    {pid, ref} = spawn_monitor(fn ->
+      Process.put(:supervisor, group.supervisor)
+      Process.put(:group, group.id)
+
+      case worker.mfa do
+        {m, f, a} ->
+          apply(m, f, a)
+
+        {:fun, fun} ->
+          fun.()
+      end
+    end)
+
+    worker
+    |> Map.put(:pid, pid)
+    |> Map.put(:ref, ref)
+  end
 
   defp validate_restart_strategy(opts) do
     if opts.restart_strategy in @group_restart_strategies do

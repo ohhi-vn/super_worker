@@ -9,7 +9,7 @@ defmodule Dev do
     Sup.start([])
     #{:ok, _} = Sup.add_group([id: :group1, restart_strategy: :one_for_all])
     # {:ok, _} = Sup.add_group([id: :group2, restart_strategy: :one_for_one])
-    {:ok, _} = Sup.add_chain([id: :chain1, restart_strategy: :one_for_all])
+    {:ok, _} = Sup.add_chain([id: :chain1, restart_strategy: :one_for_one, finished_callback: {__MODULE__, :print,[:chain1]}])
 
     # Add a worker to the group.
     #{:ok, _} = Sup.add_group_worker(:group1, {__MODULE__, :task, [15]}, [id: :a])
@@ -22,7 +22,11 @@ defmodule Dev do
 
     # {:ok, _ } = Sup.add_standalone_worker({__MODULE__, :task_crash, [15, 5]}, [id: 2, restart_strategy: :transient])
 
-     {:ok, _} = Sup.add_chain_worker(:chain1, {__MODULE__, :task, []}, [id: 3, restart_strategy: :permanent])
+     {:ok, _} = Sup.add_chain_worker(:chain1, {__MODULE__, :task, []}, [id: 31, restart_strategy: :permanent])
+     {:ok, _} = Sup.add_chain_worker(:chain1, {__MODULE__, :task, []}, [id: 32, restart_strategy: :permanent])
+     {:ok, _} = Sup.add_chain_worker(:chain1, {__MODULE__, :task_crash, [10]}, [id: 34, restart_strategy: :permanent])
+     {:ok, _} = Sup.add_chain_worker(:chain1, {__MODULE__, :task, []}, [id: 33, restart_strategy: :permanent])
+     {:ok, _} = Sup.add_chain_worker(:chain1, {__MODULE__, :task, []}, [id: 35, restart_strategy: :permanent])
 
     :ok
   end
@@ -30,20 +34,22 @@ defmodule Dev do
   # function to add a worker to the supervisor.
   def task(n) do
     IO.puts "#{inspect self()}, Task is started"
-    for i <- 1..n do
+    sum = Enum.reduce(1..n, 0, fn i, acc ->
       IO.puts "#{inspect self()}, Task #{i}"
-      :timer.sleep(1500)
-    end
+      :timer.sleep(500)
+      acc + i
+    end)
+    {:next, sum}
   end
 
   def task_crash(n, at) do
     IO.puts "#{inspect self()}, Task is started"
-    for i <- 1..n do
+    Enum.reduce(1..n, 0, fn i, acc ->
       if i == at, do: raise "Task crashed"
       IO.puts "#{inspect self()}, Task #{i}"
-      :timer.sleep(1500)
-    end
-
+      :timer.sleep(500)
+      acc + i
+    end)
   end
 
   # return a anonymous function.
@@ -52,8 +58,12 @@ defmodule Dev do
       IO.puts "#{inspect self()}, Anonymous function"
       for i <- 1..5 do
         IO.puts "#{inspect self()}, Task #{i}"
-        :timer.sleep(1500)
+        :timer.sleep(500)
       end
     end
+  end
+
+  def print(result, chain_id) do
+    IO.puts "#{inspect self()}, Chain #{chain_id} finished with result #{result}"
   end
 end

@@ -151,6 +151,54 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  def boardcast_to_group(group_id, data) do
+    case Process.whereis(@name) do
+      nil ->
+        Logger.error("Supervisor is not running.")
+        {:error, :not_running}
+      pid ->
+        ref = make_ref()
+        send(pid, {:broadcast_to_group, self(), ref, group_id, data})
+        api_receiver(ref, 5000)
+    end
+  end
+
+  def broadcast_to_my_group(data) do
+    id = get_my_group()
+    sup = get_my_supervisor()
+
+    cond do
+      id == nil ->
+        Logger.error("Group not found.")
+        {:error, :not_found}
+      sup == nil ->
+        Logger.error("Supervisor not found.")
+        {:error, :not_found}
+      true ->
+        boardcast_to_group(id, data)
+    end
+  end
+
+  def get_my_group() do
+    Process.get(:group)
+  end
+
+  def get_my_supervisor() do
+    Process.get(:supervisor)
+  end
+
+  def get_chain(chain_id) do
+    case Process.whereis(@name) do
+      nil ->
+        Logger.error("Supervisor is not running.")
+        {:error, :not_running}
+      pid ->
+        ref = make_ref()
+        send(pid, {:get_chain, self(), ref, chain_id})
+        api_receiver(ref, 5000)
+    end
+  end
+
   ## GenServer callbacks
 
   def init(opts) do
@@ -160,11 +208,11 @@ defmodule SuperWorker.Supervisor do
       chains: %{}, # storage for chain processes
       standalone: %{}, # storage for standalone processes
       ref_to_id: %{}, # storage for refs to id & type
-      id: nil,
+      id: @name,
       owner: opts[:owner]
     }
 
-    Process.register(self(), __MODULE__)
+    Process.register(self(), @name)
 
     send(state.owner, {{self(), state.owner}, :ok})
 
@@ -222,6 +270,27 @@ defmodule SuperWorker.Supervisor do
           main_loop(state, sup_opts)
         end
 
+      {:get_chain, from, ref, chain_id} ->
+        case Map.get(state.chains, chain_id) do
+          nil ->
+            Logger.error("Chain not found: #{inspect chain_id}")
+            send(from, {ref, {:error, :not_found}})
+          chain ->
+            send(from, {ref, chain})
+        end
+        main_loop(state, sup_opts)
+
+      {:broadcast_to_group, from, ref, group_id, data} ->
+        case Map.get(state.groups, group_id) do
+          nil ->
+            Logger.error("Group not found: #{inspect group_id}")
+            send(from, {ref, {:error, :not_found}})
+          group ->
+            Group.broadcast(group, data)
+            send(from, {ref, :ok})
+        end
+        main_loop(state, sup_opts)
+
       {:add_data_to_chain, from, ref, chain_id, data} ->
         case Map.get(state.chains, chain_id) do
           nil ->
@@ -235,7 +304,7 @@ defmodule SuperWorker.Supervisor do
         end
 
       {:DOWN, ref, :process, pid, reason} ->
-        Logger.debug("Child process died: #{inspect(pid)}, reason: #{inspect(reason)}")
+        Logger.debug("receiced signal worker died: #{inspect(pid)}, reason: #{inspect(reason)}")
 
         state
         |> process_child_down(pid, ref, reason)
@@ -290,12 +359,10 @@ defmodule SuperWorker.Supervisor do
           |> main_loop(sup_opts)
       end
 
-
       unknown ->
         Logger.warning("#{inspect state.id}, unknown message: #{inspect(unknown)}")
         main_loop(state, sup_opts)
     end
-
   end
 
   defp process_child_down(state, pid, ref, reason) do
@@ -316,8 +383,8 @@ defmodule SuperWorker.Supervisor do
           group = Map.get(state.groups, group_id)
           restart_group(state, group, id, {pid, reason})
         {:chain, chain_id} ->
-          Map.get(state.chains, chain_id)
-          |> Map.get(id)
+          chain = Map.get(state.chains, chain_id)
+          restart_chain(state, chain, id, {pid, reason})
         :not_found ->
           Logger.debug("Child not found: #{inspect id}, ref: #{inspect ref}, maybe already stopped.")
           state
@@ -397,9 +464,56 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  defp restart_chain(state, chain, {pid, reason}) do
-    # TO-DO: Implement the chain process.
-    state
+  # TO-DO: Follow restart strategy for child group & chain.
+
+  defp restart_chain(state, %{restart_strategy: :one_for_one} = chain, child_id, {pid, reason}) do
+    case reason do
+      :normal ->
+        Logger.debug("Worker(#{inspect child_id}) process(#{inspect(pid)}) is normal, ignore restarting.")
+        state
+      _ ->
+        Logger.debug("Worker(#{inspect child_id}) process(#{inspect(pid)}) is down, restarting.")
+        {:ok, chain} = Chain.restart_worker(chain, child_id)
+        {:ok, worker} = Chain.get_worker(chain, child_id)
+        chains = Map.put(state.chains, chain.id, chain)
+
+        ref_to_id = Map.put(state.ref_to_id, worker.ref, {child_id, {:chain, chain.id}})
+
+        state
+        |> Map.put(:chains, chains)
+        |> Map.put(:ref_to_id, ref_to_id)
+    end
+  end
+
+
+  defp restart_chain(state, %{restart_strategy: :one_for_all} = chain, _child_id, {pid, reason}) do
+    case reason do
+      :normal ->
+        Logger.debug("Child process(#{inspect(pid)}) is normal, ignore restarting.")
+        state
+      _ ->
+        Logger.debug("Child process(#{inspect(pid)}) is down, restarting...")
+
+        old_ref_keys = Enum.reduce(chain.workers, [], fn {_, worker}, acc ->  [worker.ref | acc] end)
+
+        Logger.debug("Old ref: #{inspect old_ref_keys}")
+
+        {:ok, chain} = Chain.restart_all_workers(chain)
+
+        new_refs =
+          state.ref_to_id
+          |> Map.drop(old_ref_keys)
+
+        new_refs = Enum.reduce(chain.workers, new_refs, fn {child_id, worker}, acc ->
+          Map.put(acc, worker.ref, {child_id, {:chain, chain.id}})
+        end)
+
+        Logger.debug("New ref: #{inspect new_refs}")
+
+        state
+        |> Map.put(:chains, Map.put(state.chains, chain.id, chain))
+        |> Map.put(:ref_to_id, new_refs)
+    end
   end
 
   defp sup_start_child(state, mfa, %{id: id, type: :standalone} = opts) do
@@ -407,14 +521,15 @@ defmodule SuperWorker.Supervisor do
     Logger.debug("Starting standalone worker process(#{inspect(id)})")
 
     {pid, ref} =
-      case mfa do
-        {:fun, fun} ->
-          spawn_monitor(fun)
-        {m, f, a} ->
-          spawn_monitor(fn ->
+      spawn_monitor(fn ->
+        Process.put(:supervisor, state.id)
+        case mfa do
+          {:fun, fun} ->
+            fun.()
+          {m, f, a} ->
             apply(m, f, a)
-          end)
-      end
+        end
+      end)
 
     # add/update ref to id.
     ref_to_id = Map.put(state.ref_to_id, ref, {id, :standalone})
@@ -475,7 +590,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp add_new_group(state, opts) do
-    group = %Group{id: opts.id, workers: %{}, restart_strategy: opts.restart_strategy}
+    group = %Group{id: opts.id, restart_strategy: opts.restart_strategy, supervisor: state.id}
 
     groups = Map.put(state.groups, group.id, group)
 
@@ -485,7 +600,9 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp add_new_chain(state, opts) do
-    chain = %Chain{id: opts.id, restart_strategy: opts.restart_strategy}
+    # Improve the chain process.
+    chain = %Chain{id: opts.id, restart_strategy: opts.restart_strategy, supervisor: state.id,
+    finished_callback: opts.finished_callback}
 
     chains = Map.put(state.chains, chain.id, chain)
 
