@@ -26,8 +26,9 @@ defmodule SuperWorker.Supervisor.Group do
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @group_params),
          {:ok, opts} <- validate_restart_strategy(opts),
-         {:ok, opts} <- validate_opts(opts) do
-      {:ok, opts}
+         {:ok, opts} <- validate_opts(opts),
+         {:ok, group} <- map_to_struct(opts) do
+      {:ok, group}
     end
   end
 
@@ -153,5 +154,9 @@ defmodule SuperWorker.Supervisor.Group do
   defp validate_opts(opts) do
     # TO-DO: Implement the validation
     {:ok, opts}
+  end
+
+  defp map_to_struct(opts) when is_map(opts) do
+    {:ok, struct(__MODULE__, opts)}
   end
 end

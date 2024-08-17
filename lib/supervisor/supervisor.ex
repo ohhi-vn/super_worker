@@ -24,48 +24,39 @@ defmodule SuperWorker.Supervisor do
       {:ok, pid}
   """
 
-
   require Logger
 
   alias SuperWorker.Supervisor.{Group, Chain, Worker}
+  alias SuperWorker.Supervisor
 
   import SuperWorker.Supervisor.Utils
+
+  defstruct [
+    :groups, # storage for group processes
+    :chains, # storage for chain processes
+    :standalone, # storage for standalone processes
+    :ref_to_id, # storage for refs to id & type
+    :id, # supervisor id
+    :owner, # owner of the supervisor
+    :number_of_partitions, # number of partitions, default is number of online schedulers
+    link: true # link the supervisor to the caller
+  ]
+
+  @sup_params [:id, :number_of_partitions, :link]
 
   # TO-DO: Move to option for flexibility.
   @name __MODULE__
 
   ## Public APIs
 
-  def start_link(opts \\ []) when is_list(opts) do
-    case Process.whereis(@name) do
-      nil ->
-        Logger.error("Starting supervisor...")
-        # Start the supervisor
-        pid = spawn_link(__MODULE__, :init, [opts])
-        api_receiver({pid, self()})
-      pid ->
-        Logger.error("Supervisor is already running (pid: #{inspect(pid)}).")
-        {:error, :already_running}
-    end
-  end
-
   @doc """
-  Start supervisor for run standalone.
+  Start supervisor for run standalone please set option :link to false.
   """
   def start(opts \\ []) when is_list(opts) do
-    case Process.whereis(@name) do
-      nil ->
-        Logger.debug("Starting supervisor...")
-
-        opts = default_sup_opts(opts)
-
-        # Start the supervisor
-        pid = spawn(__MODULE__, :init, [opts])
-        api_receiver({pid, self()})
-      pid ->
-        Logger.error("Supervisor is already running (pid: #{inspect(pid)}).")
-        {:error, :already_running}
-    end
+    with {:ok, opts} <- check_opts(opts),
+      {:error, :not_running} <- verify_running(opts.id) do
+        start_supervisor(opts)
+      end
 
   end
 
@@ -73,41 +64,41 @@ defmodule SuperWorker.Supervisor do
   Start a child process.
   Can run standalone or in a group/chain.
   """
-  def add_standalone_worker(mfa_or_fun, opts, timeout \\ 5_000)
-  def add_standalone_worker({m, f, a} = mfa, opts, timeout)
+  def add_standalone_worker(sup_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_start_child(:standalone, mfa, opts, timeout)
+    do_start_child(sup_id, :standalone, mfa, opts, timeout)
   end
-  def add_standalone_worker(fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
-    do_start_child(:standalone, {:fun, fun}, opts, timeout)
+  def add_standalone_worker(sup_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
+    do_start_child(sup_id, :standalone, {:fun, fun}, opts, timeout)
   end
 
-  def add_group_worker(group_id, mfa_or_fun, opts, timeout \\ 5_000)
-  def add_group_worker(group_id, {m, f, a} = mfa, opts, timeout)
+  def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_start_child({:group, group_id}, mfa, opts, timeout)
+    do_start_child(sup_id, {:group, group_id}, mfa, opts, timeout)
   end
-  def add_group_worker(group_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
-    do_start_child({:group, group_id}, {:fun, fun}, opts, timeout)
+  def add_group_worker(sup_id, group_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
+    do_start_child(sup_id, {:group, group_id}, {:fun, fun}, opts, timeout)
   end
 
-  def add_chain_worker(chain_id, mfa_or_fun, opts, timeout \\ 5_000)
-  def add_chain_worker(chain_id, {m, f, a} = mfa, opts, timeout)
+  def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_chain_worker(sup_id, chain_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_start_child({:chain, chain_id}, mfa, opts, timeout)
+    do_start_child(sup_id, {:chain, chain_id}, mfa, opts, timeout)
   end
-  def add_chain_worker(chain_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
-    do_start_child({:chain, chain_id}, {:fun, fun}, opts, timeout)
+  def add_chain_worker(sup_id, chain_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
+    do_start_child(sup_id, {:chain, chain_id}, {:fun, fun}, opts, timeout)
   end
 
   @doc """
   Add a group of processes to the supervisor.
   """
-  def add_group(opts, timeout \\ 5_000) do
-    with {:ok, opts} <- Group.check_options(opts),
-      {:ok, pid} <- verify_running() do
+  def add_group(sup_id, opts, timeout \\ 5_000) do
+    with {:ok, group} <- Group.check_options(opts),
+      {:ok, pid} <- verify_running(sup_id) do
         ref = make_ref()
-        send(pid, {:add_group, self(), ref, opts})
+        send(pid, {:add_group, self(), ref, group})
         api_receiver(ref, timeout)
     end
   end
@@ -115,12 +106,12 @@ defmodule SuperWorker.Supervisor do
   @doc """
   get group info
   """
-  def get_group_info(group_id) do
-    case Process.whereis(@name) do
-      nil ->
-        Logger.error("Supervisor is not running.")
-        {:error, :not_running}
-      pid ->
+  def get_group_info(sup_id, group_id) do
+    case verify_running(sup_id) do
+      {:error, reason} ->
+        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
+        {:error, reason}
+      {:ok, pid} ->
         ref = make_ref()
         send(pid, {:get_group_info, self(), ref, group_id})
         api_receiver(ref, 5000)
@@ -130,33 +121,33 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Start a chain of processes.
   """
-  def add_chain(opts, timeout \\ 5_000) do
-    with {:ok, opts} <- Chain.check_options(opts),
-      {:ok, pid} <- verify_running() do
+  def add_chain(sup_id, opts, timeout \\ 5_000) do
+    with {:ok, chain} <- Chain.check_options(opts),
+      {:ok, pid} <- verify_running(sup_id) do
         ref = make_ref()
-        send(pid, {:add_chain, self(), ref, opts})
+        send(pid, {:add_chain, self(), ref, chain})
         api_receiver(ref, timeout)
     end
   end
 
-  def send_data_to_chain(chain_id, data) do
-    case Process.whereis(@name) do
-      nil ->
-        Logger.error("Supervisor is not running.")
-        {:error, :not_running}
-      pid ->
+  def send_data_to_chain(sup_id, chain_id, data) do
+    case verify_running(sup_id) do
+      {:error, reason} ->
+        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
+        {:error, reason}
+      {:ok, pid} ->
         ref = make_ref()
         send(pid, {:add_data_to_chain, self(), ref, chain_id, data})
         api_receiver(ref, 5000)
     end
   end
 
-  def boardcast_to_group(group_id, data) do
-    case Process.whereis(@name) do
-      nil ->
-        Logger.error("Supervisor is not running.")
-        {:error, :not_running}
-      pid ->
+  def boardcast_to_group(sup_id, group_id, data) do
+    case verify_running(sup_id) do
+      {:error, reason} ->
+        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
+        {:error, reason}
+      {:ok, pid} ->
         ref = make_ref()
         send(pid, {:broadcast_to_group, self(), ref, group_id, data})
         api_receiver(ref, 5000)
@@ -164,18 +155,18 @@ defmodule SuperWorker.Supervisor do
   end
 
   def broadcast_to_my_group(data) do
-    id = get_my_group()
-    sup = get_my_supervisor()
+    group_id = get_my_group()
+    sup_id = get_my_supervisor()
 
     cond do
-      id == nil ->
+      group_id == nil ->
         Logger.error("Group not found.")
         {:error, :not_found}
-      sup == nil ->
+      sup_id == nil ->
         Logger.error("Supervisor not found.")
         {:error, :not_found}
       true ->
-        boardcast_to_group(id, data)
+        boardcast_to_group(sup_id, group_id, data)
     end
   end
 
@@ -187,12 +178,12 @@ defmodule SuperWorker.Supervisor do
     Process.get(:supervisor)
   end
 
-  def get_chain(chain_id) do
-    case Process.whereis(@name) do
-      nil ->
+  def get_chain(sup_id, chain_id) do
+    case verify_running(sup_id) do
+      {:error, _} = err ->
         Logger.error("Supervisor is not running.")
-        {:error, :not_running}
-      pid ->
+        err
+      {:ok, pid} ->
         ref = make_ref()
         send(pid, {:get_chain, self(), ref, chain_id})
         api_receiver(ref, 5000)
@@ -208,13 +199,17 @@ defmodule SuperWorker.Supervisor do
       chains: %{}, # storage for chain processes
       standalone: %{}, # storage for standalone processes
       ref_to_id: %{}, # storage for refs to id & type
-      id: @name,
+      id: opts.id, # supervisor id
       owner: opts[:owner]
     }
 
-    Process.register(self(), @name)
+    Process.register(self(), opts.id)
 
     send(state.owner, {{self(), state.owner}, :ok})
+
+    Logger.debug("Supervisor initialized: #{inspect state}")
+
+    {:ok, state}
 
     # Start the main loop
     main_loop(state, opts)
@@ -311,20 +306,20 @@ defmodule SuperWorker.Supervisor do
         |> main_loop(sup_opts)
 
       # add group from api.
-      {:add_group, from, ref, opts} ->
-        case Map.has_key?(state.groups, opts.id) do
+      {:add_group, from, ref, group} ->
+        case Map.has_key?(state.groups, group.id) do
           true ->
-            Logger.error("Group already exists: #{inspect(opts.id)}")
+            Logger.error("Group already exists: #{inspect(group.id)}")
             send(from, {ref, {:error, :already_exists}})
             main_loop(state, sup_opts)
           false ->
-            Logger.debug("Adding group: #{inspect(opts.id)}")
+            Logger.debug("Adding group: #{inspect(group.id)}")
 
             # Send the response to the caller.
-            send(from, {ref, {:ok, opts.id}})
+            send(from, {ref, {:ok, group.id}})
 
             state
-            |> add_new_group(opts)
+            |> add_new_group(group)
             |> main_loop(sup_opts)
         end
 
@@ -342,20 +337,19 @@ defmodule SuperWorker.Supervisor do
       main_loop(state, sup_opts)
 
     # add chain from api.
-    {:add_chain, from, ref, opts} ->
-      case Map.has_key?(state.chains, opts.id) do
+    {:add_chain, from, ref, chain} ->
+      case Map.has_key?(state.chains, chain.id) do
         true ->
-          Logger.error("Chain already exists: #{inspect(opts.id)}")
+          Logger.error("Chain already exists: #{inspect(chain.id)}")
           send(from, {ref, {:error, :already_exists}})
           main_loop(state, sup_opts)
         false ->
-          Logger.debug("Adding chain: #{inspect(opts.id)}")
-
+          Logger.debug("Adding chain: #{inspect(chain.id)}")
           # Send the response to the caller.
-          send(from, {ref, {:ok, opts.id}})
+          send(from, {ref, {:ok, chain.id}})
 
           state
-          |> add_new_chain(opts)
+          |> add_new_chain(chain)
           |> main_loop(sup_opts)
       end
 
@@ -589,9 +583,8 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  defp add_new_group(state, opts) do
-    group = %Group{id: opts.id, restart_strategy: opts.restart_strategy, supervisor: state.id}
-
+  defp add_new_group(state, group) do
+    group = %Group{group | supervisor: state.id}
     groups = Map.put(state.groups, group.id, group)
 
     # Update the state
@@ -599,11 +592,8 @@ defmodule SuperWorker.Supervisor do
     |> Map.put(:groups, groups)
   end
 
-  defp add_new_chain(state, opts) do
-    # Improve the chain process.
-    chain = %Chain{id: opts.id, restart_strategy: opts.restart_strategy, supervisor: state.id,
-    finished_callback: opts.finished_callback}
-
+  defp add_new_chain(state, chain) do
+    chain = %Chain{chain | supervisor: state.id}
     chains = Map.put(state.chains, chain.id, chain)
 
     # Update the state
@@ -611,10 +601,10 @@ defmodule SuperWorker.Supervisor do
     |> Map.put(:chains, chains)
   end
 
-  defp do_start_child(:standalone, mfa_or_fun, opts, timeout) do
+  defp do_start_child(sup_id, :standalone, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Worker.check_options(opts),
-      {:ok, pid} <- verify_running() do
+      {:ok, pid} <- verify_running(sup_id) do
         opts =
           opts
           |> Map.put(:type, :standalone)
@@ -628,10 +618,10 @@ defmodule SuperWorker.Supervisor do
         other
     end
   end
-  defp do_start_child({:group, group_id}, mfa_or_fun, opts, timeout) do
+  defp do_start_child(sup_id, {:group, group_id}, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Group.check_worker_opts([{:group_id, group_id} | opts]),
-      {:ok, pid} <- verify_running() do
+      {:ok, pid} <- verify_running(sup_id) do
         opts =
           opts
           |> Map.put(:group_id, group_id)
@@ -642,10 +632,10 @@ defmodule SuperWorker.Supervisor do
         api_receiver(ref, timeout)
     end
   end
-  defp do_start_child({:chain, chain_id}, mfa_or_fun, opts, timeout) do
+  defp do_start_child(sup_id, {:chain, chain_id}, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Chain.check_worker_options([{:chain_id, chain_id} | opts] ),
-      {:ok, pid} <- verify_running() do
+      {:ok, pid} <- verify_running(sup_id) do
         opts =
           opts
           |> Map.put(:chain_id, chain_id)
@@ -657,12 +647,47 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  defp verify_running() do
-    case Process.whereis(@name) do
+  defp verify_running(id) when is_atom(id) do
+    case Process.whereis(id) do
       nil ->
         {:error, :not_running}
       pid ->
         {:ok, pid}
     end
+  end
+
+  defp check_opts(opts) do
+    with {:ok, opts} <- normalize_opts(opts, @sup_params),
+      {:ok, opts} <- validate_opts(opts) do
+        {:ok, opts}
+      end
+  end
+
+  defp validate_opts(opts) do
+    if Map.has_key?(opts, :id) do
+      if is_atom(opts.id) do
+        {:ok, opts}
+      else
+        {:error, "Invalid id, need to be an atom"}
+      end
+    else
+      {:error, "Missing id"}
+    end
+  end
+
+  defp start_supervisor(opts) do
+    Logger.debug("Starting supervisor with options: #{inspect opts}")
+
+    # Set the default options if not provided
+    opts = default_sup_opts(opts)
+
+    # Start the supervisor
+    pid = if opts.link do # link the supervisor to the caller
+      spawn_link(__MODULE__, :init, [opts])
+    else
+      spawn(__MODULE__, :init, [opts])
+    end
+
+    api_receiver({pid, self()})
   end
 end

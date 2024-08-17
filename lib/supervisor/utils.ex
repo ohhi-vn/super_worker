@@ -36,13 +36,11 @@ defmodule SuperWorker.Supervisor.Utils do
   end
 
   def default_sup_opts(opts) do
-    opts
-    |> fn opts -> if Keyword.has_key?(opts, :owner) do
-        opts
-      else
-       [{:owner, self()} | opts]
-      end
-    end.()
+    if Map.has_key?(opts, :owner) do
+      opts
+    else
+      Map.put(opts, :owner, self())
+    end
   end
 
   def normalize_opts(opts, params) do
@@ -54,6 +52,14 @@ defmodule SuperWorker.Supervisor.Utils do
       nil -> {:error, :not_found}
       value -> {:ok, value}
     end
+  end
+
+  def get_hash_order(term, num) do
+    :erlang.phash2(term, num)
+  end
+
+  def get_default_schedulers() do
+    System.schedulers_online()
   end
 
   ## Private functions

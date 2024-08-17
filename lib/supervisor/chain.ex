@@ -30,8 +30,9 @@ defmodule SuperWorker.Supervisor.Chain do
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @chain_params),
          {:ok, opts} <- validate_restart_strategy(opts),
-         {:ok, opts} <- validate_opts(opts) do
-      {:ok, opts}
+         {:ok, opts} <- validate_opts(opts),
+         {:ok, chain} <- map_to_struct(opts) do
+      {:ok, chain}
     end
   end
 
@@ -221,7 +222,8 @@ defmodule SuperWorker.Supervisor.Chain do
         case result do
           {:next, new_data} ->
             Logger.debug("Passing data to the next process(#{inspect(id)}), chain: #{inspect(chain_id)}")
-            chain = Sup.get_chain(chain_id)
+            chain = Sup.get_chain(get_my_supervisor(), chain_id)
+
             send_next(chain, id, new_data)
 
             loop_chain(mfa, opts)
@@ -236,7 +238,7 @@ defmodule SuperWorker.Supervisor.Chain do
             exit(reason)
           data ->
             Logger.debug("Chain process(#{inspect(id)}) returned data: #{inspect(data)}")
-            send_next(Sup.get_chain(chain_id), id, data)
+            send_next(Sup.get_chain(get_my_supervisor(), chain_id), id, data)
             loop_chain(mfa, opts)
         end
 
@@ -264,5 +266,17 @@ defmodule SuperWorker.Supervisor.Chain do
   defp validate_opts(opts) do
     # TO-DO: Implement the validation
     {:ok, opts}
+  end
+
+  defp map_to_struct(opts) when is_map(opts) do
+    {:ok, struct(__MODULE__, opts)}
+  end
+
+  defp get_my_chain_id() do
+    Process.get(:chain)
+  end
+
+  defp get_my_supervisor() do
+    Process.get(:supervisor)
   end
 end
