@@ -62,6 +62,10 @@ defmodule SuperWorker.Supervisor.Utils do
     System.schedulers_online()
   end
 
+  def count_msgs(pid) do
+    Process.info(pid, :message_queue_len)
+  end
+
   ## Private functions
 
   defp do_normalize_opts([], _params, valid, invalid) do

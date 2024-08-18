@@ -12,10 +12,10 @@ defmodule SuperWorker.Supervisor.Worker do
     :id, # worker id, unique in supervior.
     :pid, # current pid of worker.
     :ref, # reference created when spawning the worker.
-    :restart_count, # restart counter.
     :start_time, # start time of worker. if worker is restarted, this value is updated.
     restart_strategy: :transient, # restart strategy of worker. Affected by the supervisor restart strategy.
-    type: :standalone # type of worker. :standalone, :group, :chain
+    type: :standalone, # type of worker. :standalone, :group, :chain
+    restart_count: 0, # restart counter.
   ]
 
   import SuperWorker.Supervisor.Utils
@@ -23,7 +23,8 @@ defmodule SuperWorker.Supervisor.Worker do
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @worker_params),
          {:ok, opts} <- validate_restart_strategy(opts),
-         {:ok, opts} <- validate_opts(opts) do
+         {:ok, opts} <- validate_opts(opts),
+         {:ok, opts} <- default_opts(opts) do
       {:ok, opts}
     end
   end
@@ -37,6 +38,14 @@ defmodule SuperWorker.Supervisor.Worker do
   end
   defp validate_opts(opts) do
     # TO-DO: Implement the validation.
+    {:ok, opts}
+  end
+
+  defp default_opts(opts) do
+    opts =
+      opts
+      |> Map.put(:start_time, DateTime.utc_now())
+
     {:ok, opts}
   end
 end

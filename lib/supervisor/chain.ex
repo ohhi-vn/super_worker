@@ -17,11 +17,13 @@ defmodule SuperWorker.Supervisor.Chain do
     workers: %{},
     supervisor: nil,
     finished_callback: nil,
+    queue_length: 50,
   ]
 
   import SuperWorker.Supervisor.Utils
 
   alias SuperWorker.Supervisor, as: Sup
+  alias SuperWorker.Supervisor.MapQueue
 
   require Logger
 
@@ -120,7 +122,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
   def new_data(chain, data) do
     worker = Map.get(chain.workers, chain.first_worker_id)
-    send(worker.pid, {:new_data, data})
+    send(worker.pid, {:new_data, {nil, nil, data}})
   end
 
 
@@ -187,6 +189,8 @@ defmodule SuperWorker.Supervisor.Chain do
       worker
       |> Map.put(:supervisor, chain.supervisor)
       |> Map.put(:chain_id, chain.id)
+      |> Map.put(:first_worker_id, chain.first_worker_id)
+      |> Map.put(:last_worker_id, chain.last_worker_id)
       |> do_spawn_worker()
 
     workers = Map.put(chain.workers, worker_id, worker)
@@ -200,7 +204,7 @@ defmodule SuperWorker.Supervisor.Chain do
       Process.put(:supervisor, worker.supervisor)
       Process.put(:chain, worker.chain_id)
 
-      loop_chain(worker.mfa, worker.opts)
+      loop_chain(%MapQueue{}, worker)
     end)
 
     worker
@@ -209,42 +213,55 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   # Support receive data from the previous process in the chain and pass it to the next process.
-  defp loop_chain(mfa, %{id: id, chain_id: chain_id} = opts) do
+  defp loop_chain(queue, %{id: id, chain_id: chain_id} = opts) do
     receive do
-      {:new_data, data} ->
+      {:processed, msg_id, worker_id} ->
+        Logger.debug("Worker #{worker_id} processed the data, msg_id: #{msg_id}")
+        {:ok, queue} = MapQueue.remove(queue, msg_id)
+        loop_chain(queue, opts)
+      {:new_data, {from, msg_id, data}} ->
         result =
-          case mfa do
+          case opts.mfa do
             {:fun, f} ->
               f.(data)
             {m, f, a} ->
               apply(m, f, [data | a])
           end
+        if opts.first_worker_id != id do
+          send(from, {:processed, msg_id, id})
+        end
         case result do
           {:next, new_data} ->
             Logger.debug("Passing data to the next process(#{inspect(id)}), chain: #{inspect(chain_id)}")
+
+            if MapQueue.is_full?(queue) do
+              Logger.debug("Queue is full, go to loop waiting for consume last data.")
+              loop_send(queue, opts)
+            end
+
+            {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
             chain = Sup.get_chain(get_my_supervisor(), chain_id)
+            send_next(chain, id, {self(), msg_id, new_data})
 
-            send_next(chain, id, new_data)
-
-            loop_chain(mfa, opts)
+            loop_chain(queue, opts)
           {:error, reason} ->
             Logger.error("Error in chain process(#{inspect(id)}), chain: #{inspect(chain_id)}: #{inspect(reason)}")
             # TO-DO: decide to ignore or stop the chain.
           {:drop, reason} ->
             Logger.info("Dropping chain process(#{inspect(id)}), chain: #{inspect(chain_id)}: #{inspect(reason)}")
-            loop_chain(mfa, opts)
+            loop_chain(queue, opts)
           {:stop, reason} ->
             Logger.info("Stopping chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
             exit(reason)
           data ->
             Logger.debug("Chain process(#{inspect(id)}) returned data: #{inspect(data)}")
             send_next(Sup.get_chain(get_my_supervisor(), chain_id), id, data)
-            loop_chain(mfa, opts)
+            loop_chain(queue, opts)
         end
 
-      {:update, {next_worker_id, mfa}} ->
+      {:update, {:next_id, next_worker_id}} ->
         Logger.debug("Updating chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
-        loop_chain(mfa, %{opts | id: next_worker_id})
+        loop_chain(queue, %{opts | id: next_worker_id})
 
       {:kill, reason} ->
         Logger.debug("Killing chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
@@ -252,6 +269,21 @@ defmodule SuperWorker.Supervisor.Chain do
 
       {:stop, ^chain_id} ->
         Logger.debug("Stopping chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
+    end
+  end
+
+  defp loop_send(queue, %{id: id, chain_id: chain_id} = _opts) do
+    receive do
+      {:processed, msg_id, worker_id} ->
+        Logger.debug("Worker #{worker_id} processed the data, msg_id: #{msg_id}")
+        {:ok, MapQueue.remove(queue, msg_id)}
+      {:kill, reason} ->
+        Logger.debug("Killing chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
+        exit(reason)
+
+      {:stop, ^chain_id} ->
+        Logger.debug("Stopping chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
+        :stop
     end
   end
 
