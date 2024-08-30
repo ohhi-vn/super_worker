@@ -61,8 +61,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Start a child process.
-  Can run standalone or in a group/chain.
+  Add a standalone worker process to the supervisor.
   """
   def add_standalone_worker(sup_id, mfa_or_fun, opts, timeout \\ 5_000)
   def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
@@ -73,6 +72,9 @@ defmodule SuperWorker.Supervisor do
     do_start_child(sup_id, :standalone, {:fun, fun}, opts, timeout)
   end
 
+  @doc """
+  Add a group worker to the group in supervisor.
+  """
   def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ 5_000)
   def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
@@ -81,6 +83,10 @@ defmodule SuperWorker.Supervisor do
   def add_group_worker(sup_id, group_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
     do_start_child(sup_id, {:group, group_id}, {:fun, fun}, opts, timeout)
   end
+
+  @doc """
+  Add a chain worker to the chain in supervisor.
+  """
 
   def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ 5_000)
   def add_chain_worker(sup_id, chain_id, {m, f, a} = mfa, opts, timeout)
@@ -130,7 +136,7 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  def send_data_to_chain(sup_id, chain_id, data) do
+  def send_to_chain(sup_id, chain_id, data) do
     case verify_running(sup_id) do
       {:error, reason} ->
         Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
@@ -167,6 +173,62 @@ defmodule SuperWorker.Supervisor do
         {:error, :not_found}
       true ->
         boardcast_to_group(sup_id, group_id, data)
+    end
+  end
+
+  def send_to_group(sup_id, group_id, worker_id, data) do
+    case verify_running(sup_id) do
+      {:error, reason} ->
+        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
+        {:error, reason}
+      {:ok, pid} ->
+        ref = make_ref()
+        send(pid, {:send_to_group, self(), ref, group_id, worker_id, data})
+        api_receiver(ref, 5000)
+    end
+  end
+
+  def send_to_group_random(sup_id, group_id, data) do
+    case verify_running(sup_id) do
+      {:error, reason} ->
+        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
+        {:error, reason}
+      {:ok, pid} ->
+        ref = make_ref()
+        send(pid, {:send_to_group_random, self(), ref, group_id, data})
+        api_receiver(ref, 5000)
+    end
+  end
+
+  def send_to_my_group(worker_id, data) do
+    group_id = get_my_group()
+    sup_id = get_my_supervisor()
+
+    cond do
+      group_id == nil ->
+        Logger.error("Group not found.")
+        {:error, :not_found}
+      sup_id == nil ->
+        Logger.error("Supervisor not found.")
+        {:error, :not_found}
+      true ->
+        send_to_group(sup_id, group_id, worker_id, data)
+    end
+  end
+
+  def send_to_my_group_random(data) do
+    group_id = get_my_group()
+    sup_id = get_my_supervisor()
+
+    cond do
+      group_id == nil ->
+        Logger.error("Group not found.")
+        {:error, :not_found}
+      sup_id == nil ->
+        Logger.error("Supervisor not found.")
+        {:error, :not_found}
+      true ->
+        send_to_group_random(sup_id, group_id, data)
     end
   end
 
@@ -285,6 +347,38 @@ defmodule SuperWorker.Supervisor do
             send(from, {ref, :ok})
         end
         main_loop(state, sup_opts)
+
+      # send directly to worker from api.
+      {:send_to_group, from, ref, group_id, worker_id, data} ->
+        case Map.get(state.groups, group_id) do
+          nil ->
+            Logger.error("Group not found: #{inspect group_id}")
+            send(from, {ref, {:error, :not_found}})
+          group ->
+            case Group.get_worker(group, worker_id) do
+              {:ok, worker} ->
+                send(worker.pid, data)
+                send(from, {ref, :ok})
+              {:error, _} ->
+                Logger.error("Worker not found: #{inspect worker_id}")
+                send(from, {ref, {:error, :not_found}})
+            end
+        end
+        main_loop(state, sup_opts)
+
+      # send data to random worker from api.
+      {:send_to_group_random, from, ref, group_id, data} ->
+        case Map.get(state.groups, group_id) do
+          nil ->
+            Logger.error("Group not found: #{inspect group_id}")
+            send(from, {ref, {:error, :not_found}})
+          group ->
+            {_, worker} = Enum.random(group.workers)
+            send(worker.pid, data)
+            send(from, {ref, :ok})
+        end
+        main_loop(state, sup_opts)
+
 
       {:add_data_to_chain, from, ref, chain_id, data} ->
         case Map.get(state.chains, chain_id) do
