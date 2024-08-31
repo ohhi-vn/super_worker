@@ -28,6 +28,7 @@ defmodule SuperWorker.Supervisor do
 
   alias SuperWorker.Supervisor.{Group, Chain, Worker}
   alias SuperWorker.Supervisor
+  alias SuperWorker.TermStorage, as: KV
 
   import SuperWorker.Supervisor.Utils
 
@@ -44,8 +45,7 @@ defmodule SuperWorker.Supervisor do
 
   @sup_params [:id, :number_of_partitions, :link]
 
-  # TO-DO: Move to option for flexibility.
-  @name __MODULE__
+  @me __MODULE__
 
   ## Public APIs
 
@@ -233,11 +233,11 @@ defmodule SuperWorker.Supervisor do
   end
 
   def get_my_group() do
-    Process.get(:group)
+    Process.get({:supervisor, :group_id})
   end
 
   def get_my_supervisor() do
-    Process.get(:supervisor)
+    Process.get({:supervisor, :sup_id})
   end
 
   def get_chain(sup_id, chain_id) do
@@ -252,7 +252,8 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  ## GenServer callbacks
+
+  ## Private functions
 
   def init(opts) do
 
@@ -267,21 +268,60 @@ defmodule SuperWorker.Supervisor do
 
     Process.register(self(), opts.id)
 
+    KV.put(:number_of_partitions, opts.number_of_partitions)
+
+    list_partitions = init_additional_partitions(opts)
+
     send(state.owner, {{self(), state.owner}, :ok})
 
     Logger.debug("Supervisor initialized: #{inspect state}")
 
-    {:ok, state}
-
     # Start the main loop
-    main_loop(state, opts)
+    state
+    |> Map.put(:partitions , list_partitions)
+    |> Map.put(:role, :master)
+    |> main_loop(opts)
   end
 
+  defp init_partition(opts) do
+    # TO-DO: Implement partition supervisor.
 
-  ## Private functions
+    state = %{
+      groups: %{}, # storage for group processes
+      chains: %{}, # storage for chain processes
+      standalone: %{}, # storage for standalone processes
+      ref_to_id: %{}, # storage for refs to id & type
+      id: opts.id, # supervisor id
+      owner: opts[:owner],
+      role: :partition
+    }
+
+    # Start the main loop
+    pid = spawn_link(@me, :main_loop, [state, opts])
+
+    Logger.debug("Supervisor partition #{inspect opts.id} initialized, pid: #{inspect pid}")
+
+    # Store the pid in the KV store.
+    KV.put({:pid, opts.id}, pid)
+
+    {:ok, opts.id, pid}
+  end
+
+  defp init_additional_partitions(opts) do
+    partitions = opts.number_of_partitions - 1
+
+    Enum.map(1..partitions, fn i ->
+      Logger.debug("Starting additional partition: #{inspect i}")
+      opts
+      |> Map.put(:id, String.to_atom("#{Atom.to_string(opts.id)}_#{i}"))
+      |> Map.put(:role, :partition)
+      |> init_partition()
+    end)
+  end
 
   # Main loop for the supervisor.
-  defp main_loop(state, sup_opts) do
+  # TO-DO: Improve for easy to read & clean code.
+  def main_loop(state, sup_opts) do
     receive do
       {:start_worker, from, ref, mfa_or_fun, opts} = msg ->
         Logger.debug("Starting child process with options: #{inspect(msg)}")
@@ -465,7 +505,7 @@ defmodule SuperWorker.Supervisor do
 
       case type do
         :standalone ->
-          child = Map.get(state, id)
+          child = Map.get(state.standalone, id)
           restart_standalone(state, child, {pid, reason})
         {:group, group_id} ->
           group = Map.get(state.groups, group_id)
@@ -610,7 +650,10 @@ defmodule SuperWorker.Supervisor do
 
     {pid, ref} =
       spawn_monitor(fn ->
-        Process.put(:supervisor, state.id)
+        # Store for user can directly access to the worker.
+        Process.put({:supervisor, :sup_id}, state.id)
+        Process.put({:supervisor, :worker_id}, id)
+
         case mfa do
           {:fun, fun} ->
             fun.()
@@ -698,14 +741,24 @@ defmodule SuperWorker.Supervisor do
   defp do_start_child(sup_id, :standalone, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Worker.check_options(opts),
-      {:ok, pid} <- verify_running(sup_id) do
+      {:ok, _main_pid} <- verify_running(sup_id) do
         opts =
           opts
           |> Map.put(:type, :standalone)
 
         ref = make_ref()
-        send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
-        api_receiver(ref, timeout)
+        with {:ok, num} <- KV.get(:number_of_partitions),
+          target_partition <- get_target_partition(sup_id, opts.id, num),
+          {:ok, target_pid} <- KV.get({:pid, target_partition}) do
+          send(target_pid, {:start_worker, self(), ref, mfa_or_fun, opts})
+          api_receiver(ref, timeout)
+        else
+          error ->
+            Logger.error("Get partition failed: #{inspect error}")
+
+           {:error, error}
+        end
+
     else
       other ->
         Logger.info("Something happened: #{inspect other}")
@@ -757,25 +810,38 @@ defmodule SuperWorker.Supervisor do
       end
   end
 
+  # Validate the type & value of options.
   defp validate_opts(opts) do
-    if Map.has_key?(opts, :id) do
-      if is_atom(opts.id) do
+    with {:ok, opts} <- check_type(opts, :id, &is_atom/1),
+      opts <- default_sup_opts(opts),
+      opts <- generic_default_sup_opts(opts),
+      {:ok, opts} <- check_type(opts, :number_of_partitions, &is_integer/1),
+      {:ok, opts} <- check_type(opts, :number_of_partitions, &(&1 > 0)),
+      {:ok, opts} <- check_type(opts, :owner, &is_pid/1),
+      {:ok, opts} <- check_type(opts, :link, &is_boolean/1) do
         {:ok, opts}
       else
-        {:error, "Invalid id, need to be an atom"}
+        {:error, reason} = error ->
+          Logger.error("Error in validating options: #{inspect reason}")
+          error
       end
+  end
+
+  # Set the default options if not provided.
+  # TO-DO: Merge with generic_default_sup_opts/1.
+  defp default_sup_opts(opts) do
+    if Map.has_key?(opts, :number_of_partitions) do
+      opts
     else
-      {:error, "Missing id"}
+      Map.put(opts, :number_of_partitions, :erlang.system_info(:schedulers_online))
     end
   end
 
+  # Start the supervisor main processes.
   defp start_supervisor(opts) do
     Logger.debug("Starting supervisor with options: #{inspect opts}")
 
-    # Set the default options if not provided
-    opts = default_sup_opts(opts)
-
-    # Start the supervisor
+    # Start main process of the supervisor
     pid = if opts.link do # link the supervisor to the caller
       spawn_link(__MODULE__, :init, [opts])
     else
@@ -783,5 +849,18 @@ defmodule SuperWorker.Supervisor do
     end
 
     api_receiver({pid, self()})
+  end
+
+  defp get_partition_id(sup_id, partition_id) do
+    if partition_id == 0 do
+      sup_id
+    else
+      String.to_atom("#{Atom.to_string(sup_id)}_#{inspect partition_id}")
+    end
+  end
+
+  def get_target_partition(prefix, data, num_partitions) when is_integer(num_partitions) do
+    partition_id = get_hash_order(data, num_partitions)
+    get_partition_id(prefix, partition_id)
   end
 end

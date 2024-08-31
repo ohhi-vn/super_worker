@@ -35,7 +35,7 @@ defmodule SuperWorker.Supervisor.Utils do
     {:error, "Invalid type, #{inspect value}"}
   end
 
-  def default_sup_opts(opts) do
+  def generic_default_sup_opts(opts) do
     if Map.has_key?(opts, :owner) do
       opts
     else
@@ -64,6 +64,21 @@ defmodule SuperWorker.Supervisor.Utils do
 
   def count_msgs(pid) do
     Process.info(pid, :message_queue_len)
+  end
+
+  def check_type(opts, key, fun) do
+    case Map.get(opts, key) do
+      nil ->
+        Logger.warning("Option #{inspect key} is not found")
+        {:error, :invalid_type}
+      value ->
+        if fun.(value) do
+          {:ok, opts}
+        else
+          Logger.warning("Option #{inspect key} is invalid")
+          {:error, :invalid_type}
+        end
+    end
   end
 
   ## Private functions

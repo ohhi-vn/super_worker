@@ -201,8 +201,9 @@ defmodule SuperWorker.Supervisor.Chain do
   defp do_spawn_worker(worker) when is_map(worker) do
     {pid, ref} = spawn_monitor(fn ->
       # Store for user can directly access to the worker.
-      Process.put(:supervisor, worker.supervisor)
-      Process.put(:chain, worker.chain_id)
+      Process.put({:supervisor, :sup_id}, worker.supervisor)
+      Process.put({:supervisor,:chain}, worker.chain_id)
+      Process.put({:supervisor, :worker_id}, worker.id)
 
       loop_chain(%MapQueue{}, worker)
     end)
@@ -305,10 +306,10 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   defp get_my_chain_id() do
-    Process.get(:chain)
+    Process.get({:supervisor, :chain_id})
   end
 
   defp get_my_supervisor() do
-    Process.get(:supervisor)
+    Process.get({:supervisor, :sup_id})
   end
 end

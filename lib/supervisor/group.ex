@@ -79,9 +79,8 @@ defmodule SuperWorker.Supervisor.Group do
   def kill_worker(group, worker_id) do
     case get_worker(group, worker_id) do
       {:ok, worker} ->
-        case Process.whereis(worker.pid) do
-          nil -> {:error, :not_running}
-          pid -> Process.exit(pid, :kill)
+        if Process.alive?(worker.pid) do
+          Process.exit(worker.pid, :kill)
         end
       {:error, _} -> {:error, :not_found}
     end
@@ -89,9 +88,8 @@ defmodule SuperWorker.Supervisor.Group do
 
   def kill_all_workers(group) do
     Enum.each(group.workers, fn {_id, worker} ->
-      case Process.whereis(worker.pid) do
-        nil -> :ok
-        pid -> Process.exit(pid, :kill)
+      if  Process.alive?(worker.pid) do
+        Process.exit(worker.pid, :kill)
       end
     end)
   end
@@ -126,8 +124,9 @@ defmodule SuperWorker.Supervisor.Group do
 
   defp do_spawn_worker(group, worker) do
     {pid, ref} = spawn_monitor(fn ->
-      Process.put(:supervisor, group.supervisor)
-      Process.put(:group, group.id)
+      Process.put({:supervisor, :sup_id}, group.supervisor)
+      Process.put({:supervisor, :group_id}, group.id)
+      Process.put({:supervisor, :worker_id}, worker.id)
 
       case worker.mfa do
         {m, f, a} ->

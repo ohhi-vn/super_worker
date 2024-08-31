@@ -78,3 +78,11 @@ graph LR
     Supervisor-->Worker8
     Supervisor-->Worker9
 ```
+
+## Planned features
+
+- Support GenServer
+- Callback module
+- Multi process per node
+- Auto scale for chain
+- Distributed for workers
