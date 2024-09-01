@@ -19,15 +19,26 @@ defmodule SuperWorker.Supervisor do
   All type of processes can be started in parallel & can be stopped individually or in a group.
 
   ## Examples
+    # Start a supervisor with 2 partitions & 2 groups:
+    alias SuperWorker.Supervisor, as: Sup
+    opts = [id: :sup1, number_of_partitions: 2, link: false]
+    Sup.start(opts)
 
-      iex> SuperWorker.Supervisor.start_link()
-      {:ok, pid}
+    Sup.add_group(:sup1, [id: :group1, restart_strategy: :one_for_all])
+    Sup.add_group_worker(:sup1, :group1, {Dev, :task, [15]}, [id: :g1_1])
+
+    Sup.add_group(:sup1, [id: :group2, restart_strategy: :one_for_all])
+    Sup.add_group_worker(:sup1, :group2, fn ->
+      receice do
+      msg ->
+        :ok
+      end
+    end, [id: :g2_2])
   """
 
   require Logger
 
   alias SuperWorker.Supervisor.{Group, Chain, Worker}
-  alias SuperWorker.Supervisor
   alias SuperWorker.TermStorage, as: KV
 
   import SuperWorker.Supervisor.Utils
@@ -47,6 +58,9 @@ defmodule SuperWorker.Supervisor do
 
   @me __MODULE__
 
+  # Default timeout (miliseconds) for API calls.
+  @default_time 5_000
+
   ## Public APIs
 
   @doc """
@@ -57,13 +71,42 @@ defmodule SuperWorker.Supervisor do
       {:error, :not_running} <- verify_running(opts.id) do
         start_supervisor(opts)
       end
+  end
 
+  @doc """
+  Stop supervisor.
+  Type of shutdown:
+  - :normal supervisor will send a message to worker for graceful shutdown. Not support for spawn process by function.
+  - :kill supervisor will kill worker.
+  """
+  def stop(sup_id, shutdown_type \\ :kill, timeout \\ @default_time) do
+    case verify_running(sup_id) do
+      {:error, _} = err ->
+        Logger.error("Supervisor is not running.")
+        err
+      {:ok, pid} ->
+        Logger.debug("Stopping supervisor: #{inspect pid}, shutdown type: #{inspect shutdown_type}")
+        ref = make_ref()
+        send(pid, {:stop, self(), shutdown_type, ref})
+        case api_receiver(ref, timeout) do
+          {:ok, _} ->
+            Logger.debug("Supervisor stopped.")
+            {:ok, :stopped}
+          {:error, :timeout} ->
+            Logger.error("Supervisor stopped with timeout.")
+            Process.exit(pid, :kill)
+            {:ok, :killed}
+          {:error, reason} ->
+            Logger.error("Supervisor stopped with error: #{inspect reason}")
+            {:error, reason}
+        end
+    end
   end
 
   @doc """
   Add a standalone worker process to the supervisor.
   """
-  def add_standalone_worker(sup_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_standalone_worker(sup_id, mfa_or_fun, opts, timeout \\ @default_time)
   def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
     do_start_child(sup_id, :standalone, mfa, opts, timeout)
@@ -75,7 +118,7 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Add a group worker to the group in supervisor.
   """
-  def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ @default_time)
   def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
     do_start_child(sup_id, {:group, group_id}, mfa, opts, timeout)
@@ -87,8 +130,7 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Add a chain worker to the chain in supervisor.
   """
-
-  def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ 5_000)
+  def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ @default_time)
   def add_chain_worker(sup_id, chain_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
     do_start_child(sup_id, {:chain, chain_id}, mfa, opts, timeout)
@@ -100,7 +142,7 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Add a group of processes to the supervisor.
   """
-  def add_group(sup_id, opts, timeout \\ 5_000) do
+  def add_group(sup_id, opts, timeout \\ @default_time) do
     with {:ok, group} <- Group.check_options(opts),
       {:ok, pid} <- verify_running(sup_id) do
         ref = make_ref()
@@ -112,15 +154,12 @@ defmodule SuperWorker.Supervisor do
   @doc """
   get group info
   """
-  def get_group_info(sup_id, group_id) do
-    case verify_running(sup_id) do
-      {:error, reason} ->
-        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
-        {:error, reason}
-      {:ok, pid} ->
+  def get_group_info(sup_id, group_id, timeout \\ @default_time) do
+    with verify_running(sup_id),
+     {:ok, pid} <- get_host_partition(sup_id, group_id) do
         ref = make_ref()
         send(pid, {:get_group_info, self(), ref, group_id})
-        api_receiver(ref, 5000)
+        api_receiver(ref, timeout)
     end
   end
 
@@ -129,34 +168,38 @@ defmodule SuperWorker.Supervisor do
   """
   def add_chain(sup_id, opts, timeout \\ 5_000) do
     with {:ok, chain} <- Chain.check_options(opts),
-      {:ok, pid} <- verify_running(sup_id) do
+      {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, opts.id) do
         ref = make_ref()
         send(pid, {:add_chain, self(), ref, chain})
         api_receiver(ref, timeout)
     end
   end
 
-  def send_to_chain(sup_id, chain_id, data) do
-    case verify_running(sup_id) do
-      {:error, reason} ->
-        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
-        {:error, reason}
-      {:ok, pid} ->
+  def send_to_chain(sup_id, chain_id, data, timeout \\ @default_time) do
+    with {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, chain_id) do
         ref = make_ref()
         send(pid, {:add_data_to_chain, self(), ref, chain_id, data})
-        api_receiver(ref, 5000)
+        api_receiver(ref, timeout)
     end
   end
 
-  def boardcast_to_group(sup_id, group_id, data) do
-    case verify_running(sup_id) do
-      {:error, reason} ->
-        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
-        {:error, reason}
-      {:ok, pid} ->
+  def send_to_worker(sup_id, worker_id, data, timeout \\ @default_time) do
+    with {:ok, _} <- verify_running(sup_id),
+     {:ok, pid} <- get_host_partition(sup_id, worker_id) do
+        ref = make_ref()
+        send(pid, {:send_to_worker, self(), ref, worker_id, data})
+        api_receiver(ref, timeout)
+    end
+  end
+
+  def boardcast_to_group(sup_id, group_id, data, timeout \\ @default_time) do
+    with {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, group_id) do
         ref = make_ref()
         send(pid, {:broadcast_to_group, self(), ref, group_id, data})
-        api_receiver(ref, 5000)
+        api_receiver(ref, timeout)
     end
   end
 
@@ -176,27 +219,21 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  def send_to_group(sup_id, group_id, worker_id, data) do
-    case verify_running(sup_id) do
-      {:error, reason} ->
-        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
-        {:error, reason}
-      {:ok, pid} ->
+  def send_to_group(sup_id, group_id, worker_id, data, timeout \\ @default_time) do
+    with {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, group_id) do
         ref = make_ref()
         send(pid, {:send_to_group, self(), ref, group_id, worker_id, data})
-        api_receiver(ref, 5000)
+        api_receiver(ref, timeout)
     end
   end
 
-  def send_to_group_random(sup_id, group_id, data) do
-    case verify_running(sup_id) do
-      {:error, reason} ->
-        Logger.error("Check status of supervisor failed, reason: #{inspect reason}.")
-        {:error, reason}
-      {:ok, pid} ->
+  def send_to_group_random(sup_id, group_id, data, timeout \\ @default_time) do
+    with {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, group_id) do
         ref = make_ref()
         send(pid, {:send_to_group_random, self(), ref, group_id, data})
-        api_receiver(ref, 5000)
+        api_receiver(ref, timeout)
     end
   end
 
@@ -240,18 +277,14 @@ defmodule SuperWorker.Supervisor do
     Process.get({:supervisor, :sup_id})
   end
 
-  def get_chain(sup_id, chain_id) do
-    case verify_running(sup_id) do
-      {:error, _} = err ->
-        Logger.error("Supervisor is not running.")
-        err
-      {:ok, pid} ->
+  def get_chain(sup_id, chain_id, timeout \\ @default_time) do
+    with {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, chain_id) do
         ref = make_ref()
         send(pid, {:get_chain, self(), ref, chain_id})
-        api_receiver(ref, 5000)
+        api_receiver(ref, timeout)
     end
   end
-
 
   ## Private functions
 
@@ -263,12 +296,12 @@ defmodule SuperWorker.Supervisor do
       standalone: %{}, # storage for standalone processes
       ref_to_id: %{}, # storage for refs to id & type
       id: opts.id, # supervisor id
-      owner: opts[:owner]
+      owner: opts.owner
     }
 
     Process.register(self(), opts.id)
 
-    KV.put(:number_of_partitions, opts.number_of_partitions)
+    KV.put({opts.id, :number_of_partitions}, opts.number_of_partitions)
 
     list_partitions = init_additional_partitions(opts)
 
@@ -302,17 +335,18 @@ defmodule SuperWorker.Supervisor do
     Logger.debug("Supervisor partition #{inspect opts.id} initialized, pid: #{inspect pid}")
 
     # Store the pid in the KV store.
-    KV.put({:pid, opts.id}, pid)
+    KV.put({opts.master, :pid, opts.id}, pid)
 
     {:ok, opts.id, pid}
   end
 
   defp init_additional_partitions(opts) do
-    partitions = opts.number_of_partitions - 1
+    partitions = opts.number_of_partitions
 
     Enum.map(1..partitions, fn i ->
       Logger.debug("Starting additional partition: #{inspect i}")
       opts
+      |> Map.put(:master, opts.id)
       |> Map.put(:id, String.to_atom("#{Atom.to_string(opts.id)}_#{i}"))
       |> Map.put(:role, :partition)
       |> init_partition()
@@ -432,6 +466,17 @@ defmodule SuperWorker.Supervisor do
             main_loop(state, sup_opts)
         end
 
+      {:send_to_worker, from, ref, worker_id, data} ->
+        case Map.get(state.standalone, worker_id) do
+          nil ->
+            Logger.error("Worker not found: #{inspect worker_id}")
+            send(from, {ref, {:error, :not_found}})
+          worker ->
+            send(worker.pid, data)
+            send(from, {ref, :ok})
+        end
+        main_loop(state, sup_opts)
+
       {:DOWN, ref, :process, pid, reason} ->
         Logger.debug("receiced signal worker died: #{inspect(pid)}, reason: #{inspect(reason)}")
 
@@ -487,10 +532,59 @@ defmodule SuperWorker.Supervisor do
           |> main_loop(sup_opts)
       end
 
+    # Stop supervisor from api.
+    {:stop, from, type, ref} ->
+        Logger.info("Stopping supervisor, request from #{inspect from}")
+
+        # Send shutdown signal to all partitions.
+        Enum.each(1..sup_opts.number_of_partitions, fn i ->
+          partition_id = get_partition_id(state.id, i)
+          case KV.get({state.id, :pid, partition_id}) do
+            {:ok, pid} ->
+              Logger.debug("Sending shutdown signal to partition: #{inspect partition_id}")
+              send(pid, {:stop_partition, type})
+            _ ->
+              Logger.error("Supervisor not found: #{inspect partition_id}")
+          end
+        end)
+
+        # stop worker on master.
+        shutdown(state, type)
+
+        # TO-DO: Clean KV store for supervisor.
+
+        send(from, {ref, {:ok, :stopped}})
+
+        exit(:normal)
+
+    {:stop_partition, type} ->
+        Logger.info("Stopping supervisor partition, for #{inspect self()}")
+        # Stop the supervisor.
+        shutdown(state, type)
       unknown ->
         Logger.warning("#{inspect state.id}, unknown message: #{inspect(unknown)}")
         main_loop(state, sup_opts)
     end
+
+    Logger.debug("#{inspect state.id}, #{inspect state.role}, #{inspect self()} Supervisor main loop exited.")
+  end
+
+  defp shutdown(state, :kill) do
+    Logger.debug("Shutting down supervisor: #{inspect state.id}")
+
+
+    # TO-DO: Implement graceful shutdown for worker processes.
+    Enum.each(state.groups, fn {_, group} ->
+      Group.kill_all_workers(group)
+    end)
+    Enum.each(state.chains, fn {_, chain} ->
+      Chain.kill_all_workers(chain)
+    end)
+    Enum.each(state.standalone, fn {_, worker} ->
+      Process.exit(worker.pid, :kill)
+    end)
+
+    {:ok, :brutal_kill}
   end
 
   defp process_child_down(state, pid, ref, reason) do
@@ -741,39 +835,30 @@ defmodule SuperWorker.Supervisor do
   defp do_start_child(sup_id, :standalone, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Worker.check_options(opts),
-      {:ok, _main_pid} <- verify_running(sup_id) do
+      {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, opts.id) do
         opts =
           opts
           |> Map.put(:type, :standalone)
 
         ref = make_ref()
-        with {:ok, num} <- KV.get(:number_of_partitions),
-          target_partition <- get_target_partition(sup_id, opts.id, num),
-          {:ok, target_pid} <- KV.get({:pid, target_partition}) do
-          send(target_pid, {:start_worker, self(), ref, mfa_or_fun, opts})
-          api_receiver(ref, timeout)
-        else
-          error ->
-            Logger.error("Get partition failed: #{inspect error}")
-
-           {:error, error}
-        end
-
+        send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
+        api_receiver(ref, timeout)
     else
       other ->
-        Logger.info("Something happened: #{inspect other}")
+        Logger.error("Something happened: #{inspect other}")
         other
     end
   end
   defp do_start_child(sup_id, {:group, group_id}, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Group.check_worker_opts([{:group_id, group_id} | opts]),
-      {:ok, pid} <- verify_running(sup_id) do
+      {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, group_id) do
         opts =
           opts
           |> Map.put(:group_id, group_id)
           |> Map.put(:type, :group)
-
         ref = make_ref()
         send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
         api_receiver(ref, timeout)
@@ -782,7 +867,8 @@ defmodule SuperWorker.Supervisor do
   defp do_start_child(sup_id, {:chain, chain_id}, mfa_or_fun, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
     with {:ok, opts} <- Chain.check_worker_options([{:chain_id, chain_id} | opts] ),
-      {:ok, pid} <- verify_running(sup_id) do
+      {:ok, _} <- verify_running(sup_id),
+      {:ok, pid} <- get_host_partition(sup_id, chain_id) do
         opts =
           opts
           |> Map.put(:chain_id, chain_id)
@@ -851,7 +937,7 @@ defmodule SuperWorker.Supervisor do
     api_receiver({pid, self()})
   end
 
-  defp get_partition_id(sup_id, partition_id) do
+  def get_partition_id(sup_id, partition_id) do
     if partition_id == 0 do
       sup_id
     else
@@ -859,8 +945,31 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  def get_target_partition(prefix, data, num_partitions) when is_integer(num_partitions) do
+  defp get_target_partition(prefix, data, num_partitions) when is_integer(num_partitions) do
     partition_id = get_hash_order(data, num_partitions)
     get_partition_id(prefix, partition_id)
   end
+
+  defp get_partition_pid(sup_id, partition_id) do
+    case KV.get({sup_id, :pid, partition_id}) do
+      {:ok, pid} ->
+        {:ok, pid}
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  def get_host_partition(sup_id, data) do
+    with {:ok, num} <- KV.get({sup_id, :number_of_partitions}),
+      order <- get_hash_order(data, num),
+      partition_id <- get_partition_id(sup_id, order),
+      {:ok, pid} <- get_partition_pid(sup_id, partition_id) do
+        {:ok, pid}
+    else
+      error ->
+        Logger.error("Get partition pid failed: #{inspect error}, data: #{inspect data}, sup_id: #{inspect sup_id}")
+        error
+    end
+  end
+
 end

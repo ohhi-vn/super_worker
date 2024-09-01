@@ -18,13 +18,13 @@ defmodule Dev do
     IO.inspect result
 
     # Group & workers for group.
-    add_group_data()
+    #add_group_data()
 
     # Standalone
     add_standalone_data()
 
     # Chain & its workers.
-    add_chain_data()
+    #add_chain_data()
   end
 
   def add_group_data do
@@ -53,6 +53,11 @@ defmodule Dev do
   def add_standalone_data do
     {:ok, _} = Sup.add_standalone_worker(:sup1, {__MODULE__, :task, [15]}, [id: :w1, restart_strategy: :permanent])
     {:ok, _} = Sup.add_standalone_worker(:sup1, {__MODULE__, :task_crash, [15, 5]}, [id: :w2, restart_strategy: :transient])
+    {:ok, _} = Sup.add_standalone_worker(:sup1, fn ->
+      receive do
+        msg -> IO.puts "Standalone worker received: #{inspect msg}"
+      end
+    end, [id: :w3, restart_strategy: :temporary])
   end
 
   # function to add a worker to the supervisor.

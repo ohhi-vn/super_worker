@@ -3,6 +3,8 @@
 The library support for auto scale & distritubed for Elixir application.
 Help dev can easily work with concurrency.
 
+*Note: Library is still developing, please don't use for product.*
+
 ## Guide
 
 Just declare function for worker (task) and input (in param or stream) and run.
