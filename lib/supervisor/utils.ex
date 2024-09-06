@@ -81,6 +81,10 @@ defmodule SuperWorker.Supervisor.Utils do
     end
   end
 
+  def get_table_name(id) when is_atom(id) do
+    String.to_atom("#{Atom.to_string(id)}_table")
+  end
+
   ## Private functions
 
   defp do_normalize_opts([], _params, valid, invalid) do

@@ -7,15 +7,16 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
 
-  @child_params [:id, :chain_id, :restart_strategy]
+  alias :ets, as: Ets
 
   defstruct [
     :id, # chain id, unique in supervior.
     :first_worker_id, # first worker id in the chain. where the data is sent.
     :last_worker_id, # last worker id in the chain. where the data is received.
     restart_strategy: :one_for_one,
-    workers: %{},
+    workers: MapSet.new(),
     supervisor: nil,
+    partition: nil,
     finished_callback: nil,
     queue_length: 50,
   ]
@@ -38,19 +39,15 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  def check_worker_options(opts) do
-    with {:ok, opts} <- normalize_opts(opts, @child_params),
-    {:ok, opts} <- validate_opts(opts) do
-     {:ok, opts}
+  def get_worker(chain, worker_id) do
+    case Ets.lookup(get_table_name(chain.supervisor), {:worker, {:chain, chain.id}, worker_id}) do
+      [{_, worker}] -> {:ok, worker}
+      [] -> {:error, :not_found}
     end
   end
 
-  def get_worker(chain, worker_id) do
-    get_item(chain.workers, worker_id)
-  end
-
   def worker_exists?(chain, worker_id) do
-    Map.has_key?(chain.workers, worker_id)
+    MapSet.member?(chain.workers, worker_id)
   end
 
   def add_worker(chain, worker) when is_map(worker) do
@@ -58,7 +55,9 @@ defmodule SuperWorker.Supervisor.Chain do
       {:error, :already_exists}
     else
       worker = Map.put(worker, :next_worker_id, nil)
-      workers = Map.put(chain.workers, worker.id, worker)
+      workers = MapSet.put(chain.workers, worker.id)
+
+      Ets.insert(get_table_name(chain.supervisor), {{:worker, {:chain, chain.id}, worker.id}, worker})
 
       chain
       |> Map.put(:workers, workers)
@@ -80,11 +79,13 @@ defmodule SuperWorker.Supervisor.Chain do
   @spec restart_all_workers(any()) :: {:error, list()} | {:ok, any()}
   def restart_all_workers(chain) do
     workers =
-      Enum.map(chain.workers, fn {id, worker} ->
-        Logger.info("Restarting worker #{worker.id}, pid: #{worker.pid}")
-        Process.exit(worker.pid, :kill)
-        new_worker = do_spawn_worker(worker)
-        {id, new_worker}
+      Enum.map(chain.workers, fn worker_id ->
+        with {:ok, worker} <- get_worker(chain, worker_id) do
+          Logger.info("Restarting worker #{worker.id}, pid: #{worker.pid}")
+          Process.exit(worker.pid, :kill)
+          worker = do_spawn_worker(worker)
+          worker.id
+        end
       end)
 
     {:ok, %{chain | workers: workers}}
@@ -93,7 +94,7 @@ defmodule SuperWorker.Supervisor.Chain do
   def remove_worker(chain, worker_id) do
     case get_worker(chain, worker_id) do
       {:ok, _} ->
-        workers = Map.delete(chain.workers, worker_id)
+        workers = MapSet.delete(chain.workers, worker_id)
         {:ok, %{chain | workers: workers}}
       {:error, _} ->
         {:error, "Worker not found"}
@@ -104,7 +105,7 @@ defmodule SuperWorker.Supervisor.Chain do
     case get_worker(chain, worker_id) do
       {:ok, worker} ->
         Process.exit(worker.pid, :kill)
-        workers = Map.delete(chain.workers, worker_id)
+        workers = MapSet.delete(chain.workers, worker_id)
         {:ok, %{chain | workers: workers}}
       {:error, _} ->
         {:error, "Worker not found"}
@@ -114,18 +115,24 @@ defmodule SuperWorker.Supervisor.Chain do
   # TO-DO: refactor this function, remove ref & pid from worker
   def kill_all_workers(chain) do
     workers = chain.workers
-    Enum.each(workers, fn {_, worker} ->
+
+    Enum.each(workers, fn worker_id ->
+      worker = get_worker(chain, worker_id)
       Process.exit(worker.pid, :kill)
     end)
+
     {:ok, %{chain | workers: %{}}}
   end
 
   def new_data(chain, data) do
-    worker = Map.get(chain.workers, chain.first_worker_id)
-    send(worker.pid, {:new_data, {nil, nil, data}})
+    Registry.dispatch(chain.supervisor, {:worker, chain.first_worker_id},
+    fn entries ->
+      Enum.each(entries, fn {pid, _} ->
+        send(pid, {:new_data, {nil, nil, data}})
+      end)
+    end)
+
   end
-
-
 
   ## Private functions
 
@@ -148,16 +155,10 @@ defmodule SuperWorker.Supervisor.Chain do
 
 
   defp get_next_worker(chain, worker_id) do
-    worker = Map.get(chain.workers, worker_id)
-    next_worker_id = worker.next_worker_id
-    if next_worker_id do
-      case Map.get(chain.workers, next_worker_id) do
-        nil -> {:error, :not_found}
-        worker -> {:ok, worker}
+    with {:ok, worker} <- get_worker(chain, worker_id),
+      {:ok, next_worker} <- get_worker(chain, worker.next_worker_id) do
+       {:ok, next_worker}
       end
-    else
-      {:error, :not_found}
-    end
   end
 
   defp update_chain_first(chain, worker) do
@@ -170,13 +171,17 @@ defmodule SuperWorker.Supervisor.Chain do
 
   defp update_chain_last(chain, worker) do
     if chain.last_worker_id do
-      last_worker =
-        Map.get(chain.workers, chain.last_worker_id)
-        |> Map.put(:next_worker_id, worker.id)
 
-      workers = Map.put(chain.workers, chain.last_worker_id, last_worker)
+      last_worker =
+        case get_worker(chain, chain.last_worker_id) do
+          {:ok, worker} ->
+            worker |> Map.put(:next_worker_id, worker.id)
+          {:error, _} -> nil
+        end
+
+      Ets.insert(get_table_name(chain.supervisor), {{:worker, {:chain, chain.id}, last_worker.id}, last_worker})
+
       chain
-      |> Map.put(:workers, workers)
       |> Map.put(:last_worker_id, worker.id)
     else
       Map.put(chain, :last_worker_id, worker.id)
@@ -193,7 +198,8 @@ defmodule SuperWorker.Supervisor.Chain do
       |> Map.put(:last_worker_id, chain.last_worker_id)
       |> do_spawn_worker()
 
-    workers = Map.put(chain.workers, worker_id, worker)
+    Ets.insert(get_table_name(chain.supervisor), {{:worker, {:chain, chain.id}, worker_id}, worker})
+    workers = MapSet.put(chain.workers, worker_id)
 
     {:ok, %{chain | workers: workers}}
   end
@@ -205,6 +211,12 @@ defmodule SuperWorker.Supervisor.Chain do
       Process.put({:supervisor,:chain}, worker.chain_id)
       Process.put({:supervisor, :worker_id}, worker.id)
 
+      Registry.register(worker.supervisor, {:worker, worker.id}, [])
+      Registry.register(worker.supervisor, {:chain, worker.chain_id}, :worker)
+      Registry.update_value(worker.supervisor, {:chain, worker.chain_id}, fn workers ->
+        [worker.id | workers]
+      end)
+
       loop_chain(%MapQueue{}, worker)
     end)
 
@@ -214,21 +226,21 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   # Support receive data from the previous process in the chain and pass it to the next process.
-  defp loop_chain(queue, %{id: id, chain_id: chain_id} = opts) do
+  defp loop_chain(queue, %{id: id, chain_id: chain_id} = worker) do
     receive do
       {:processed, msg_id, worker_id} ->
         Logger.debug("Worker #{worker_id} processed the data, msg_id: #{msg_id}")
         {:ok, queue} = MapQueue.remove(queue, msg_id)
-        loop_chain(queue, opts)
+        loop_chain(queue, worker)
       {:new_data, {from, msg_id, data}} ->
         result =
-          case opts.mfa do
+          case worker.opts.fun do
             {:fun, f} ->
               f.(data)
             {m, f, a} ->
               apply(m, f, [data | a])
           end
-        if opts.first_worker_id != id do
+        if worker.first_worker_id != id do
           send(from, {:processed, msg_id, id})
         end
         case result do
@@ -237,32 +249,33 @@ defmodule SuperWorker.Supervisor.Chain do
 
             if MapQueue.is_full?(queue) do
               Logger.debug("Queue is full, go to loop waiting for consume last data.")
-              loop_send(queue, opts)
+              loop_send(queue, worker)
             end
 
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
             chain = Sup.get_chain(get_my_supervisor(), chain_id)
+
             send_next(chain, id, {self(), msg_id, new_data})
 
-            loop_chain(queue, opts)
+            loop_chain(queue, worker)
           {:error, reason} ->
             Logger.error("Error in chain process(#{inspect(id)}), chain: #{inspect(chain_id)}: #{inspect(reason)}")
             # TO-DO: decide to ignore or stop the chain.
           {:drop, reason} ->
             Logger.info("Dropping chain process(#{inspect(id)}), chain: #{inspect(chain_id)}: #{inspect(reason)}")
-            loop_chain(queue, opts)
+            loop_chain(queue, worker)
           {:stop, reason} ->
             Logger.info("Stopping chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
             exit(reason)
           data ->
             Logger.debug("Chain process(#{inspect(id)}) returned data: #{inspect(data)}")
             send_next(Sup.get_chain(get_my_supervisor(), chain_id), id, data)
-            loop_chain(queue, opts)
+            loop_chain(queue, worker)
         end
 
       {:update, {:next_id, next_worker_id}} ->
         Logger.debug("Updating chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
-        loop_chain(queue, %{opts | id: next_worker_id})
+        loop_chain(queue, %{worker | id: next_worker_id})
 
       {:kill, reason} ->
         Logger.debug("Killing chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
@@ -273,7 +286,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  defp loop_send(queue, %{id: id, chain_id: chain_id} = _opts) do
+  defp loop_send(queue, %{id: id, chain_id: chain_id} = _worker) do
     receive do
       {:processed, msg_id, worker_id} ->
         Logger.debug("Worker #{worker_id} processed the data, msg_id: #{msg_id}")

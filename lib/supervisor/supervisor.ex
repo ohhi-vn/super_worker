@@ -39,15 +39,11 @@ defmodule SuperWorker.Supervisor do
   require Logger
 
   alias SuperWorker.Supervisor.{Group, Chain, Worker}
-  alias SuperWorker.TermStorage, as: KV
+  alias :ets, as: Ets
 
   import SuperWorker.Supervisor.Utils
 
   defstruct [
-    :groups, # storage for group processes
-    :chains, # storage for chain processes
-    :standalone, # storage for standalone processes
-    :ref_to_id, # storage for refs to id & type
     :id, # supervisor id
     :owner, # owner of the supervisor
     :number_of_partitions, # number of partitions, default is number of online schedulers
@@ -107,12 +103,13 @@ defmodule SuperWorker.Supervisor do
   Add a standalone worker process to the supervisor.
   """
   def add_standalone_worker(sup_id, mfa_or_fun, opts, timeout \\ @default_time)
+
   def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_start_child(sup_id, :standalone, mfa, opts, timeout)
+    do_start_child(sup_id, :standalone, [{:fun, mfa} | opts], timeout)
   end
   def add_standalone_worker(sup_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
-    do_start_child(sup_id, :standalone, {:fun, fun}, opts, timeout)
+    do_start_child(sup_id, :standalone, [{:fun, {:fun, fun}} | opts], timeout)
   end
 
   @doc """
@@ -121,10 +118,10 @@ defmodule SuperWorker.Supervisor do
   def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ @default_time)
   def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_start_child(sup_id, {:group, group_id}, mfa, opts, timeout)
+    do_start_child(sup_id, {:group_id, group_id}, [{:fun, mfa} | opts], timeout)
   end
   def add_group_worker(sup_id, group_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
-    do_start_child(sup_id, {:group, group_id}, {:fun, fun}, opts, timeout)
+    do_start_child(sup_id, {:group_id, group_id}, [{:fun, {:fun, fun}} | opts], timeout)
   end
 
   @doc """
@@ -133,10 +130,10 @@ defmodule SuperWorker.Supervisor do
   def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ @default_time)
   def add_chain_worker(sup_id, chain_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_start_child(sup_id, {:chain, chain_id}, mfa, opts, timeout)
+    do_start_child(sup_id, {:chain_id, chain_id}, [ {:fun, mfa} | opts], timeout)
   end
   def add_chain_worker(sup_id, chain_id, fun, opts, timeout) when is_list(opts) and is_function(fun, 0) do
-    do_start_child(sup_id, {:chain, chain_id}, {:fun, fun}, opts, timeout)
+    do_start_child(sup_id, {:chain_id, chain_id}, [{:fun, {:fun, fun}} | opts], timeout)
   end
 
   @doc """
@@ -144,10 +141,19 @@ defmodule SuperWorker.Supervisor do
   """
   def add_group(sup_id, opts, timeout \\ @default_time) do
     with {:ok, group} <- Group.check_options(opts),
-      {:ok, pid} <- verify_running(sup_id) do
-        ref = make_ref()
-        send(pid, {:add_group, self(), ref, group})
-        api_receiver(ref, timeout)
+      {:ok, _} <- verify_running(sup_id) do
+      case Registry.lookup(sup_id, {:group, group.id}) do
+        [] ->
+          [{_, num}] = Ets.lookup(get_table_name(sup_id), :number_of_partitions)
+          part_id = get_target_partition(sup_id, group.id, num)
+          [{pid, _}] = Registry.lookup(sup_id, {:partition, part_id})
+
+          ref = make_ref()
+          send(pid, {:add_group, self(), ref, group})
+          api_receiver(ref, timeout)
+        _ ->
+          {:error, :already_exists}
+      end
     end
   end
 
@@ -168,17 +174,27 @@ defmodule SuperWorker.Supervisor do
   """
   def add_chain(sup_id, opts, timeout \\ 5_000) do
     with {:ok, chain} <- Chain.check_options(opts),
-      {:ok, _} <- verify_running(sup_id),
-      {:ok, pid} <- get_host_partition(sup_id, opts.id) do
-        ref = make_ref()
-        send(pid, {:add_chain, self(), ref, chain})
-        api_receiver(ref, timeout)
+      {:ok, _} <- verify_running(sup_id) do
+        case Registry.lookup(sup_id, {:chain, chain.id}) do
+          [] ->
+            [{_, num}] = Ets.lookup(get_table_name(sup_id), :number_of_partitions)
+            part_id = get_target_partition(sup_id, chain.id, num)
+            [{pid, _}] = Registry.lookup(sup_id, {:partition, part_id})
+
+            ref = make_ref()
+            send(pid, {:add_chain, self(), ref, chain})
+            api_receiver(ref, timeout)
+          _ ->
+            {:error, :already_exists}
+        end
     end
   end
 
   def send_to_chain(sup_id, chain_id, data, timeout \\ @default_time) do
     with {:ok, _} <- verify_running(sup_id),
-      {:ok, pid} <- get_host_partition(sup_id, chain_id) do
+      [{_, num}] <- Ets.lookup(get_table_name(sup_id), :number_of_partitions),
+      part_id = get_target_partition(sup_id, chain_id, num),
+      [{pid, _}] = Registry.lookup(sup_id, {:partition, part_id}) do
         ref = make_ref()
         send(pid, {:add_data_to_chain, self(), ref, chain_id, data})
         api_receiver(ref, timeout)
@@ -187,7 +203,7 @@ defmodule SuperWorker.Supervisor do
 
   def send_to_worker(sup_id, worker_id, data, timeout \\ @default_time) do
     with {:ok, _} <- verify_running(sup_id),
-     {:ok, pid} <- get_host_partition(sup_id, worker_id) do
+     [{pid, _}] <- Registry.lookup(sup_id, {:worker, worker_id}) do
         ref = make_ref()
         send(pid, {:send_to_worker, self(), ref, worker_id, data})
         api_receiver(ref, timeout)
@@ -198,6 +214,7 @@ defmodule SuperWorker.Supervisor do
     with {:ok, _} <- verify_running(sup_id),
       {:ok, pid} <- get_host_partition(sup_id, group_id) do
         ref = make_ref()
+        # TO-DO dispatch to all worker in group.
         send(pid, {:broadcast_to_group, self(), ref, group_id, data})
         api_receiver(ref, timeout)
     end
@@ -289,19 +306,30 @@ defmodule SuperWorker.Supervisor do
   ## Private functions
 
   def init(opts) do
+    table = get_table_name(opts.id)
 
     state = %{
-      groups: %{}, # storage for group processes
-      chains: %{}, # storage for chain processes
-      standalone: %{}, # storage for standalone processes
-      ref_to_id: %{}, # storage for refs to id & type
+      groups: MapSet.new(), # storage for group processes
+      chains: MapSet.new(), # storage for chain processes
+      standalone: MapSet.new(), # storage for standalone processes
       id: opts.id, # supervisor id
-      owner: opts.owner
+      owner: opts.owner,
+      table: table
     }
 
-    Process.register(self(), opts.id)
+    # Register the supervisor process.
+    Process.register(self(), get_master_id(opts.id))
 
-    KV.put({opts.id, :number_of_partitions}, opts.number_of_partitions)
+    # Create Registry for map worker/group/chain id to pid.
+    {:ok, _} = Registry.start_link(keys: :unique, name: opts.id, partitions: opts.number_of_partitions)
+
+    Registry.register(opts.id, :master, 0)
+
+    # Store group, chain, worker in Ets
+    create_table(table)
+    Ets.insert(table, {:number_of_partitions, opts.number_of_partitions})
+    Ets.insert(table, {:owner, opts.owner})
+    Ets.insert(table, {:master, opts.id})
 
     list_partitions = init_additional_partitions(opts)
 
@@ -313,6 +341,7 @@ defmodule SuperWorker.Supervisor do
     state
     |> Map.put(:partitions , list_partitions)
     |> Map.put(:role, :master)
+    |> Map.put(:master, opts.id)
     |> main_loop(opts)
   end
 
@@ -326,16 +355,21 @@ defmodule SuperWorker.Supervisor do
       ref_to_id: %{}, # storage for refs to id & type
       id: opts.id, # supervisor id
       owner: opts[:owner],
-      role: :partition
+      role: :partition,
+      master: opts.master,
+      number_of_partitions: opts.number_of_partitions,
+      table: get_table_name(opts.master)
     }
 
     # Start the main loop
     pid = spawn_link(@me, :main_loop, [state, opts])
+    Process.register(pid, state.id)
 
-    Logger.debug("Supervisor partition #{inspect opts.id} initialized, pid: #{inspect pid}")
+    Logger.debug("Supervisor partition #{inspect state.id} initialized, pid: #{inspect pid}")
 
-    # Store the pid in the KV store.
-    KV.put({opts.master, :pid, opts.id}, pid)
+    Registry.register(state.master, {:partition , state.id}, [])
+
+    Ets.insert(state.table, {{:partition, state.id},  pid})
 
     {:ok, opts.id, pid}
   end
@@ -357,128 +391,134 @@ defmodule SuperWorker.Supervisor do
   # TO-DO: Improve for easy to read & clean code.
   def main_loop(state, sup_opts) do
     receive do
-      {:start_worker, from, ref, mfa_or_fun, opts} = msg ->
-        Logger.debug("Starting child process with options: #{inspect(msg)}")
+      {:start_worker, from, ref, opts} = msg ->
+        Logger.debug("#{inspect state.id}, Starting child process with options: #{inspect(msg)}")
         runable =
           case opts.type do
             :group ->
-              if Map.has_key?(state.groups, opts.group_id) do
-                group = Map.get(state.groups, opts.group_id)
-                if Group.worker_exists?(group, opts.id) do
-                  :worker_already_exists
-                else
-                  true
-                end
+              if has_group?(state, opts.group_id) or  has_worker?(state.worker, opts.id) do
+                true
               else
-                :group_not_found
+                :group_not_found_or_worker_already_exists
               end
             :chain ->
-              with {:ok, chain} <- get_item(state.chains, opts.chain_id),
-                {:error, :not_found} <- Chain.get_worker(chain, opts.id) do
+              if has_chain?(state, opts.chain_id) or  has_worker?(state, opts.id) do
                   true
                 else
-                  {:ok, _} ->
-                    :worker_already_exists
-                  {:error, :not_found} ->
-                    :chain_not_found
+                  :chain_not_found_or_worker_already_exists
                 end
             :standalone ->
-              if Map.has_key?(state.standalone, opts.id) do
+              if has_worker?(state, opts.id) do
                 :worker_already_exists
               else
                 true
               end
           end
-        if runable == true do # start child process.
-          Logger.debug("Everything is fine, starting child process with options: #{inspect(opts)}")
-          state = sup_start_child(state, mfa_or_fun, opts)
-          send(from, {ref, {:ok, opts.id}})
+        state =
+          if runable == true do # start child process.
+            Logger.debug("#{inspect state.id}, Everything is fine, starting child process with options: #{inspect(opts)}")
 
-          main_loop(state, sup_opts)
-        else # not found group or chain, return error to the caller.
-          send(from, {ref, {:error, runable}})
+            send(from, {ref, {:ok, opts.id}})
+            sup_start_child(state, opts)
+          else # not found group or chain, return error to the caller.
+            send(from, {ref, {:error, runable}})
+            state
+          end
 
-          main_loop(state, sup_opts)
-        end
+        main_loop(state, sup_opts)
 
       {:get_chain, from, ref, chain_id} ->
-        case Map.get(state.chains, chain_id) do
-          nil ->
-            Logger.error("Chain not found: #{inspect chain_id}")
-            send(from, {ref, {:error, :not_found}})
-          chain ->
+        case get_group_or_chain(state, chain_id, :chain) do
+          {:error, _} = error ->
+            Logger.error("#{inspect state.id}, Chain not found: #{inspect chain_id}")
+            send(from, {ref, error})
+          {:ok, chain} ->
             send(from, {ref, chain})
         end
         main_loop(state, sup_opts)
 
       {:broadcast_to_group, from, ref, group_id, data} ->
-        case Map.get(state.groups, group_id) do
-          nil ->
-            Logger.error("Group not found: #{inspect group_id}")
-            send(from, {ref, {:error, :not_found}})
-          group ->
+        case get_group_or_chain(state, group_id, :group) do
+          {:ok, group} ->
             Group.broadcast(group, data)
             send(from, {ref, :ok})
+          {:error, _} = error ->
+            Logger.error("#{inspect state.id}, Group not found: #{inspect group_id}")
+            send(from, {ref, error})
         end
         main_loop(state, sup_opts)
 
       # send directly to worker from api.
       {:send_to_group, from, ref, group_id, worker_id, data} ->
-        case Map.get(state.groups, group_id) do
-          nil ->
-            Logger.error("Group not found: #{inspect group_id}")
-            send(from, {ref, {:error, :not_found}})
-          group ->
-            case Group.get_worker(group, worker_id) do
-              {:ok, worker} ->
-                send(worker.pid, data)
-                send(from, {ref, :ok})
-              {:error, _} ->
-                Logger.error("Worker not found: #{inspect worker_id}")
-                send(from, {ref, {:error, :not_found}})
-            end
+        with {:ok, group} <- get_group_or_chain(state, group_id, :group),
+        {:ok, worker} <- Group.get_worker(group, worker_id) do
+          send(worker.pid, data)
+          send(from, {ref, :ok})
+        else
+          failed ->
+            Logger.error("#{inspect state.id}, Not found worker #{inspect worker_id} in group #{inspect group_id}")
+            send(from, {ref, failed})
         end
+
         main_loop(state, sup_opts)
 
       # send data to random worker from api.
       {:send_to_group_random, from, ref, group_id, data} ->
-        case Map.get(state.groups, group_id) do
-          nil ->
-            Logger.error("Group not found: #{inspect group_id}")
-            send(from, {ref, {:error, :not_found}})
-          group ->
-            {_, worker} = Enum.random(group.workers)
-            send(worker.pid, data)
+        case get_group_or_chain(state, group_id, :group) do
+          {:error, _} = error  ->
+            Logger.error("#{inspect state.id}, Group not found: #{inspect group_id}, error: #{inspect error}")
+            send(from, {ref, error})
+          {:ok, group} ->
+             worker_id = Enum.random(group.workers)
+              case Group.get_worker(group, worker_id) do
+                {:ok, worker} ->
+                  send(worker.pid, data)
+                  send(from, {ref, :ok})
+                {:error, _} = error ->
+                  Logger.error("#{inspect state.id}, Not found worker #{inspect worker_id} in group #{inspect group_id}")
+                  send(from, {ref, error})
+              end
+        end
+        main_loop(state, sup_opts)
+
+      {:add_data_to_chain, from, ref, chain_id, data} ->
+        case get_group_or_chain(state, chain_id, :chain) do
+          {:error, _} = error ->
+            Logger.error("#{inspect state.id}, Chain not found: #{inspect chain_id}")
+            send(from, {ref, error})
+          {:ok, chain} ->
+            Chain.new_data(chain, data)
             send(from, {ref, :ok})
         end
         main_loop(state, sup_opts)
 
-
-      {:add_data_to_chain, from, ref, chain_id, data} ->
-        case Map.get(state.chains, chain_id) do
-          nil ->
-            Logger.error("Chain not found: #{inspect chain_id}")
-            send(from, {ref, {:error, :not_found}})
-            main_loop(state, sup_opts)
-          chain ->
-            Chain.new_data(chain, data)
-            send(from, {ref, :ok})
-            main_loop(state, sup_opts)
-        end
-
       {:send_to_worker, from, ref, worker_id, data} ->
-        case Map.get(state.standalone, worker_id) do
-          nil ->
-            Logger.error("Worker not found: #{inspect worker_id}")
-            send(from, {ref, {:error, :not_found}})
+        case get_group_or_chain(state, worker_id, :not_implement) do
+          {:error, _} = error ->
+            Logger.error("#{inspect state.id}, Worker not found: #{inspect worker_id}")
+            send(from, {ref, error})
           worker ->
             send(worker.pid, data)
             send(from, {ref, :ok})
         end
         main_loop(state, sup_opts)
 
+      {:restart_group_worker, worker_id , group_id} ->
+        Logger.debug("#{inspect state.id}, Starting worker process, worker id: #{inspect(worker_id)}, group id: #{inspect(group_id)}")
+
+        [{_, group}] = Ets.lookup(state.table, {:group, group_id})
+        # Restart the worker process.
+        Group.restart_worker(group, worker_id)
+
+        main_loop(state, sup_opts)
+
+      {:DOWN, ref, :process, pid, :restart} ->
+        Logger.debug("#{inspect state.id}, Ignore died process (process by other msg): #{inspect(pid)}, ref: #{inspect(ref)}")
+
+        main_loop(state, sup_opts)
+
       {:DOWN, ref, :process, pid, reason} ->
-        Logger.debug("receiced signal worker died: #{inspect(pid)}, reason: #{inspect(reason)}")
+        Logger.debug("#{inspect state.id}, Worker died: #{inspect(pid)}, reason: #{inspect(reason)}")
 
         state
         |> process_child_down(pid, ref, reason)
@@ -486,13 +526,13 @@ defmodule SuperWorker.Supervisor do
 
       # add group from api.
       {:add_group, from, ref, group} ->
-        case Map.has_key?(state.groups, group.id) do
-          true ->
-            Logger.error("Group already exists: #{inspect(group.id)}")
+        case Ets.lookup(state.table, {:gorup, group.id}) do
+          [_] ->
+            Logger.error("#{inspect state.id}, Group already exists: #{inspect(group.id)}")
             send(from, {ref, {:error, :already_exists}})
             main_loop(state, sup_opts)
-          false ->
-            Logger.debug("Adding group: #{inspect(group.id)}")
+          [] ->
+            Logger.debug("#{inspect state.id}, Adding group: #{inspect(group.id)}")
 
             # Send the response to the caller.
             send(from, {ref, {:ok, group.id}})
@@ -505,11 +545,11 @@ defmodule SuperWorker.Supervisor do
     # get group info from api.
     {:get_group_info, from, ref, group_id} ->
       group =
-        case Map.get(state.groups, group_id, nil) do
-          nil ->
-            Logger.error("Group not found: #{inspect(group_id)}")
+        case Ets.lookup(state.table, {:group, group_id}) do
+          [] ->
+            Logger.error("#{inspect state.id}, Group not found: #{inspect(group_id)}")
             {:error, :not_found}
-          group ->
+          [{_, group}] ->
             %{id: group.id, count: map_size(group.children), stats: nil}
         end
       send(from, {ref, group})
@@ -517,13 +557,13 @@ defmodule SuperWorker.Supervisor do
 
     # add chain from api.
     {:add_chain, from, ref, chain} ->
-      case Map.has_key?(state.chains, chain.id) do
-        true ->
-          Logger.error("Chain already exists: #{inspect(chain.id)}")
+      case Ets.lookup(state.table, {:chain, chain.id}) do
+        [_] ->
+          Logger.error("#{inspect state.id}, Chain already exists: #{inspect(chain.id)}")
           send(from, {ref, {:error, :already_exists}})
           main_loop(state, sup_opts)
-        false ->
-          Logger.debug("Adding chain: #{inspect(chain.id)}")
+        [] ->
+          Logger.debug("#{inspect state.id}, Adding chain: #{inspect(chain.id)}")
           # Send the response to the caller.
           send(from, {ref, {:ok, chain.id}})
 
@@ -534,17 +574,18 @@ defmodule SuperWorker.Supervisor do
 
     # Stop supervisor from api.
     {:stop, from, type, ref} ->
-        Logger.info("Stopping supervisor, request from #{inspect from}")
+        Logger.info("#{inspect state.id}, Stopping supervisor, request from #{inspect from}")
 
         # Send shutdown signal to all partitions.
         Enum.each(1..sup_opts.number_of_partitions, fn i ->
           partition_id = get_partition_id(state.id, i)
-          case KV.get({state.id, :pid, partition_id}) do
-            {:ok, pid} ->
-              Logger.debug("Sending shutdown signal to partition: #{inspect partition_id}")
+          # TO-DO: change to Ets
+          case Ets.lookup(state.table, {:partition, partition_id}) do
+            [{_, pid}] ->
+              Logger.debug("#{inspect state.id}, Sending shutdown signal to partition: #{inspect partition_id}")
               send(pid, {:stop_partition, type})
             _ ->
-              Logger.error("Supervisor not found: #{inspect partition_id}")
+              Logger.error("#{inspect state.id}, Supervisor not found: #{inspect partition_id}")
           end
         end)
 
@@ -558,7 +599,7 @@ defmodule SuperWorker.Supervisor do
         exit(:normal)
 
     {:stop_partition, type} ->
-        Logger.info("Stopping supervisor partition, for #{inspect self()}")
+        Logger.info("#{inspect state.id}, Stopping supervisor partition, for #{inspect self()}")
         # Stop the supervisor.
         shutdown(state, type)
       unknown ->
@@ -589,27 +630,25 @@ defmodule SuperWorker.Supervisor do
 
   defp process_child_down(state, pid, ref, reason) do
     Logger.debug("Child process died: #{inspect(pid)}, ref: #{inspect ref}, reason: #{inspect(reason)}")
-    {id, type} = Map.get(state.ref_to_id, ref, {:error, :not_found})
-    if id == :error do
-      Logger.debug("Child not found: #{inspect ref}, maybe already stopped.")
+
+    case Ets.lookup(state.table, {:worker, :ref, ref}) do
+     [] ->
+      Logger.debug("Child is not found in table: #{inspect ref}, maybe already stopped.")
       state
-    else
-      ref_to_id = Map.delete(state.ref_to_id, ref)
-      state = Map.put(state, :ref_to_id, ref_to_id)
+    [{_, id, pid, type} = ref_data] ->
+      Logger.debug("Child found: #{inspect pid}, restarting. meta: #{inspect ref_data}")
+      Ets.delete(state.table, {:worker, :ref, ref})
 
       case type do
         :standalone ->
-          child = Map.get(state.standalone, id)
+          child = Ets.lookup(state.table, {:worker, id})
           restart_standalone(state, child, {pid, reason})
         {:group, group_id} ->
-          group = Map.get(state.groups, group_id)
+          [{_, group}] = Ets.lookup(state.table, {:group, group_id})
           restart_group(state, group, id, {pid, reason})
         {:chain, chain_id} ->
-          chain = Map.get(state.chains, chain_id)
+          [{_, chain}] = Ets.lookup(state.table, {:chain, chain_id})
           restart_chain(state, chain, id, {pid, reason})
-        :not_found ->
-          Logger.debug("Child not found: #{inspect id}, ref: #{inspect ref}, maybe already stopped.")
-          state
       end
     end
   end
@@ -619,20 +658,20 @@ defmodule SuperWorker.Supervisor do
 
     case opts.restart_strategy do
       :permanent ->
-        Logger.debug(":permanent, restarting #{inspect pid}")
+        Logger.debug("#{inspect state.id}, :permanent, restarting #{inspect pid}")
 
         # Restart the child process
-        sup_start_child(state, child.mfa, opts)
+        sup_start_child(state, opts)
       :transient when reason != :normal ->
-        Logger.debug(":transient, reason down: #{inspect reason} restarting #{inspect pid}")
+        Logger.debug("#{inspect state.id}, :transient, reason down: #{inspect reason} restarting #{inspect pid}")
 
         # Restart the child process
-        sup_start_child(state, child.mfa, opts)
+        sup_start_child(state, opts)
       :transient ->
-        Logger.debug(":transient, ignore restarting #{inspect pid}")
+        Logger.debug("#{inspect state.id}, :transient, ignore restarting #{inspect pid}")
         state
       :temporary ->
-        Logger.debug(":temporary, ignore restarting #{inspect pid}")
+        Logger.debug("#{inspect state.id}, :temporary, ignore restarting #{inspect pid}")
         state
     end
   end
@@ -640,49 +679,47 @@ defmodule SuperWorker.Supervisor do
   defp restart_group(state, %{restart_strategy: :one_for_one} = group, child_id, {pid, reason}) do
     case reason do
       :normal ->
-        Logger.debug("Child process(#{inspect(pid)}) is normal, ignore restarting.")
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is normal, ignore restarting.")
         state
       _ ->
-        Logger.debug("Child process(#{inspect(pid)}) is down, restarting.")
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting.")
         {:ok, group} = Group.restart_worker(group, child_id)
         {:ok, worker} = Group.get_worker(group, child_id)
-        groups = Map.put(state.groups, group.id, group)
-
-        ref_to_id = Map.put(state.ref_to_id, worker.ref, {child_id, {:group, group.id}})
+        Ets.insert(state.table, {{:worker, :ref, worker.ref}, worker.id, worker.pid, {:group, group.id}})
+        Ets.insert(state.table, {{:group, group.id}, group})
 
         state
-        |> Map.put(:groups, groups)
-        |> Map.put(:ref_to_id, ref_to_id)
     end
   end
 
   defp restart_group(state, %{restart_strategy: :one_for_all} = group, _child_id, {pid, reason}) do
     case reason do
       :normal ->
-        Logger.debug("Child process(#{inspect(pid)}) is normal, ignore restarting.")
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is normal, ignore restarting.")
         state
       _ ->
-        Logger.debug("Child process(#{inspect(pid)}) is down, restarting...")
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting...")
 
-        old_ref_keys = Enum.reduce(group.workers, [], fn {_, worker}, acc ->  [worker.ref | acc] end)
-
-        Logger.debug("Old ref: #{inspect old_ref_keys}")
-
-        {:ok, group} = Group.restart_all_workers(group)
-
-        new_refs =
-          state.ref_to_id
-          |> Map.drop(old_ref_keys)
-
-        new_refs = Enum.reduce(group.workers, new_refs, fn {child_id, worker}, acc ->
-          Map.put(acc, worker.ref, {child_id, {:group, group.id}})
+        old_ref_keys = Enum.reduce(group.workers, [], fn  worker_id, acc ->
+          [{_, worker}] = Ets.lookup(state.table, {:worker, {:group, group.id}, worker_id})
+          [worker.ref | acc]
         end)
 
-        Logger.debug("New ref: #{inspect new_refs}")
+        Logger.debug("#{inspect state.id}, Old ref: #{inspect old_ref_keys}")
+
+        # Clean up old process.
+        # TO-DO: make sure pid, ref in worker struct is cleaned & correct after restart.
+        Group.kill_all_workers(group, :restart)
+        Enum.each(old_ref_keys, fn ref ->
+          Ets.delete(state.table, {:worker, :ref, ref})
+        end)
+
+        Enum.each(group.workers, fn child_id ->
+          {:ok, pid} = get_host_partition(state.master, child_id)
+          send(pid, {:restart_group_worker, child_id, group.id})
+        end)
 
         state
-        |> Map.put(:groups, Map.put(state.groups, group.id, group))
-        |> Map.put(:ref_to_id, new_refs)
     end
   end
 
@@ -738,17 +775,22 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  defp sup_start_child(state, mfa, %{id: id, type: :standalone} = opts) do
+  defp sup_start_child(state, %Worker{id: id, type: :standalone} = opts) do
     # Start a child process
     Logger.debug("Starting standalone worker process(#{inspect(id)})")
 
+    Ets.insert(state.table, {{:worker, id}, opts})
+
     {pid, ref} =
       spawn_monitor(fn ->
+        # Register the worker process.
+        Registry.register(state.id, {:worker, id}, [])
+
         # Store for user can directly access to the worker.
         Process.put({:supervisor, :sup_id}, state.id)
         Process.put({:supervisor, :worker_id}, id)
 
-        case mfa do
+        case opts.fun do
           {:fun, fun} ->
             fun.()
           {m, f, a} ->
@@ -756,53 +798,44 @@ defmodule SuperWorker.Supervisor do
         end
       end)
 
-    # add/update ref to id.
-    ref_to_id = Map.put(state.ref_to_id, ref, {id, :standalone})
-    standalone = Map.put(state.standalone, id, %{id: id, pid: pid, ref: ref, mfa: mfa, opts: opts})
+    Ets.insert(state.table, {{:worker, :ref, ref}, id, pid, :standalone})
 
-    # return new state, including the new child
     state
-    |> Map.put(:standalone, standalone)
-    |> Map.put(:ref_to_id, ref_to_id)
   end
 
-  defp sup_start_child(state, fun_mfa, %{id: id, group_id: group_id, type: :group} = opts) do
+  defp sup_start_child(state, %Worker{} = %{id: id, group_id: group_id, type: :group} = opts) do
     # Start a child process
     Logger.debug("Starting child process(#{inspect(id)}) for group #{inspect(group_id)}")
+    [{_, group}] = Ets.lookup(state.table, {:group, group_id})
 
-    with {:ok, group} <- get_item(state.groups, group_id),
-      {:ok, group} = Group.add_worker(group, %{id: id, mfa: fun_mfa, opts: opts}),
-      {:ok, worker} = Group.get_worker(group, id) do
-        ref_to_id = Map.put(state.ref_to_id, worker.ref, {id, {:group, group_id}})
-        groups = Map.put(state.groups, group_id, group)
-        state
-        |> Map.put(:groups, groups)
-        |> Map.put(:ref_to_id, ref_to_id)
-      else
-        reason ->
-          Logger.error("Error in starting group(#{inspect group_id}) process(#{inspect(id)}): #{inspect(reason)}")
-          state
-      end
+    {:ok, _} = Group.add_worker(group, opts)
+
+    state
   end
 
-  defp sup_start_child(state, mfa, %{id: id, chain_id: chain_id, type: :chain} = opts) do
+  defp sup_start_child(state, %Worker{} = %{id: id, chain_id: chain_id, type: :chain} = opts) do
     Logger.debug("Starting child process(#{inspect(id)}) for chain #{inspect(chain_id)}")
 
-    with {:ok, chain} <- get_item(state.chains, chain_id),
-      {:ok, chain} <- Chain.add_worker(chain, %{id: id, mfa: mfa, opts: opts}),
-      {:ok, worker} <- Chain.get_worker(chain, id) do
-         # add/update ref to id.
-        refs = Map.put(state.ref_to_id, worker.ref, {id, {:chain, chain_id}})
-        chains = Map.put(state.chains, chain_id, chain)
+    [{_, chain}] = Ets.lookup(state.table, {:chain, chain_id})
 
-        state
-        |> Map.put(:chains,chains)
-        |> Map.put(:ref_to_id, refs)
-      else
-        reason ->
-          Logger.error("Error in starting chain(#{inspect chain_id}) process(#{inspect(id)}): #{inspect(reason)}")
-          state
-      end
+    with {:ok, chain} <- Chain.add_worker(chain, %{id: id, opts: opts}),
+    {:ok, worker} <- Chain.get_worker(chain, id) do
+      Ets.insert(state.table, {{:worker, id}, opts})
+      Ets.insert(state.table, {{:worker, :ref, worker.ref}, id, worker.pid, {:chain, chain_id}})
+      Ets.insert(state.table, {{:chain, chain_id}, chain})
+    end
+
+    state
+  end
+
+  defp get_group_or_chain(state, chain_id, type) do
+    case Ets.lookup(state.table, {type, chain_id}) do
+      [] ->
+        Logger.info("#{inspect state.id}, Chain not found: #{inspect chain_id}")
+        {:error, :not_found}
+      [{_, data}] ->
+        {:ok, data}
+    end
   end
 
   defp api_receiver(ref, timeout \\ 5_000) do
@@ -815,26 +848,24 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp add_new_group(state, group) do
-    group = %Group{group | supervisor: state.id}
-    groups = Map.put(state.groups, group.id, group)
+    group = %Group{group | supervisor: state.master, partition: state.id}
+    Registry.register(state.id, {:group, group.id}, [])
+    Ets.insert(state.table, {{:group, group.id}, group})
 
-    # Update the state
     state
-    |> Map.put(:groups, groups)
   end
 
   defp add_new_chain(state, chain) do
-    chain = %Chain{chain | supervisor: state.id}
-    chains = Map.put(state.chains, chain.id, chain)
+    chain = %Chain{chain | supervisor: state.master, partition: state.id}
+    Registry.register(state.id, {:chain, chain.id}, [])
+    Ets.insert(state.table, {{:chain, chain.id}, chain})
 
-    # Update the state
     state
-    |> Map.put(:chains, chains)
   end
 
-  defp do_start_child(sup_id, :standalone, mfa_or_fun, opts, timeout) do
+  defp do_start_child(sup_id, :standalone, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
-    with {:ok, opts} <- Worker.check_options(opts),
+    with {:ok, opts} <- Worker.check_standalone_options(opts),
       {:ok, _} <- verify_running(sup_id),
       {:ok, pid} <- get_host_partition(sup_id, opts.id) do
         opts =
@@ -842,7 +873,7 @@ defmodule SuperWorker.Supervisor do
           |> Map.put(:type, :standalone)
 
         ref = make_ref()
-        send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
+        send(pid, {:start_worker, self(), ref, opts})
         api_receiver(ref, timeout)
     else
       other ->
@@ -850,43 +881,52 @@ defmodule SuperWorker.Supervisor do
         other
     end
   end
-  defp do_start_child(sup_id, {:group, group_id}, mfa_or_fun, opts, timeout) do
+  defp do_start_child(sup_id, {:group_id, group_id} = group, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
-    with {:ok, opts} <- Group.check_worker_opts([{:group_id, group_id} | opts]),
+    with {:ok, opts} <- Worker.check_group_options([group | opts]),
       {:ok, _} <- verify_running(sup_id),
-      {:ok, pid} <- get_host_partition(sup_id, group_id) do
+      {:ok, pid} <-get_host_partition(sup_id, opts.id) do
         opts =
           opts
           |> Map.put(:group_id, group_id)
           |> Map.put(:type, :group)
         ref = make_ref()
-        send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
+        send(pid, {:start_worker, self(), ref, opts})
         api_receiver(ref, timeout)
+        else
+          error ->
+            Logger.error("Error in starting group worker: #{inspect error}")
+            error
     end
   end
-  defp do_start_child(sup_id, {:chain, chain_id}, mfa_or_fun, opts, timeout) do
+  defp do_start_child(sup_id, {:chain_id, chain_id} = chain, opts, timeout) do
     Logger.debug("Starting child process with options: #{inspect(opts)}")
-    with {:ok, opts} <- Chain.check_worker_options([{:chain_id, chain_id} | opts] ),
+    with {:ok, opts} <- Worker.check_chain_options([chain | opts]),
       {:ok, _} <- verify_running(sup_id),
-      {:ok, pid} <- get_host_partition(sup_id, chain_id) do
+      {:ok, pid} <- get_host_partition(sup_id, opts.id) do
         opts =
           opts
           |> Map.put(:chain_id, chain_id)
           |> Map.put(:type, :chain)
 
         ref = make_ref()
-        send(pid, {:start_worker, self(), ref, mfa_or_fun, opts})
+        send(pid, {:start_worker, self(), ref, opts})
         api_receiver(ref, timeout)
     end
   end
 
   defp verify_running(id) when is_atom(id) do
-    case Process.whereis(id) do
+    master = get_master_id(id)
+    case Process.whereis(master) do
       nil ->
         {:error, :not_running}
       pid ->
         {:ok, pid}
     end
+  end
+
+  defp get_master_id(id) do
+    String.to_atom("#{Atom.to_string(id)}_master")
   end
 
   defp check_opts(opts) do
@@ -937,7 +977,7 @@ defmodule SuperWorker.Supervisor do
     api_receiver({pid, self()})
   end
 
-  def get_partition_id(sup_id, partition_id) do
+  defp get_partition_id(sup_id, partition_id) do
     if partition_id == 0 do
       sup_id
     else
@@ -951,8 +991,10 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp get_partition_pid(sup_id, partition_id) do
-    case KV.get({sup_id, :pid, partition_id}) do
-      {:ok, pid} ->
+    get_table_name(sup_id)
+    |> Ets.lookup({:partition, partition_id})
+    |> case do
+      [{_, pid}] ->
         {:ok, pid}
       _ ->
         {:error, :not_found}
@@ -960,10 +1002,10 @@ defmodule SuperWorker.Supervisor do
   end
 
   def get_host_partition(sup_id, data) do
-    with {:ok, num} <- KV.get({sup_id, :number_of_partitions}),
+    with [{_, num}] <- Ets.lookup(get_table_name(sup_id), :number_of_partitions),
       order <- get_hash_order(data, num),
       partition_id <- get_partition_id(sup_id, order),
-      {:ok, pid} <- get_partition_pid(sup_id, partition_id) do
+      [{_, pid}] <- Ets.lookup(get_table_name(sup_id), {:partition, partition_id}) do
         {:ok, pid}
     else
       error ->
@@ -972,4 +1014,42 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  defp create_table(table_name) when is_atom(table_name) do
+    ^table_name = Ets.new(table_name, [
+      :set,
+      :public,
+      :named_table,
+      {:keypos, 1},
+      {:write_concurrency, true},
+      {:read_concurrency, true},
+      {:decentralized_counters, true}
+    ])
+  end
+
+  defp has_group?(%{} = state, group_id) do
+    case Ets.lookup(state.table, {:group, group_id}) do
+      [] ->
+        false
+      _ ->
+        true
+    end
+  end
+
+  defp has_chain?(%{} = state, chain_id) do
+    case Ets.lookup(state.table, {:chain, chain_id}) do
+      [] ->
+        false
+      _ ->
+        true
+    end
+  end
+
+  defp has_worker?(%{} = state, worker_id) do
+    case Ets.lookup(state.table, {:worker, worker_id}) do
+      [] ->
+        false
+      _ ->
+        true
+    end
+  end
 end

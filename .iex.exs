@@ -21,7 +21,7 @@ defmodule Dev do
     #add_group_data()
 
     # Standalone
-    add_standalone_data()
+    #add_standalone_data()
 
     # Chain & its workers.
     #add_chain_data()
@@ -41,13 +41,13 @@ defmodule Dev do
 
   def add_chain_data do
     {:ok, _} = Sup.add_chain(:sup1, [id: :chain1, restart_strategy: :one_for_one])
-    {:ok, _} = Sup.add_chain_worker(:sup1, :chain1, {__MODULE__, :task, []}, [id: :c1_1, restart_strategy: :permanent])
-    {:ok, _} = Sup.add_chain_worker(:sup1, :chain1, {__MODULE__, :task, []}, [id: :c1_2, restart_strategy: :permanent])
-    {:ok, _} = Sup.add_chain_worker(:sup1, :chain1, {__MODULE__, :task_crash, [10]}, [id: :c1_3, restart_strategy: :permanent])
+    {:ok, _} = Sup.add_chain_worker(:sup1, :chain1, {__MODULE__, :task, []}, [id: :c1_1])
+    {:ok, _} = Sup.add_chain_worker(:sup1, :chain1, {__MODULE__, :task, []}, [id: :c1_2])
+    {:ok, _} = Sup.add_chain_worker(:sup1, :chain1, {__MODULE__, :task_crash, [10]}, [id: :c1_3])
 
     {:ok, _} = Sup.add_chain(:sup1, [id: :chain2, restart_strategy: :one_for_one, finished_callback: {__MODULE__, :print,[:chain1]}])
-    {:ok, _} = Sup.add_chain_worker(:sup1, :chain2, {__MODULE__, :task, []}, [id: :c2_1, restart_strategy: :permanent])
-    {:ok, _} = Sup.add_chain_worker(:sup1, :chain2, {__MODULE__, :task, []}, [id: :c2_2, restart_strategy: :permanent])
+    {:ok, _} = Sup.add_chain_worker(:sup1, :chain2, {__MODULE__, :task, []}, [id: :c2_1])
+    {:ok, _} = Sup.add_chain_worker(:sup1, :chain2, {__MODULE__, :task, []}, [id: :c2_2])
   end
 
   def add_standalone_data do
