@@ -13,8 +13,16 @@ defmodule SuperWorker.MixProject do
 
   # Run "mix help compile.app" to learn about applications.
   def application do
+    required = [:logger]
+
+    dev_app =
+      case Mix.env() do
+        :dev -> [:observer, :wx]
+        _ -> []
+      end
+
     [
-      extra_applications: [:logger]
+      extra_applications: dev_app ++ required,
     ]
   end
 

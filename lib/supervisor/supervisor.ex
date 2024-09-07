@@ -818,10 +818,7 @@ defmodule SuperWorker.Supervisor do
 
     [{_, chain}] = Ets.lookup(state.table, {:chain, chain_id})
 
-    with {:ok, chain} <- Chain.add_worker(chain, %{id: id, opts: opts}),
-    {:ok, worker} <- Chain.get_worker(chain, id) do
-      Ets.insert(state.table, {{:worker, id}, opts})
-      Ets.insert(state.table, {{:worker, :ref, worker.ref}, id, worker.pid, {:chain, chain_id}})
+    with {:ok, chain} <- Chain.add_worker(chain, %{id: id, opts: opts}) do
       Ets.insert(state.table, {{:chain, chain_id}, chain})
     end
 

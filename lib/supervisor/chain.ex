@@ -19,6 +19,8 @@ defmodule SuperWorker.Supervisor.Chain do
     partition: nil,
     finished_callback: nil,
     queue_length: 50,
+    last_chain_order: 0,
+    send_type: :random,
   ]
 
   import SuperWorker.Supervisor.Utils
@@ -54,13 +56,14 @@ defmodule SuperWorker.Supervisor.Chain do
     if worker_exists?(chain, worker.id) do
       {:error, :already_exists}
     else
-      worker = Map.put(worker, :next_worker_id, nil)
+      worker = Map.put(worker, :chain_order, chain.last_chain_order + 1)
       workers = MapSet.put(chain.workers, worker.id)
 
       Ets.insert(get_table_name(chain.supervisor), {{:worker, {:chain, chain.id}, worker.id}, worker})
 
       chain
       |> Map.put(:workers, workers)
+      |> Map.put(:last_chain_order, worker.chain_order)
       |> update_chain_first(worker)
       |> update_chain_last(worker)
       |> spawn_worker(worker.id)
@@ -136,28 +139,38 @@ defmodule SuperWorker.Supervisor.Chain do
 
   ## Private functions
 
-  defp send_next(chain, worker_id, data) do
-    case get_next_worker(chain, worker_id) do
-      {:ok, worker} ->
-        Logger.debug("Sending data to the next worker #{worker.id}")
-        send(worker.pid, {:new_data, data})
-      {:error, _} ->
-        Logger.debug("No next worker found for worker #{worker_id}, maybe the chain is finished.")
+  defp send_next(chain, order, data) do
+   if [] == Registry.lookup(chain.supervisor, {:chain_order, chain.id, order}) do
+      Logger.debug("No next worker found for order #{order}, maybe the chain is finished.")
 
-        # TO-DO: catch throw, error from outside.
-        case chain.finished_callback do
-          nil -> Logger.debug("No callback found for chain #{chain.id}")
-          {:fun, fun} -> fun.()
-          {m, f, a} -> apply(m, f, [data|a])
-        end
-   end
-  end
-
-
-  defp get_next_worker(chain, worker_id) do
-    with {:ok, worker} <- get_worker(chain, worker_id),
-      {:ok, next_worker} <- get_worker(chain, worker.next_worker_id) do
-       {:ok, next_worker}
+      # TO-DO: catch throw, error from outside.
+      case chain.finished_callback do
+        nil -> Logger.debug("No callback found for chain #{chain.id}")
+        {:fun, fun} -> fun.()
+        {m, f, a} -> apply(m, f, [data|a])
+      end
+    else
+      Registry.dispatch(chain.supervisor, {:chain_order, chain.id, order},
+        fn
+          [{pid, _}] -> # just one worker doesn't check type.
+            send(pid, {:new_data, data})
+          entries ->
+            case chain.send_type do
+              :broadcast ->
+                Enum.each(entries,
+                  fn {pid, worker_id} ->
+                    Logger.debug("Sending data to the next worker #{worker_id}")
+                    send(pid, {:new_data, data})
+                  end)
+              :random ->
+                {pid, _} = Enum.random(entries)
+                send(pid, {:new_data, data})
+            end
+            Enum.each(entries, fn {pid, worker_id} ->
+              Logger.debug("Sending data to the next worker #{worker_id}")
+              send(pid, {:new_data, data})
+            end)
+        end)
       end
   end
 
@@ -198,7 +211,11 @@ defmodule SuperWorker.Supervisor.Chain do
       |> Map.put(:last_worker_id, chain.last_worker_id)
       |> do_spawn_worker()
 
-    Ets.insert(get_table_name(chain.supervisor), {{:worker, {:chain, chain.id}, worker_id}, worker})
+    table = get_table_name(chain.supervisor)
+    Ets.insert(table, {{:worker, {:chain, chain.id}, worker.id}, worker})
+    Ets.insert(table, {{:worker, worker.id}, worker})
+    Ets.insert(table, {{:worker, :ref, worker.ref},  worker.id, worker.pid, {:chain, chain.id}})
+
     workers = MapSet.put(chain.workers, worker_id)
 
     {:ok, %{chain | workers: workers}}
@@ -213,6 +230,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
       Registry.register(worker.supervisor, {:worker, worker.id}, [])
       Registry.register(worker.supervisor, {:chain, worker.chain_id}, :worker)
+      Registry.register(worker.supervisor, {:chain_order, worker.chain_id, worker.chain_order}, worker.id)
       Registry.update_value(worker.supervisor, {:chain, worker.chain_id}, fn workers ->
         [worker.id | workers]
       end)
@@ -255,7 +273,7 @@ defmodule SuperWorker.Supervisor.Chain do
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
             chain = Sup.get_chain(get_my_supervisor(), chain_id)
 
-            send_next(chain, id, {self(), msg_id, new_data})
+            send_next(chain, worker.chain_order + 1, {self(), msg_id, new_data})
 
             loop_chain(queue, worker)
           {:error, reason} ->
@@ -268,8 +286,17 @@ defmodule SuperWorker.Supervisor.Chain do
             Logger.info("Stopping chain process(#{inspect(id)}), chain: #{inspect(chain_id)}")
             exit(reason)
           data ->
-            Logger.debug("Chain process(#{inspect(id)}) returned data: #{inspect(data)}")
-            send_next(Sup.get_chain(get_my_supervisor(), chain_id), id, data)
+            Logger.debug("Passing data (default) to the next process(#{inspect(id)}), chain: #{inspect(chain_id)}")
+
+            if MapQueue.is_full?(queue) do
+              Logger.debug("Queue is full, go to loop waiting for consume last data.")
+              loop_send(queue, worker)
+            end
+
+            {:ok, queue, msg_id} = MapQueue.add(queue, data)
+            chain = Sup.get_chain(get_my_supervisor(), chain_id)
+
+            send_next(chain, worker.chain_order + 1, {self(), msg_id, data})
             loop_chain(queue, worker)
         end
 

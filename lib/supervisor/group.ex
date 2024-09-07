@@ -3,29 +3,34 @@ defmodule SuperWorker.Supervisor.Group do
   Documentation for `SuperWorker.Supervisor.Group`.
   """
 
+  # Parameters for group.
   @group_params [:id, :restart_strategy, :type, :max_restarts, :max_seconds, :auto_restart_time]
 
+  # Restart strategies for group.
   @group_restart_strategies [:one_for_one, :one_for_all]
 
   alias SuperWorker.Supervisor.Worker
+  alias :ets, as: Ets
+  alias __MODULE__
 
   @enforce_keys [:id]
   defstruct [
     :id, # group id, unique in supervior.
-    restart_strategy: :one_for_all,
-    workers: MapSet.new(),
-    supervisor: nil,
-    partition: nil,
+    restart_strategy: :one_for_all, # default restart strategy for group is :one_for_all.
+    workers: MapSet.new(), # list of worker ids in group.
+    supervisor: nil, # supervisor id (atom)
+    partition: nil, # partition id holding the group.
   ]
 
   import SuperWorker.Supervisor.Utils
-
-  alias :ets, as: Ets
 
   require Logger
 
   ## Public functions
 
+  @doc """
+  Check, validate and convert key-value pairs to struct.
+  """
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @group_params),
          {:ok, opts} <- validate_restart_strategy(opts),
@@ -35,7 +40,10 @@ defmodule SuperWorker.Supervisor.Group do
     end
   end
 
-  def get_worker(group, worker_id) do
+  @doc """
+  Get worker from the group.
+  """
+  def get_worker(%Group{} = group, worker_id) do
     Logger.debug("get_worker: #{inspect group.supervisor}, #{inspect worker_id}")
     case Ets.lookup(get_table_name(group.supervisor), {:worker, {:group, group.id}, worker_id}) do
       [{_, worker}] -> {:ok, worker}
@@ -43,10 +51,16 @@ defmodule SuperWorker.Supervisor.Group do
     end
   end
 
+  @doc """
+  Check if worker exists in the group.
+  """
   def worker_exists?(group, worker_id) do
     MapSet.member?(group.workers, worker_id)
   end
 
+  @doc """
+  A internal function. Add a worker to the group.
+  """
   def add_worker(group, %Worker{} = worker)  do
     case get_worker(group, worker.id) do
       {:ok, _} -> {:error, :worker_exists}
@@ -62,6 +76,9 @@ defmodule SuperWorker.Supervisor.Group do
     end
   end
 
+  @doc """
+  A internal function. Restart a worker in the group.
+  """
   def restart_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
       kill_worker(group, worker_id)
