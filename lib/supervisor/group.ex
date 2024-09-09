@@ -20,6 +20,7 @@ defmodule SuperWorker.Supervisor.Group do
     workers: MapSet.new(), # list of worker ids in group.
     supervisor: nil, # supervisor id (atom)
     partition: nil, # partition id holding the group.
+    data_table: nil, # ets table of supervisor.
   ]
 
   import SuperWorker.Supervisor.Utils
@@ -65,12 +66,11 @@ defmodule SuperWorker.Supervisor.Group do
     case get_worker(group, worker.id) do
       {:ok, _} -> {:error, :worker_exists}
       {:error, _} ->
-        table = get_table_name(group.supervisor)
-        Ets.insert(table, {{:worker, {:group, group.id}, worker.id}, worker})
+        Ets.insert(group.data_table, {{:worker, {:group, group.id}, worker.id}, worker})
         group = Map.put(group, :workers, MapSet.put(group.workers, worker.id))
 
         with {:ok, group} <- spawn_worker(group, worker.id)  do
-          Ets.insert(table, {{:group, group.id}, group})
+          Ets.insert(group.data_table, {{:group, group.id}, group})
           {:ok, group}
         end
     end
@@ -90,7 +90,7 @@ defmodule SuperWorker.Supervisor.Group do
 
   def remove_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
-      Ets.delete(get_table_name(group.supervisor), {:worker, {:group, group.id}, worker_id})
+      Ets.delete(group.data_table, {:worker, {:group, group.id}, worker_id})
       workers = MapSet.delete(group.workers, worker_id)
 
       {:ok, %{group | workers: workers}}
@@ -121,16 +121,15 @@ defmodule SuperWorker.Supervisor.Group do
   defp spawn_worker(group, worker_id) do
     {:ok, worker} = get_worker(group, worker_id)
     worker = do_spawn_worker(group, worker)
-    table = get_table_name(group.supervisor)
-    Ets.insert(table, {{:worker, {:group, group.id}, worker_id}, worker})
-    Ets.insert(table, {{:worker, :ref, worker.ref}, worker.id, worker.pid, {:group, group.id}})
+    Ets.insert(group.data_table, {{:worker, {:group, group.id}, worker_id}, worker})
+    Ets.insert(group.data_table, {{:worker, :ref, worker.ref}, worker.id, worker.pid, {:group, group.id}})
 
     {:ok, group}
   end
 
   def broadcast(group, message) do
     Enum.each(group.workers, fn  worker_id ->
-      worker = get_worker(group, worker_id)
+      {:ok, worker} = get_worker(group, worker_id)
       send(worker.pid, message)
     end)
   end

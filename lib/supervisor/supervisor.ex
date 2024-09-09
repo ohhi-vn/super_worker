@@ -210,7 +210,7 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  def boardcast_to_group(sup_id, group_id, data, timeout \\ @default_time) do
+  def broadcast_to_group(sup_id, group_id, data, timeout \\ @default_time) do
     with {:ok, _} <- verify_running(sup_id),
       {:ok, pid} <- get_host_partition(sup_id, group_id) do
         ref = make_ref()
@@ -232,7 +232,7 @@ defmodule SuperWorker.Supervisor do
         Logger.error("Supervisor not found.")
         {:error, :not_found}
       true ->
-        boardcast_to_group(sup_id, group_id, data)
+        broadcast_to_group(sup_id, group_id, data)
     end
   end
 
@@ -306,15 +306,14 @@ defmodule SuperWorker.Supervisor do
   ## Private functions
 
   def init(opts) do
-    table = get_table_name(opts.id)
-
     state = %{
       groups: MapSet.new(), # storage for group processes
       chains: MapSet.new(), # storage for chain processes
       standalone: MapSet.new(), # storage for standalone processes
       id: opts.id, # supervisor id
       owner: opts.owner,
-      table: table
+      data_table: get_table_name(opts.id),
+      master: opts.id
     }
 
     # Register the supervisor process.
@@ -323,13 +322,13 @@ defmodule SuperWorker.Supervisor do
     # Create Registry for map worker/group/chain id to pid.
     {:ok, _} = Registry.start_link(keys: :unique, name: opts.id, partitions: opts.number_of_partitions)
 
-    Registry.register(opts.id, :master, 0)
+    Registry.register(state.master, :master, opts.number_of_partitions)
 
     # Store group, chain, worker in Ets
-    create_table(table)
-    Ets.insert(table, {:number_of_partitions, opts.number_of_partitions})
-    Ets.insert(table, {:owner, opts.owner})
-    Ets.insert(table, {:master, opts.id})
+    create_table(state.data_table)
+    Ets.insert(state.data_table, {:number_of_partitions, opts.number_of_partitions})
+    Ets.insert(state.data_table, {:owner, opts.owner})
+    Ets.insert(state.data_table, {:master, opts.id})
 
     list_partitions = init_additional_partitions(opts)
 
@@ -341,7 +340,6 @@ defmodule SuperWorker.Supervisor do
     state
     |> Map.put(:partitions , list_partitions)
     |> Map.put(:role, :master)
-    |> Map.put(:master, opts.id)
     |> main_loop(opts)
   end
 
@@ -358,7 +356,7 @@ defmodule SuperWorker.Supervisor do
       role: :partition,
       master: opts.master,
       number_of_partitions: opts.number_of_partitions,
-      table: get_table_name(opts.master)
+      data_table: get_table_name(opts.master)
     }
 
     # Start the main loop
@@ -369,7 +367,7 @@ defmodule SuperWorker.Supervisor do
 
     Registry.register(state.master, {:partition , state.id}, [])
 
-    Ets.insert(state.table, {{:partition, state.id},  pid})
+    Ets.insert(state.data_table, {{:partition, state.id},  pid})
 
     {:ok, opts.id, pid}
   end
@@ -506,7 +504,7 @@ defmodule SuperWorker.Supervisor do
       {:restart_group_worker, worker_id , group_id} ->
         Logger.debug("#{inspect state.id}, Starting worker process, worker id: #{inspect(worker_id)}, group id: #{inspect(group_id)}")
 
-        [{_, group}] = Ets.lookup(state.table, {:group, group_id})
+        [{_, group}] = Ets.lookup(state.data_table, {:group, group_id})
         # Restart the worker process.
         Group.restart_worker(group, worker_id)
 
@@ -526,7 +524,7 @@ defmodule SuperWorker.Supervisor do
 
       # add group from api.
       {:add_group, from, ref, group} ->
-        case Ets.lookup(state.table, {:gorup, group.id}) do
+        case Ets.lookup(state.data_table, {:gorup, group.id}) do
           [_] ->
             Logger.error("#{inspect state.id}, Group already exists: #{inspect(group.id)}")
             send(from, {ref, {:error, :already_exists}})
@@ -545,7 +543,7 @@ defmodule SuperWorker.Supervisor do
     # get group info from api.
     {:get_group_info, from, ref, group_id} ->
       group =
-        case Ets.lookup(state.table, {:group, group_id}) do
+        case Ets.lookup(state.data_table, {:group, group_id}) do
           [] ->
             Logger.error("#{inspect state.id}, Group not found: #{inspect(group_id)}")
             {:error, :not_found}
@@ -557,7 +555,7 @@ defmodule SuperWorker.Supervisor do
 
     # add chain from api.
     {:add_chain, from, ref, chain} ->
-      case Ets.lookup(state.table, {:chain, chain.id}) do
+      case Ets.lookup(state.data_table, {:chain, chain.id}) do
         [_] ->
           Logger.error("#{inspect state.id}, Chain already exists: #{inspect(chain.id)}")
           send(from, {ref, {:error, :already_exists}})
@@ -580,7 +578,7 @@ defmodule SuperWorker.Supervisor do
         Enum.each(1..sup_opts.number_of_partitions, fn i ->
           partition_id = get_partition_id(state.id, i)
           # TO-DO: change to Ets
-          case Ets.lookup(state.table, {:partition, partition_id}) do
+          case Ets.lookup(state.data_table, {:partition, partition_id}) do
             [{_, pid}] ->
               Logger.debug("#{inspect state.id}, Sending shutdown signal to partition: #{inspect partition_id}")
               send(pid, {:stop_partition, type})
@@ -631,42 +629,40 @@ defmodule SuperWorker.Supervisor do
   defp process_child_down(state, pid, ref, reason) do
     Logger.debug("Child process died: #{inspect(pid)}, ref: #{inspect ref}, reason: #{inspect(reason)}")
 
-    case Ets.lookup(state.table, {:worker, :ref, ref}) do
+    case Ets.lookup(state.data_table, {:worker, :ref, ref}) do
      [] ->
       Logger.debug("Child is not found in table: #{inspect ref}, maybe already stopped.")
       state
     [{_, id, pid, type} = ref_data] ->
       Logger.debug("Child found: #{inspect pid}, restarting. meta: #{inspect ref_data}")
-      Ets.delete(state.table, {:worker, :ref, ref})
+      Ets.delete(state.data_table, {:worker, :ref, ref})
 
       case type do
         :standalone ->
-          child = Ets.lookup(state.table, {:worker, id})
+          [{_, child}] = Ets.lookup(state.data_table, {:worker, id})
           restart_standalone(state, child, {pid, reason})
         {:group, group_id} ->
-          [{_, group}] = Ets.lookup(state.table, {:group, group_id})
+          [{_, group}] = Ets.lookup(state.data_table, {:group, group_id})
           restart_group(state, group, id, {pid, reason})
         {:chain, chain_id} ->
-          [{_, chain}] = Ets.lookup(state.table, {:chain, chain_id})
+          [{_, chain}] = Ets.lookup(state.data_table, {:chain, chain_id})
           restart_chain(state, chain, id, {pid, reason})
       end
     end
   end
 
-  defp restart_standalone(state, child, {pid, reason}) do
-    opts = child.opts
-
-    case opts.restart_strategy do
+  defp restart_standalone(state, %Worker{} = child, {pid, reason}) do
+    case child.restart_strategy do
       :permanent ->
         Logger.debug("#{inspect state.id}, :permanent, restarting #{inspect pid}")
 
         # Restart the child process
-        sup_start_child(state, opts)
+        sup_start_child(state, child)
       :transient when reason != :normal ->
         Logger.debug("#{inspect state.id}, :transient, reason down: #{inspect reason} restarting #{inspect pid}")
 
         # Restart the child process
-        sup_start_child(state, opts)
+        sup_start_child(state, child)
       :transient ->
         Logger.debug("#{inspect state.id}, :transient, ignore restarting #{inspect pid}")
         state
@@ -685,8 +681,8 @@ defmodule SuperWorker.Supervisor do
         Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting.")
         {:ok, group} = Group.restart_worker(group, child_id)
         {:ok, worker} = Group.get_worker(group, child_id)
-        Ets.insert(state.table, {{:worker, :ref, worker.ref}, worker.id, worker.pid, {:group, group.id}})
-        Ets.insert(state.table, {{:group, group.id}, group})
+        Ets.insert(state.data_table, {{:worker, :ref, worker.ref}, worker.id, worker.pid, {:group, group.id}})
+        Ets.insert(state.data_table, {{:group, group.id}, group})
 
         state
     end
@@ -701,7 +697,7 @@ defmodule SuperWorker.Supervisor do
         Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting...")
 
         old_ref_keys = Enum.reduce(group.workers, [], fn  worker_id, acc ->
-          [{_, worker}] = Ets.lookup(state.table, {:worker, {:group, group.id}, worker_id})
+          [{_, worker}] = Ets.lookup(state.data_table, {:worker, {:group, group.id}, worker_id})
           [worker.ref | acc]
         end)
 
@@ -711,7 +707,7 @@ defmodule SuperWorker.Supervisor do
         # TO-DO: make sure pid, ref in worker struct is cleaned & correct after restart.
         Group.kill_all_workers(group, :restart)
         Enum.each(old_ref_keys, fn ref ->
-          Ets.delete(state.table, {:worker, :ref, ref})
+          Ets.delete(state.data_table, {:worker, :ref, ref})
         end)
 
         Enum.each(group.workers, fn child_id ->
@@ -779,12 +775,12 @@ defmodule SuperWorker.Supervisor do
     # Start a child process
     Logger.debug("Starting standalone worker process(#{inspect(id)})")
 
-    Ets.insert(state.table, {{:worker, id}, opts})
+    Ets.insert(state.data_table, {{:worker, id}, opts})
 
     {pid, ref} =
       spawn_monitor(fn ->
         # Register the worker process.
-        Registry.register(state.id, {:worker, id}, [])
+        Registry.register(state.master, {:worker, id}, [])
 
         # Store for user can directly access to the worker.
         Process.put({:supervisor, :sup_id}, state.id)
@@ -798,7 +794,7 @@ defmodule SuperWorker.Supervisor do
         end
       end)
 
-    Ets.insert(state.table, {{:worker, :ref, ref}, id, pid, :standalone})
+    Ets.insert(state.data_table, {{:worker, :ref, ref}, id, pid, :standalone})
 
     state
   end
@@ -806,7 +802,7 @@ defmodule SuperWorker.Supervisor do
   defp sup_start_child(state, %Worker{} = %{id: id, group_id: group_id, type: :group} = opts) do
     # Start a child process
     Logger.debug("Starting child process(#{inspect(id)}) for group #{inspect(group_id)}")
-    [{_, group}] = Ets.lookup(state.table, {:group, group_id})
+    [{_, group}] = Ets.lookup(state.data_table, {:group, group_id})
 
     {:ok, _} = Group.add_worker(group, opts)
 
@@ -816,17 +812,17 @@ defmodule SuperWorker.Supervisor do
   defp sup_start_child(state, %Worker{} = %{id: id, chain_id: chain_id, type: :chain} = opts) do
     Logger.debug("Starting child process(#{inspect(id)}) for chain #{inspect(chain_id)}")
 
-    [{_, chain}] = Ets.lookup(state.table, {:chain, chain_id})
+    [{_, chain}] = Ets.lookup(state.data_table, {:chain, chain_id})
 
-    with {:ok, chain} <- Chain.add_worker(chain, %{id: id, opts: opts}) do
-      Ets.insert(state.table, {{:chain, chain_id}, chain})
+    with {:ok, chain} <- Chain.add_worker(chain, opts) do
+      Ets.insert(state.data_table, {{:chain, chain_id}, chain})
     end
 
     state
   end
 
   defp get_group_or_chain(state, chain_id, type) do
-    case Ets.lookup(state.table, {type, chain_id}) do
+    case Ets.lookup(state.data_table, {type, chain_id}) do
       [] ->
         Logger.info("#{inspect state.id}, Chain not found: #{inspect chain_id}")
         {:error, :not_found}
@@ -845,17 +841,17 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp add_new_group(state, group) do
-    group = %Group{group | supervisor: state.master, partition: state.id}
-    Registry.register(state.id, {:group, group.id}, [])
-    Ets.insert(state.table, {{:group, group.id}, group})
+    group = %Group{group | supervisor: state.master, partition: state.id, data_table: state.data_table}
+    Registry.register(state.master, {:group, group.id}, [])
+    Ets.insert(state.data_table, {{:group, group.id}, group})
 
     state
   end
 
   defp add_new_chain(state, chain) do
-    chain = %Chain{chain | supervisor: state.master, partition: state.id}
-    Registry.register(state.id, {:chain, chain.id}, [])
-    Ets.insert(state.table, {{:chain, chain.id}, chain})
+    chain = %Chain{chain | supervisor: state.master, partition: state.id, data_table: state.data_table}
+    Registry.register(state.master, {:chain, chain.id}, [])
+    Ets.insert(state.data_table, {{:chain, chain.id}, chain})
 
     state
   end
@@ -1024,7 +1020,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp has_group?(%{} = state, group_id) do
-    case Ets.lookup(state.table, {:group, group_id}) do
+    case Ets.lookup(state.data_table, {:group, group_id}) do
       [] ->
         false
       _ ->
@@ -1033,7 +1029,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp has_chain?(%{} = state, chain_id) do
-    case Ets.lookup(state.table, {:chain, chain_id}) do
+    case Ets.lookup(state.data_table, {:chain, chain_id}) do
       [] ->
         false
       _ ->
@@ -1042,7 +1038,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp has_worker?(%{} = state, worker_id) do
-    case Ets.lookup(state.table, {:worker, worker_id}) do
+    case Ets.lookup(state.data_table, {:worker, worker_id}) do
       [] ->
         false
       _ ->

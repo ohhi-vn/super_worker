@@ -82,7 +82,7 @@ defmodule SuperWorker.Supervisor.Utils do
   end
 
   def get_table_name(id) when is_atom(id) do
-    String.to_atom("#{Atom.to_string(id)}_table")
+    String.to_atom("#{Atom.to_string(id)}_data_table")
   end
 
   ## Private functions

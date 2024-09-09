@@ -18,7 +18,7 @@ defmodule Dev do
     IO.inspect result
 
     # Group & workers for group.
-    #add_group_data()
+    # add_group_data()
 
     # Standalone
     #add_standalone_data()
@@ -31,28 +31,31 @@ defmodule Dev do
     {:ok, _} = Sup.add_group(sup_id, [id: :group1, restart_strategy: :one_for_all])
     {:ok, _} = Sup.add_group_worker(sup_id, :group1, {__MODULE__, :task, [15]}, [id: :g1_1])
     {:ok, _} = Sup.add_group_worker(sup_id, :group1, {__MODULE__, :task_crash, [15, 5]}, [id: :g1_2])
-    {:ok, _} = Sup.add_group_worker(sup_id, :group1, {__MODULE__, :loop, [:a]}, [id: :g1_3])
-    {:ok, _} = Sup.add_group_worker(sup_id, :group1, {__MODULE__, :loop, [:b]}, [id: :g1_4])
 
     {:ok, _} = Sup.add_group(sup_id, [id: :group2, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_group_worker(sup_id, :group2, {__MODULE__, :task, [1500]}, [id: :g2_1])
     {:ok, _} = Sup.add_group_worker(sup_id, :group2, {__MODULE__, :task_crash, [1500, 5]}, [id: :g2_2])
+
+
+    {:ok, _} = Sup.add_group(sup_id, [id: :group3, restart_strategy: :one_for_one])
+    {:ok, _} = Sup.add_group_worker(sup_id, :group3, {__MODULE__, :loop, [:a]}, [id: :g3_1])
+    {:ok, _} = Sup.add_group_worker(sup_id, :group3, {__MODULE__, :loop, [:b]}, [id: :g3_2])
   end
 
   def add_chain_data(sup_id \\ :sup1) do
-    chain_id = :chain1
-    {:ok, _} = Sup.add_chain(sup_id, [id: chain_id, restart_strategy: :one_for_one])
-    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c1_1])
-    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c1_2])
-    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task_crash, [5]}, [id: :c1_3])
+    # chain_id = :chain1
+    # {:ok, _} = Sup.add_chain(sup_id, [id: chain_id, restart_strategy: :one_for_one])
+    # {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c1_1])
+    # {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c1_2])
+    # {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task_crash, [5]}, [id: :c1_3])
 
     chain_id = :chain2
     {:ok, _} = Sup.add_chain(sup_id, [id: chain_id, restart_strategy: :one_for_one, finished_callback: {__MODULE__, :print,[chain_id]}])
-    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c2_1])
-    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c2_2])
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c2_1, num_workers: 3])
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, []}, [id: :c2_2, num_workers: 3])
 
-    chain_id = :chain3
-    {:ok, _} = Sup.add_chain(sup_id, [id: chain_id, restart_strategy: :one_for_one])
+    # chain_id = :chain3
+    # {:ok, _} = Sup.add_chain(sup_id, [id: chain_id, restart_strategy: :one_for_one])
   end
 
   def add_standalone_data(sup_id \\ :sup1) do
@@ -71,7 +74,7 @@ defmodule Dev do
     IO.puts prefix <> " Task is started"
 
     sum = Enum.reduce(1..n, 0, fn i, acc ->
-      :timer.sleep(500)
+      :timer.sleep(1500)
       acc + i
     end)
     IO.puts  IO.puts prefix <> " Task done, #{sum}"
@@ -85,7 +88,7 @@ defmodule Dev do
 
     sum = Enum.reduce(1..n, 0, fn i, acc ->
       if i == at, do: raise "Task #{inspect Process.get({:supervisor, :worker_id})} raised an error at #{i}"
-      :timer.sleep(500)
+      :timer.sleep(1500)
       acc + i
     end)
     IO.puts prefix <> " Task done, #{sum}"
@@ -104,7 +107,7 @@ defmodule Dev do
       IO.puts prefix <> " Anonymous function"
       for i <- 1..5 do
         IO.puts prefix <> " Task #{i}"
-        :timer.sleep(500)
+        :timer.sleep(1500)
       end
     end
   end

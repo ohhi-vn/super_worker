@@ -22,15 +22,16 @@ Support three type of processes in one supervisor. Can declare by config or add 
 ```mermaid
 graph LR
 Client(Client) <-->|api| Supervisor
-    Supervisor--> Group
-    Supervisor--> Chain
-    Supervisor--> Worker7
-    Group-->Worker1
-    Group-->Worker2
-    Group-->Worker3
-    Chain-->Worker4
-    Worker4-->Worker5
-    Worker5-->Worker6
+    Supervisor--> Group_1
+    Supervisor--> Chain_1
+    Supervisor-->Worker_standalone1
+    Supervisor-->Worker_standalone2
+    Group_1-->Worker_g1
+    Group_1-->Worker_g2
+    Group_1-->Worker_g3
+    Chain_1-->Worker_c1
+    Worker_c1-->Worker_c2
+    Worker_c2-->Worker_c3
 ```
 
 **Type of processes:**
@@ -49,9 +50,9 @@ Support send message to worker or broadcast to all workers in a group. Dev don't
 
 ```mermaid
 graph LR
-    Group-->Worker1
-    Group-->Worker2
-    Group-->Worker3
+    Group_1-->Worker_1
+    Group_1-->Worker_2
+    Group_1-->Worker_3
 ```
 
 ### Chain processes
@@ -65,8 +66,8 @@ Can config function to call in the end of chain or self implement code in the la
 
 ```mermaid
 graph LR
-    Worker4-->Worker5
-    Worker5-->Worker6
+    Worker_c1-->Worker_c2
+    Worker_c2-->Worker_c3
 ```
 
 ### Standalone processes
@@ -76,15 +77,15 @@ If a standalone worker is crashed, it doesn't affect to other standalone workers
 
 ```mermaid
 graph LR
-    Supervisor-->Worker7
-    Supervisor-->Worker8
-    Supervisor-->Worker9
+    Supervisor-->Worker_standalone1
+    Supervisor-->Worker_standalone2
+    Supervisor-->Worker_standalone3
 ```
 
 ## Planned features
 
-- Support GenServer
-- Callback module
-- Multi process per node
-- Auto scale for chain
-- Distributed for workers
+- Support GenServer.
+- Callback module for easy understand & implement.
+- Multiprocess per chain node.
+- Auto scale for chain.
+- Distributed in cluster.

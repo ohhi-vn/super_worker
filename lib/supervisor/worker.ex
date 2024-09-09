@@ -13,7 +13,7 @@ defmodule SuperWorker.Supervisor.Worker do
 
   @group_params [:group_id]
 
-  @chain_params [:chain_id]
+  @chain_params [:chain_id, :num_workers]
 
   @enforce_keys [:id]
   defstruct [
@@ -27,6 +27,7 @@ defmodule SuperWorker.Supervisor.Worker do
     fun: nil, # anonymous function {:fun, fun} or  {function, module, arguments} of worker.
     supervisor: nil, # supervisor pid.
     partition: nil, # partition id.
+    num_workers: 1, # number of workers in chain.
   ]
 
   import SuperWorker.Supervisor.Utils
