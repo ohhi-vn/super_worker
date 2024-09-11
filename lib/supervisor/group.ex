@@ -17,7 +17,6 @@ defmodule SuperWorker.Supervisor.Group do
   defstruct [
     :id, # group id, unique in supervior.
     restart_strategy: :one_for_all, # default restart strategy for group is :one_for_all.
-    workers: MapSet.new(), # list of worker ids in group.
     supervisor: nil, # supervisor id (atom)
     partition: nil, # partition id holding the group.
     data_table: nil, # ets table of supervisor.
@@ -46,17 +45,29 @@ defmodule SuperWorker.Supervisor.Group do
   """
   def get_worker(%Group{} = group, worker_id) do
     Logger.debug("get_worker: #{inspect group.supervisor}, #{inspect worker_id}")
-    case Ets.lookup(get_table_name(group.supervisor), {:worker, {:group, group.id}, worker_id}) do
+    case Ets.lookup(group.data_table, {:worker, {:group, group.id}, worker_id}) do
       [{_, worker}] -> {:ok, worker}
       [] -> {:error, :not_found}
     end
   end
 
   @doc """
+  Get all workers from the group.
+  """
+  def get_all_workers(%Group{} = group) do
+    Logger.debug("get_all_workers: #{inspect group.supervisor}")
+    Ets.match(group.data_table, {{:worker, {:group, group.id}, :_}, :"$1"})
+    |> List.flatten()
+  end
+
+  @doc """
   Check if worker exists in the group.
   """
   def worker_exists?(group, worker_id) do
-    MapSet.member?(group.workers, worker_id)
+    case get_worker(group, worker_id) do
+      {:ok, _} -> true
+      {:error, _} -> false
+    end
   end
 
   @doc """
@@ -66,10 +77,9 @@ defmodule SuperWorker.Supervisor.Group do
     case get_worker(group, worker.id) do
       {:ok, _} -> {:error, :worker_exists}
       {:error, _} ->
-        Ets.insert(group.data_table, {{:worker, {:group, group.id}, worker.id}, worker})
-        group = Map.put(group, :workers, MapSet.put(group.workers, worker.id))
+        worker = Map.put(worker, :parent, group.id)
 
-        with {:ok, group} <- spawn_worker(group, worker.id)  do
+        with {:ok, group} <- spawn_worker(group, worker)  do
           Ets.insert(group.data_table, {{:group, group.id}, group})
           {:ok, group}
         end
@@ -81,8 +91,10 @@ defmodule SuperWorker.Supervisor.Group do
   """
   def restart_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
-      kill_worker(group, worker_id)
-      spawn_worker(group, worker_id)
+      with {:ok, worker} <- get_worker(group, worker_id) do
+        kill_worker(group, worker, :restart)
+        spawn_worker(group, worker)
+      end
     else
       {:error, :not_found}
     end
@@ -91,44 +103,50 @@ defmodule SuperWorker.Supervisor.Group do
   def remove_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
       Ets.delete(group.data_table, {:worker, {:group, group.id}, worker_id})
-      workers = MapSet.delete(group.workers, worker_id)
+      # TO-DO: Clean other info
 
-      {:ok, %{group | workers: workers}}
+      {:ok, group}
     else
       {:error, :not_found}
     end
   end
 
-  def kill_worker(group, worker_id) do
+  def kill_worker(group, worker = %Worker{}, reason) do
+    if Process.alive?(worker.pid) do
+      Logger.debug("group: #{inspect group.id}, kill_worker: #{inspect worker}, reason: #{inspect reason}")
+      Ets.delete(group.data_table, {:worker, :ref, worker.ref})
+      Process.exit(worker.pid, reason)
+    end
+  end
+  def kill_worker(group, worker_id, reason) do
     case get_worker(group, worker_id) do
       {:ok, worker} ->
-        if Process.alive?(worker.pid) do
-          Process.exit(worker.pid, :kill)
-        end
+       kill_worker(group, worker, reason)
       {:error, _} -> {:error, :not_found}
     end
   end
 
   def kill_all_workers(group, reason \\ :kill) do
-    Enum.each(group.workers, fn worker_id ->
-      {:ok, worker} = get_worker(group, worker_id)
-      if  Process.alive?(worker.pid) do
-        Process.exit(worker.pid, reason)
-      end
+    Group.get_all_workers(group)
+    |> Enum.each(fn %Worker{} = worker ->
+      kill_worker(group, worker, reason)
     end)
   end
 
-  defp spawn_worker(group, worker_id) do
-    {:ok, worker} = get_worker(group, worker_id)
+  defp spawn_worker(group, %Worker{} = worker) do
     worker = do_spawn_worker(group, worker)
-    Ets.insert(group.data_table, {{:worker, {:group, group.id}, worker_id}, worker})
+    Logger.debug("spawn_worker: #{inspect worker}")
+
+    # add or update data, ref, pid
+    Ets.insert(group.data_table, {{:worker, {:group, group.id}, worker.id}, worker})
     Ets.insert(group.data_table, {{:worker, :ref, worker.ref}, worker.id, worker.pid, {:group, group.id}})
 
     {:ok, group}
   end
 
   def broadcast(group, message) do
-    Enum.each(group.workers, fn  worker_id ->
+    Group.get_all_workers(group)
+    |> Enum.each(fn %Worker{id: worker_id} ->
       {:ok, worker} = get_worker(group, worker_id)
       send(worker.pid, message)
     end)
@@ -138,11 +156,8 @@ defmodule SuperWorker.Supervisor.Group do
 
   defp do_spawn_worker(group, %Worker{} = worker) do
     {pid, ref} = spawn_monitor(fn ->
-      Registry.register(group.supervisor, {:worker, worker.id}, [])
+      Registry.register(group.supervisor, {:worker, {:group, group.id}, worker.id}, [])
       Registry.register(group.supervisor, {:group, group.id}, :worker)
-      Registry.update_value(group.supervisor, {:group, group.id}, fn workers ->
-        [worker.id | workers]
-      end)
 
       Process.put({:supervisor, :sup_id}, group.supervisor)
       Process.put({:supervisor, :group_id}, group.id)

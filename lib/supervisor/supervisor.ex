@@ -320,7 +320,7 @@ defmodule SuperWorker.Supervisor do
     Process.register(self(), get_master_id(opts.id))
 
     # Create Registry for map worker/group/chain id to pid.
-    {:ok, _} = Registry.start_link(keys: :unique, name: opts.id, partitions: opts.number_of_partitions)
+    {:ok, _} = Registry.start_link(keys: :duplicate, name: opts.id, partitions: opts.number_of_partitions)
 
     Registry.register(state.master, :master, opts.number_of_partitions)
 
@@ -485,7 +485,7 @@ defmodule SuperWorker.Supervisor do
             Logger.error("#{inspect state.id}, Chain not found: #{inspect chain_id}")
             send(from, {ref, error})
           {:ok, chain} ->
-            Chain.new_data(chain, data)
+            Chain.new_data(chain, {from, random_id(), data})
             send(from, {ref, :ok})
         end
         main_loop(state, sup_opts)
@@ -679,10 +679,7 @@ defmodule SuperWorker.Supervisor do
         state
       _ ->
         Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting.")
-        {:ok, group} = Group.restart_worker(group, child_id)
-        {:ok, worker} = Group.get_worker(group, child_id)
-        Ets.insert(state.data_table, {{:worker, :ref, worker.ref}, worker.id, worker.pid, {:group, group.id}})
-        Ets.insert(state.data_table, {{:group, group.id}, group})
+        Group.restart_worker(group, child_id)
 
         state
     end
@@ -696,8 +693,7 @@ defmodule SuperWorker.Supervisor do
       _ ->
         Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting...")
 
-        old_ref_keys = Enum.reduce(group.workers, [], fn  worker_id, acc ->
-          [{_, worker}] = Ets.lookup(state.data_table, {:worker, {:group, group.id}, worker_id})
+        old_ref_keys = Enum.reduce(Group.get_all_workers(group), [], fn  worker, acc ->
           [worker.ref | acc]
         end)
 
@@ -706,13 +702,10 @@ defmodule SuperWorker.Supervisor do
         # Clean up old process.
         # TO-DO: make sure pid, ref in worker struct is cleaned & correct after restart.
         Group.kill_all_workers(group, :restart)
-        Enum.each(old_ref_keys, fn ref ->
-          Ets.delete(state.data_table, {:worker, :ref, ref})
-        end)
 
-        Enum.each(group.workers, fn child_id ->
-          {:ok, pid} = get_host_partition(state.master, child_id)
-          send(pid, {:restart_group_worker, child_id, group.id})
+        Enum.each(Group.get_all_workers(group), fn %Worker{id: worker_id} ->
+          {:ok, pid} = get_host_partition(state.master, worker_id)
+          send(pid, {:restart_group_worker, worker_id, group.id})
         end)
 
         state
@@ -751,7 +744,7 @@ defmodule SuperWorker.Supervisor do
 
         old_ref_keys = Enum.reduce(chain.workers, [], fn {_, worker}, acc ->  [worker.ref | acc] end)
 
-        Logger.debug("Old ref: #{inspect old_ref_keys}")
+        Logger.debug("Chai, Old ref: #{inspect old_ref_keys}")
 
         {:ok, chain} = Chain.restart_all_workers(chain)
 
@@ -815,7 +808,9 @@ defmodule SuperWorker.Supervisor do
     [{_, chain}] = Ets.lookup(state.data_table, {:chain, chain_id})
 
     with {:ok, chain} <- Chain.add_worker(chain, opts) do
+      # Move to Chain module.
       Ets.insert(state.data_table, {{:chain, chain_id}, chain})
+      Logger.debug("part: #{inspect state.id}, added worker  to chain: #{inspect chain}")
     end
 
     state

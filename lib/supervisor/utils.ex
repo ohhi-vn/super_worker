@@ -85,6 +85,10 @@ defmodule SuperWorker.Supervisor.Utils do
     String.to_atom("#{Atom.to_string(id)}_data_table")
   end
 
+  def random_id() do
+    :crypto.strong_rand_bytes(16) |> Base.encode16()
+  end
+
   ## Private functions
 
   defp do_normalize_opts([], _params, valid, invalid) do

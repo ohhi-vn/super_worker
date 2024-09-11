@@ -28,6 +28,7 @@ defmodule SuperWorker.Supervisor.Worker do
     supervisor: nil, # supervisor pid.
     partition: nil, # partition id.
     num_workers: 1, # number of workers in chain.
+    parent: nil, # parent(group/chain) id.
   ]
 
   import SuperWorker.Supervisor.Utils
