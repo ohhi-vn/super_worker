@@ -47,7 +47,7 @@ defmodule SuperWorker.Supervisor.Group do
     Logger.debug("get_worker: #{inspect group.supervisor}, #{inspect worker_id}")
     case Ets.lookup(group.data_table, {:worker, {:group, group.id}, worker_id}) do
       [{_, worker}] -> {:ok, worker}
-      [] -> {:error, :not_found}
+      [] -> {:error, :worker_not_found}
     end
   end
 
@@ -102,12 +102,19 @@ defmodule SuperWorker.Supervisor.Group do
 
   def remove_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
+      with {:ok, worker} <- get_worker(group, worker_id) do
+        kill_worker(group, worker, :remove)
+      else
+        error ->
+          Logger.error("failed to kill worker #{inspect(worker_id)} in group #{inspect group.id}, error: #{inspect error}")
+      end
+
       Ets.delete(group.data_table, {:worker, {:group, group.id}, worker_id})
       # TO-DO: Clean other info
 
       {:ok, group}
     else
-      {:error, :not_found}
+      {:error, :worker_not_found}
     end
   end
 

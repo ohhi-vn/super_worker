@@ -89,6 +89,10 @@ defmodule SuperWorker.Supervisor.Utils do
     :crypto.strong_rand_bytes(16) |> Base.encode16()
   end
 
+  def response_ref() do
+    {self(), make_ref()}
+  end
+
   ## Private functions
 
   defp do_normalize_opts([], _params, valid, invalid) do
