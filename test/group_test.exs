@@ -1,16 +1,15 @@
 defmodule SuperWorker.Supervisor.GroupTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: false
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.Group
-  alias SuperWorker.Supervisor.Worker
-  alias SuperWorker.Supervisor.Chain
+  alias SuperWorker.Supervisor.{Group, Worker}
 
   @group {:group1, "test group"}
-  @sup_id :sup_test
+  @sup_id :sup_test_group
 
   setup_all do
-    :ok = Sup.start([link: false, id: :sup_test])
+    {:ok, _} = Sup.start([link: false, id: :sup_test])
+    :ok
   end
 
   setup do
