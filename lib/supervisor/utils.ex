@@ -22,6 +22,7 @@ defmodule SuperWorker.Supervisor.Utils do
   end
 
   # convert specified keyword to a tuple.
+  @spec get_keyword(atom()) :: {:type, atom()} | {:error, atom()}
   def get_keyword(:group) do
     {:type, :group}
   end
@@ -31,10 +32,11 @@ defmodule SuperWorker.Supervisor.Utils do
   def get_keyword(:standalone) do
     {:type, :standalone}
   end
-  def get_keyword(value) do
-    {:error, "Invalid type, #{inspect value}"}
+  def get_keyword(_) do
+    {:error, :invalid_keyword}
   end
 
+  @spec generic_default_sup_opts(map()) :: map()
   def generic_default_sup_opts(opts) do
     if Map.has_key?(opts, :owner) do
       opts
@@ -43,10 +45,12 @@ defmodule SuperWorker.Supervisor.Utils do
     end
   end
 
+  @spec normalize_opts([atom() | keyword()], map()) :: {:ok, map()} | {:error, atom()}
   def normalize_opts(opts, params) do
     do_normalize_opts(opts, params, %{}, [])
   end
 
+  @spec get_item(map(), any()) :: {:ok, any()} | {:error, atom()}
   def get_item(map, key) do
     case Map.get(map, key) do
       nil -> {:error, :not_found}
@@ -54,18 +58,22 @@ defmodule SuperWorker.Supervisor.Utils do
     end
   end
 
+  @spec get_hash_order(term(), non_neg_integer()) :: non_neg_integer()
   def get_hash_order(term, num) do
     :erlang.phash2(term, num)
   end
 
+  @spec get_default_schedulers() :: non_neg_integer()
   def get_default_schedulers() do
     System.schedulers_online()
   end
 
+  @spec count_msgs(pid()) :: non_neg_integer()
   def count_msgs(pid) do
     Process.info(pid, :message_queue_len)
   end
 
+  @spec check_type(map(), atom(), (any() -> boolean())) :: {:ok, map()} | {:error, atom()}
   def check_type(opts, key, fun) do
     case Map.get(opts, key) do
       nil ->
@@ -81,20 +89,52 @@ defmodule SuperWorker.Supervisor.Utils do
     end
   end
 
+  @spec get_table_name(atom()) :: atom()
   def get_table_name(id) when is_atom(id) do
     String.to_atom("#{Atom.to_string(id)}_data_table")
   end
 
+  @spec random_id() :: binary()
   def random_id() do
     :crypto.strong_rand_bytes(16) |> Base.encode16()
   end
 
+  @spec response_ref() :: {pid(), reference()}
   def response_ref() do
     {self(), make_ref()}
   end
 
+  @spec api_receiver({pid(), reference()}, integer() | :infinity) :: any()
+  def api_receiver({_from, ref}, timeout) do
+    receive do
+      {^ref, result} ->
+        result
+      after timeout ->
+        {:error, :timeout}
+    end
+  end
+
+  @spec api_response({pid(), reference()}, any()) :: any()
+  def api_response({from, ref}, result) do
+    send(from, {ref, result})
+  end
+
+  @spec call_api(atom() | pid(), atom(), any(), integer() | :infinity) :: any()
+  def call_api(target, api, params, timeout) when is_atom(target) or is_pid(target) do
+    ref = response_ref()
+    send(target, {api, ref, params})
+    api_receiver(ref, timeout)
+  end
+
+  @spec call_api_no_reply(atom() | pid(), atom(), any()) :: any()
+  def call_api_no_reply(target, api, params) when is_atom(target) or is_pid(target) do
+    {_, ref} = response_ref() # ref is just for tracking, adds more in the future.
+    send(target, {api, ref, params})
+  end
+
   ## Private functions
 
+  @spec do_normalize_opts([keyword() | atom()], map(), map(), [any()]) :: {:ok, map()} | {:error, atom()}
   defp do_normalize_opts([], _params, valid, invalid) do
     if Enum.empty?(invalid) do
       {:ok, valid}

@@ -1,2 +1,6 @@
-defmodule SuperWorker.Supervisor.ApiMessage do
+defmodule SuperWorker.Supervisor.ApiType do
+  @moduledoc false
+
+
+
 end

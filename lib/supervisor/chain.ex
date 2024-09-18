@@ -60,7 +60,7 @@ defmodule SuperWorker.Supervisor.Chain do
     else
       worker =
         worker
-        |> Map.put(:chain_order, get_and_update_chain_order(chain))
+        |> Map.put(:order, get_and_update_chain_order(chain))
         |> Map.put(:parent, chain.id)
 
       if worker.num_workers == 1 do # has 1 worker per chain node.
@@ -224,7 +224,7 @@ defmodule SuperWorker.Supervisor.Chain do
       Process.put({:supervisor, :worker_id}, worker.id)
 
       Registry.register(worker.supervisor, {:chain, worker.parent}, :worker)
-      Registry.register(worker.supervisor, {:chain_order, worker.parent, worker.chain_order}, worker.id)
+      Registry.register(worker.supervisor, {:chain_order, worker.parent, worker.order}, worker.id)
 
       case worker.id do
         {:multi_workers, root_id, index} ->

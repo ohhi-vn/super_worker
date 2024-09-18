@@ -29,6 +29,7 @@ defmodule SuperWorker.Supervisor.Worker do
     partition: nil, # partition id.
     num_workers: 1, # number of workers in chain.
     parent: nil, # parent(group/chain) id.
+    order: nil, # order in chain.
   ]
 
   import SuperWorker.Supervisor.Utils
