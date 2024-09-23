@@ -8,6 +8,7 @@ defmodule SuperWorker.Supervisor.Chain do
   @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
 
   alias :ets, as: Ets
+  alias __MODULE__
 
   defstruct [
     :id, # chain id, unique in supervior.
@@ -21,16 +22,28 @@ defmodule SuperWorker.Supervisor.Chain do
     data_table: nil, # ets table of supervisor.
   ]
 
+  @type t :: %__MODULE__{
+    id: any,
+    first_worker_id: any,
+    restart_strategy: atom,
+    supervisor: atom,
+    partition: atom,
+    finished_callback: nil | {:fun, fun} | {module, atom, [any]},
+    queue_length: non_neg_integer,
+    send_type: :broadcast | :random,
+    data_table: atom
+  }
+
   import SuperWorker.Supervisor.Utils
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.MapQueue
-  alias SuperWorker.Supervisor.Worker
+  alias SuperWorker.Supervisor.{Worker, Message, MapQueue}
 
   require Logger
 
   ## Public functions
 
+  @spec check_options([atom() | keyword()]) :: {:error, atom | {atom, any}} | {:ok, Chain.t}
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @chain_params),
          {:ok, opts} <- validate_restart_strategy(opts),
@@ -40,6 +53,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
+  @spec get_worker(Chain.t, any()) :: {:error, :not_found} | {:ok, Worker.t}
   def get_worker(chain, worker_id) do
     case Ets.lookup(chain.data_table, {:worker, {:chain, chain.id}, worker_id}) do
       [{_, worker}] -> {:ok, worker}
@@ -47,6 +61,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
+  @spec worker_exists?(Chain.t, any()) :: boolean()
   def worker_exists?(chain, worker_id) do
     case get_worker(chain, worker_id) do
       {:ok, _} -> true
@@ -54,6 +69,15 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
+  @spec get_all_workers(Chain.t) :: {:ok, list(Worker.t)}
+  def get_all_workers(chain) do
+    result =
+    Ets.match(chain.data_table, {{:worker, {:chain, chain.id}, :_}, :"$1"})
+    |> List.flatten()
+    {:ok, result}
+  end
+
+  @spec add_worker(Chain.t, Worker.t) :: {:error, :already_exists} | {:ok, Chain.t}
   def add_worker(chain,  %Worker{} = worker) do
     if worker_exists?(chain, worker.id) do
       {:error, :already_exists}
@@ -79,6 +103,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
+  @spec do_add_worker(Chain.t, Worker.t) :: {:error, :already_exists} | {:ok, Chain.t}
   defp do_add_worker(chain, %Worker{} = worker) do
     Logger.debug("Adding worker #{inspect worker.id} to the chain #{inspect chain.id}")
     if worker_exists?(chain, worker.id) do
@@ -92,6 +117,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
+  @spec restart_worker(Chain.t, any()) :: {:error, any} | {:ok, Chain.t}
   def restart_worker(chain, worker_id) do
     if worker_exists?(chain, worker_id) do
       kill_worker(chain, worker_id)
@@ -101,6 +127,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
+  @spec restart_all_workers(Chain.t) :: {:ok, Chain.t}
   # TO-DO: support restart workers depend on host partition.
   def restart_all_workers(chain) do
       workers =
@@ -118,27 +145,33 @@ defmodule SuperWorker.Supervisor.Chain do
     {:ok, chain}
   end
 
+  @spec remove_worker(Chain.t, any()) :: {:error, any} | {:ok, Chain.t}
   def remove_worker(chain, worker_id) do
     case get_worker(chain, worker_id) do
       {:ok, _} ->
         Ets.delete(chain.data_table, {:worker, {:chain, chain.id}, worker_id})
         # TO-DO: remove other info of worker.
         {:ok, chain}
-      {:error, _} ->
-        {:error, "Worker not found"}
+      {:error, reason} = error ->
+        Logger.error("Failed to remove worker #{inspect(worker_id)} in chain #{inspect chain.id}, error: #{inspect reason}")
+        error
     end
   end
 
+
+  @spec kill_worker(Chain.t, any()) :: {:error, any} | {:ok, Chain.t}
   def kill_worker(chain, worker_id) do
     case get_worker(chain, worker_id) do
       {:ok, worker} ->
         Process.exit(worker.pid, :kill)
         {:ok, chain}
-      {:error, _} ->
-        {:error, "Worker not found"}
+      {:error, reason} = error ->
+        Logger.error("Failed to kill worker #{inspect(worker_id)} in chain #{inspect chain.id}, error: #{inspect reason}")
+        error
     end
   end
 
+  @spec kill_all_workers(Chain.t) :: {:ok, Chain.t}
   # TO-DO: refactor this function, remove ref & pid from worker
   def kill_all_workers(chain) do
     workers = chain.workers
@@ -148,32 +181,33 @@ defmodule SuperWorker.Supervisor.Chain do
       Process.exit(worker.pid, :kill)
     end)
 
-    {:ok, %{chain | workers: %{}}}
+    {:ok, chain}
   end
 
-  def new_data(chain, msg = {_, _, _}) do
+  @spec new_data(Chain.t, Message.t) :: any
+  def new_data(chain = %Chain{}, msg = %Message{}) do
     send_next(chain, 1, msg)
   end
 
   ## Private functions
 
-  defp send_next(chain, order, msg) do
+  @spec send_next(Chain.t, non_neg_integer, Message.t) :: any
+  defp send_next(chain = %Chain{}, order, msg = %Message{}) do
    case Registry.lookup(chain.supervisor, {:chain_order, chain.id, order}) do
     [] ->
       Logger.debug("No next worker found for order #{order}, chain: #{chain.id}, go to finished callback.")
-      {_, _, data} = msg
       # TO-DO: catch throw, error from outside.
       case chain.finished_callback do
         nil ->
           Logger.debug("No callback found for chain #{chain.id}")
         {:fun, fun} ->
-          fun.()
+          fun.(msg.data)
         {m, f, a} ->
-          apply(m, f, [data|a])
+          apply(m, f, [msg.data|a])
       end
 
     [{pid, worker_id}] -> # just one worker doesn't check type.
-     Logger.debug("#{inspect chain.id}, order: #{order}, found next a worker: #{inspect worker_id}")
+     Logger.debug("#{inspect chain.id}, order: #{order}, found a next worker: #{inspect worker_id}, send msg #{inspect msg.id}")
       send(pid, {:new_data, msg})
 
     [_|_] = entries ->
@@ -250,18 +284,18 @@ defmodule SuperWorker.Supervisor.Chain do
         Logger.debug("Worker #{inspect worker_id} processed the data, msg_id: #{msg_id}")
         {:ok, queue} = MapQueue.remove(queue, msg_id)
         loop_chain(queue, worker)
-      {:new_data, {from, msg_id, data}} ->
+      {:new_data, msg = %Message{}} ->
         result =
           # TO-DO: catch throw, error from outside.
           case worker.fun do
             {:fun, f} ->
-              f.(data)
+              f.(msg.data)
             {m, f, a} ->
-              apply(m, f, [data | a])
+              apply(m, f, [msg.data | a])
           end
 
         if worker.first_worker_id != id do
-          send(from, {:processed, msg_id, id})
+          send(msg.from, {:processed, msg.id, id})
         end
 
         case result do
@@ -274,9 +308,10 @@ defmodule SuperWorker.Supervisor.Chain do
             Logger.debug("worker #{inspect(id)}, passing data to the next process, chain: #{inspect(chain_id)}")
 
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
-            chain = Sup.get_chain(get_my_supervisor(), chain_id)
+            {:ok,chain} = Sup.get_chain(get_my_supervisor(), chain_id)
 
-            send_next(chain, worker.chain_order + 1, {self(), msg_id, new_data})
+            msg = Message.new(self(), nil, new_data, msg_id)
+            send_next(chain, worker.order + 1, msg)
 
             loop_chain(queue, worker)
           {:error, reason} ->
@@ -299,7 +334,8 @@ defmodule SuperWorker.Supervisor.Chain do
             {:ok, queue, msg_id} = MapQueue.add(queue, data)
             chain = Sup.get_chain(get_my_supervisor(), chain_id)
 
-            send_next(chain, worker.chain_order + 1, {self(), msg_id, data})
+            msg = Message.new(self(), nil, data, msg_id)
+            send_next(chain, worker.order + 1, msg)
             loop_chain(queue, worker)
         end
 

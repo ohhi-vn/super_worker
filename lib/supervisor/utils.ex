@@ -3,24 +3,6 @@ defmodule SuperWorker.Supervisor.Utils do
 
   require Logger
 
-  # Define the parameters for worker options
-  @child_params [:id, :group_id, :chain_id,  :type]
-
-  def validate_child_opts(opts) do
-    # Validate the options
-    # TO-DO: Implement the validation
-    result = Enum.reduce(opts, %{}, fn
-      {key, value}, acc -> Map.put(acc, key, value)
-      value, acc ->
-        {k, v} = get_keyword(value)
-        Map.put(acc, k, v)
-    end)
-
-    Enum.all?(result, fn {key, _} -> key in @child_params end)
-
-    {:ok, result}
-  end
-
   # convert specified keyword to a tuple.
   @spec get_keyword(atom()) :: {:type, atom()} | {:error, atom()}
   def get_keyword(:group) do
@@ -33,7 +15,7 @@ defmodule SuperWorker.Supervisor.Utils do
     {:type, :standalone}
   end
   def get_keyword(_) do
-    {:error, :invalid_keyword}
+    {:error, :invalid_options}
   end
 
   @spec generic_default_sup_opts(map()) :: map()
@@ -45,7 +27,7 @@ defmodule SuperWorker.Supervisor.Utils do
     end
   end
 
-  @spec normalize_opts([atom() | keyword()], map()) :: {:ok, map()} | {:error, atom()}
+  @spec normalize_opts([atom() | keyword()], list(atom())) :: {:ok, map()} | {:error, atom()|{atom(), any()}}
   def normalize_opts(opts, params) do
     do_normalize_opts(opts, params, %{}, [])
   end
@@ -70,7 +52,10 @@ defmodule SuperWorker.Supervisor.Utils do
 
   @spec count_msgs(pid()) :: non_neg_integer()
   def count_msgs(pid) do
-    Process.info(pid, :message_queue_len)
+    case Process.info(pid, :message_queue_len) do
+      {:message_queue_len, n} -> n
+      nil -> 0
+    end
   end
 
   @spec check_type(map(), atom(), (any() -> boolean())) :: {:ok, map()} | {:error, atom()}
@@ -110,7 +95,7 @@ defmodule SuperWorker.Supervisor.Utils do
       {^ref, result} ->
         result
       after timeout ->
-        {:error, :timeout}
+        {:error, :api_timeout}
     end
   end
 
@@ -121,6 +106,7 @@ defmodule SuperWorker.Supervisor.Utils do
 
   @spec call_api(atom() | pid(), atom(), any(), integer() | :infinity) :: any()
   def call_api(target, api, params, timeout) when is_atom(target) or is_pid(target) do
+    Logger.debug("Call API: #{inspect api}, #{inspect params}, target: #{inspect target}")
     ref = response_ref()
     send(target, {api, ref, params})
     api_receiver(ref, timeout)
@@ -134,12 +120,13 @@ defmodule SuperWorker.Supervisor.Utils do
 
   ## Private functions
 
-  @spec do_normalize_opts([keyword() | atom()], map(), map(), [any()]) :: {:ok, map()} | {:error, atom()}
+  @spec do_normalize_opts([keyword() | atom()], list(atom()), map(), list(keyword() | atom()))
+     :: {:ok, map()} | {:error, {atom()|{atom(), list(keyword() | atom())}}}
   defp do_normalize_opts([], _params, valid, invalid) do
     if Enum.empty?(invalid) do
       {:ok, valid}
     else
-      {:error, "Invalid options: #{inspect invalid}"}
+      {:error, {:invalid_options, invalid}}
     end
   end
   defp do_normalize_opts([{key, value}|rest], params, valid, invalid) do

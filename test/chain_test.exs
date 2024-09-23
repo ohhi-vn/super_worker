@@ -31,26 +31,28 @@ defmodule SuperWorker.Supervisor.ChainTest do
       {:ok, _} = Sup.add_chain_worker(@sup_id, :chain1, {__MODULE__, :loop, [index]}, [id: index])
     end
 
-    chain = Sup.get_chain(@sup_id, :chain1)
+    {:ok, chain} = Sup.get_chain(@sup_id, :chain1)
     # wait for workers to be added, need to adjust for slow machines.
     # TO-DO: Improve code for add worker (wait for worker to be added).
     Process.sleep(100)
 
-    assert(length(list) == length(Chain.get_all_workers(chain)))
+    {:ok, workers} = Chain.get_all_workers(chain)
+
+    assert(length(list) == length(workers))
   end
 
   test "send data to worker in chain" do
     chain_id = :chain_loop_send
     {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :task, [100]}, [id: 1])
+    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, []}, [id: 1])
 
     Process.sleep(100)
     Sup.send_to_chain(@sup_id, chain_id, 1, {:ping, self()})
 
     result =
       receive do
-        {:pong, sender} -> true
-      after 1_000 -> false
+        {:pong, _} -> true
+      after 1_000 -> :timeout
       end
 
     assert(true == result )
@@ -97,10 +99,6 @@ defmodule SuperWorker.Supervisor.ChainTest do
     IO.puts prefix <> " Task done, #{sum}"
 
     {:next, n + 1}
-  end
-
-  def send_to_chain(sup_id, chain_id, data \\ 10) do
-    Sup.send_to_chain(sup_id, chain_id, data)
   end
 
   # return a anonymous function.

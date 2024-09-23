@@ -5,7 +5,7 @@ defmodule SuperWorker.SupervisorTest do
   alias SuperWorker.Supervisor.{Group, Chain, Worker}
 
   @group {:group1, "test group"}
-  @sup_id :sup_test_group
+  @sup_id :sup_test
   @chain :chain1
 
   setup_all do
@@ -13,32 +13,42 @@ defmodule SuperWorker.SupervisorTest do
   end
 
   setup do
-    Sup.stop(@sup_id)
+    # ensure sup with id is not running from last test case.
+    if Sup.is_running?(@sup_id) do
+      Sup.stop(@sup_id)
+      Process.sleep(100)
+    end
     :ok
   end
 
-  test "start supervisor" do
+  test "start/stop supervisor, no linked process" do
     {:ok, _} = Sup.start([link: false, id: @sup_id])
-    assert true
+    Process.sleep(100)
+    assert true == Sup.is_running?(@sup_id)
+    Sup.stop(@sup_id)
+    Process.sleep(100)
+    assert false == Sup.is_running?(@sup_id)
   end
 
   test "duplicated supervisor's id" do
-    {:ok, pid1} = Sup.start([link: false, id: @sup_id])
-    {:error, {_, pid2}} = Sup.start([link: false, id: @sup_id])
-    assert pid1 == pid2
+    {:ok, _} = Sup.start([link: false, id: @sup_id])
+    Process.sleep(100)
+    {:error, _} = Sup.start([link: false, id: @sup_id])
+    assert true == Sup.is_running?(@sup_id)
   end
 
   test "start supervisor with link" do
     {:ok, _} = Sup.start([link: true, id: @sup_id])
-    assert true
+    Process.sleep(100)
+    assert true == Sup.is_running?(@sup_id)
   end
 
-  test "start supervisor with link 2" do
+  test "start supervisor with link, process still alive if linked process exit :normal" do
     pid = spawn fn ->
       {:ok, _} = Sup.start([link: true, id: @sup_id])
       receive do
         {from, :exit, reason} ->
-          send from, {from, :ok}
+          send from, {:ok, from}
           exit(reason)
       end
     end
@@ -47,33 +57,39 @@ defmodule SuperWorker.SupervisorTest do
     send pid, {me, :exit, :normal}
     send_result =
     receive do
-      {me, :ok} -> :ok
+      {:ok, ^me} -> :ok
     after 1_000 -> :timed_out
     end
 
     assert send_result == :ok
-    assert !Sup.is_running?(@sup_id)
+    assert true == Sup.is_running?(@sup_id)
   end
 
-  test "start supervisor with link 3" do
+  test "start supervisor with linked process, expect supervisor is crashed follow crashed process" do
     pid = spawn fn ->
       {:ok, _} = Sup.start([link: true, id: @sup_id])
       receive do
-        {from, :crash, reason} ->
-          send from, {from, :ok}
-          raise reason
+        {from, :crash} ->
+          send(from, {:ok, from})
+          Process.sleep(100)
+          raise "receive crash command from #{inspect from}"
       end
     end
 
+    Process.sleep(100)
+
     me = self()
-    send pid, {me, :crash, "test crash linked process"}
+    send pid, {me, :crash}
     send_result =
     receive do
-      {me, :ok} -> :ok
+      {:ok, ^me} -> :ok
+      msg ->
+        IO.inspect msg
+        msg
     after 1_000 -> :timed_out
     end
-
     assert send_result == :ok
-    assert !Sup.is_running?(@sup_id)
+
+    assert false == Sup.is_running?(@sup_id)
   end
 end

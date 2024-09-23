@@ -11,11 +11,13 @@ defmodule SuperWorker.Supervisor.Worker do
 
   @standalone_restart_strategies [:permanent, :transient, :temporary]
 
+  @worker_restart_strategies [:permanent, :transient, :temporary]
+
   @group_params [:group_id]
 
   @chain_params [:chain_id, :num_workers]
 
-  @enforce_keys [:id]
+  @enforce_keys [:id, :fun]
   defstruct [
     :id, # worker id, unique in supervior.
     :pid, # current pid of worker.
@@ -25,12 +27,28 @@ defmodule SuperWorker.Supervisor.Worker do
     type: :standalone, # type of worker. :standalone, :group, :chain
     restart_count: 0, # restart counter.
     fun: nil, # anonymous function {:fun, fun} or  {function, module, arguments} of worker.
-    supervisor: nil, # supervisor pid.
+    supervisor: nil, # supervisor id.
     partition: nil, # partition id.
     num_workers: 1, # number of workers in chain.
     parent: nil, # parent(group/chain) id.
     order: nil, # order in chain.
   ]
+
+  @type t :: %__MODULE__{
+    id: any,
+    pid: pid,
+    ref: reference,
+    start_time: DateTime.t,
+    restart_strategy: atom,
+    type: atom,
+    restart_count: non_neg_integer,
+    fun: nil | {:fun, fun} | {module, atom, [any]},
+    supervisor: atom,
+    partition: atom,
+    num_workers: non_neg_integer,
+    parent: any,
+    order: non_neg_integer | nil
+  }
 
   import SuperWorker.Supervisor.Utils
 
@@ -67,6 +85,14 @@ defmodule SuperWorker.Supervisor.Worker do
       {:ok, opts}
     else
       {:error, "Invalid group restart strategy, #{inspect opts.restart_strategy}"}
+    end
+  end
+
+  defp validate_worker_restart_strategy(opts) do
+    if opts.restart_strategy in @worker_restart_strategies do
+      {:ok, opts}
+    else
+      {:error, {:invalid_option, [inspect opts.restart_strategy]}}
     end
   end
 

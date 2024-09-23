@@ -22,6 +22,14 @@ defmodule SuperWorker.Supervisor.Group do
     data_table: nil, # ets table of supervisor.
   ]
 
+  @type t :: %__MODULE__{
+    id: any,
+    restart_strategy: atom,
+    supervisor: atom,
+    partition: atom,
+    data_table: atom
+  }
+
   import SuperWorker.Supervisor.Utils
 
   require Logger
@@ -31,6 +39,7 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Check, validate and convert key-value pairs to struct.
   """
+  @spec check_options([atom | keyword]) :: {:ok, } | {:error, atom | {atom, any}}
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @group_params),
          {:ok, opts} <- validate_restart_strategy(opts),
@@ -56,8 +65,10 @@ defmodule SuperWorker.Supervisor.Group do
   """
   def get_all_workers(%Group{} = group) do
     Logger.debug("get_all_workers: #{inspect group.supervisor}")
+    result =
     Ets.match(group.data_table, {{:worker, {:group, group.id}, :_}, :"$1"})
     |> List.flatten()
+    {:ok, result}
   end
 
   @doc """
@@ -102,11 +113,14 @@ defmodule SuperWorker.Supervisor.Group do
 
   def remove_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
-      with {:ok, worker} <- get_worker(group, worker_id) do
-        kill_worker(group, worker, :remove)
+      with {:ok, worker} <- get_worker(group, worker_id),
+        {:ok, _} <- kill_worker(group, worker, :remove) do
+          Ets.delete(group.data_table, {:worker, {:group, group.id}, worker_id})
+          {:ok, :worker_removed}
       else
-        error ->
-          Logger.error("failed to kill worker #{inspect(worker_id)} in group #{inspect group.id}, error: #{inspect error}")
+        {:error, reason} = error ->
+          Logger.error("failed to kill worker #{inspect(worker_id)} in group #{inspect group.id}, error: #{inspect reason}")
+          error
       end
 
       Ets.delete(group.data_table, {:worker, {:group, group.id}, worker_id})
@@ -123,6 +137,9 @@ defmodule SuperWorker.Supervisor.Group do
       Logger.debug("group: #{inspect group.id}, kill_worker: #{inspect worker}, reason: #{inspect reason}")
       Ets.delete(group.data_table, {:worker, :ref, worker.ref})
       Process.exit(worker.pid, reason)
+      {:ok, :killed}
+    else
+      {:error, :not_alive}
     end
   end
   def kill_worker(group, worker_id, reason) do
@@ -134,7 +151,7 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   def kill_all_workers(group, reason \\ :kill) do
-    Group.get_all_workers(group)
+    get_all_workers(group)
     |> Enum.each(fn %Worker{} = worker ->
       kill_worker(group, worker, reason)
     end)

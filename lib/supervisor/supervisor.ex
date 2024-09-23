@@ -38,7 +38,7 @@ defmodule SuperWorker.Supervisor do
 
   require Logger
 
-  alias SuperWorker.Supervisor.{Group, Chain, Worker}
+  alias SuperWorker.Supervisor.{Group, Chain, Worker, Message}
   alias :ets, as: Ets
 
   import SuperWorker.Supervisor.Utils
@@ -59,7 +59,9 @@ defmodule SuperWorker.Supervisor do
   @default_time 5_000
 
   # List message from api.
-  @api_messages [:start_worker, :remove_group_worker, :restart_group_worker, :get_chain, :send_to_group, :send_to_group_random, :add_data_to_chain, :send_to_worker, :remove_group_worker, :add_group]
+  @api_messages [:start_worker, :get_group, :remove_group_worker, :restart_group_worker,
+    :get_chain, :send_to_group, :send_to_group_random, :add_data_to_chain, :send_to_worker,
+     :remove_group_worker, :add_group, :add_chain, :stop]
 
   # List internal message.
   @internal_messages []
@@ -75,7 +77,7 @@ defmodule SuperWorker.Supervisor do
   def start(opts, timeout \\ 5_000) when is_list(opts) do
     with {:ok, opts} <- check_opts(opts),
       false <- is_running?(opts.id) do
-        start_supervisor(opts,timeout)
+        start_supervisor(opts, timeout)
     else
       true ->
         Logger.error("Supervisor is already running.")
@@ -191,7 +193,7 @@ defmodule SuperWorker.Supervisor do
   @spec get_group(atom(), atom(), integer()) :: {:ok, map()} | {:error, any()}
   def get_group(sup_id, group_id, timeout \\ @default_time) do
     with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
-        call_api(pid, :get_group_info, group_id, timeout)
+        call_api(pid, :get_group, group_id, timeout)
     end
   end
 
@@ -346,7 +348,7 @@ defmodule SuperWorker.Supervisor do
       owner: opts.owner,
       data_table: get_table_name(opts.id),
       master: opts.id,
-      prefix: "[#{inspect opts.id}-master]"
+      prefix: "[#{inspect opts.id}, master]"
     }
 
     # Register the supervisor process.
@@ -401,7 +403,7 @@ defmodule SuperWorker.Supervisor do
       master: opts.master,
       number_of_partitions: opts.number_of_partitions,
       data_table: get_table_name(opts.master),
-      prefix: "[#{inspect opts.master}-#{inspect opts.id}]"
+      prefix: "[#{inspect opts.master}, #{inspect opts.id}]"
     }
 
     # Start the main loop
@@ -584,7 +586,8 @@ defmodule SuperWorker.Supervisor do
         Logger.error("#{inspect state.prefix} Chain not found: #{inspect chain_id}")
         api_response(ref, error)
       {:ok, chain} ->
-        Chain.new_data(chain, {from, random_id(), data})
+        msg = Message.new(from, nil, data)
+        Chain.new_data(chain, msg)
         api_response(ref, :ok)
     end
     main_loop(state, sup_opts)
@@ -604,14 +607,15 @@ defmodule SuperWorker.Supervisor do
 
   # remove worker from group.
   defp process_api_message(state, sup_opts, {:remove_group_worker, ref, {worker_id, group_id}}) do
-    case get_group_or_chain(state, group_id, :group) do
-      {:ok, group} ->
-        result = Group.remove_worker(group, worker_id)
-        api_response(ref, result)
-      {:error, _} = error ->
-        Logger.error("#{inspect state.prefix} Group not found: #{inspect group_id}")
-        api_response(ref, error)
-    end
+    result =
+      case get_group_or_chain(state, group_id, :group) do
+        {:ok, group} ->
+          Group.remove_worker(group, worker_id)
+        {:error, _} = error ->
+          Logger.error("#{inspect state.prefix} Group not found: #{inspect group_id}")
+          error
+      end
+    api_response(ref, result)
     main_loop(state, sup_opts)
   end
 
@@ -645,7 +649,7 @@ defmodule SuperWorker.Supervisor do
   end
 
    # get group info from api.
-  defp process_api_message(state, sup_opts, {:get_group_info, ref, group_id}) do
+  defp process_api_message(state, sup_opts, {:get_group, ref, group_id}) do
     result =
       case Ets.lookup(state.data_table, {:group, group_id}) do
         [] ->
@@ -681,7 +685,7 @@ defmodule SuperWorker.Supervisor do
     Logger.info("#{inspect state.prefix} Stopping supervisor, request from #{inspect ref}")
 
     # Send shutdown signal to all partitions.
-    Enum.each(1..sup_opts.number_of_partitions, fn i ->
+    Enum.each(0..sup_opts.number_of_partitions - 1, fn i ->
       partition_id = get_partition_id(state.id, i)
 
       case Ets.lookup(state.data_table, {:partition, partition_id}) do
@@ -1036,10 +1040,13 @@ defmodule SuperWorker.Supervisor do
     # Start main process of the supervisor
     case opts.link do
       true ->
+        Logger.debug("Starting supervisor with link.")
         spawn_link(__MODULE__, :init, [opts, ref])
       false ->
+        Logger.debug("Starting supervisor without link.")
         spawn(__MODULE__, :init, [opts, ref])
       pid when is_pid(pid) ->
+        Logger.debug("Starting supervisor and link with remote pid.")
         spawn(__MODULE__, :init, [opts, ref])
     end
 
@@ -1162,8 +1169,8 @@ defmodule SuperWorker.Supervisor do
         false ->
           Logger.error("Supervisor not running.")
           {:error, :not_running}
-        error ->
-          Logger.error("Get target partition failed: #{inspect error}")
+        {:error, reason} = error ->
+          Logger.error("Get target partition failed: #{inspect reason}")
           error
     end
   end

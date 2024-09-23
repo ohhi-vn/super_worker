@@ -8,12 +8,17 @@ defmodule SuperWorker.Supervisor.GroupTest do
   @sup_id :sup_test_group
 
   setup_all do
-    {:ok, _} = Sup.start([link: false, id: :sup_test])
+    {:ok, _} = Sup.start([link: false, id: @sup_id])
     :ok
   end
 
   setup do
-    :ok
+    if Sup.is_running?(@sup_id) do
+      :ok
+    else
+      raise "Supervisor is not running"
+    end
+
   end
 
 
@@ -40,7 +45,9 @@ defmodule SuperWorker.Supervisor.GroupTest do
     # TO-DO: Improve code for add worker (wait for worker to be added).
     Process.sleep(100)
 
-    assert(length(list) == length(Group.get_all_workers(group)))
+    {:ok, workers} = Group.get_all_workers(group)
+
+    assert(length(list) == length(workers))
   end
 
   test "send data to worker in group" do
@@ -53,7 +60,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
     result =
       receive do
-        {:pong, sender} -> true
+        {:pong, _sender} -> true
       after 1_000 -> false
       end
 
@@ -70,13 +77,13 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
     result =
       receive do
-        {:pong, sender} -> true
+        {:pong, _sender} -> true
       after 1_000 -> false
       end
 
     assert(true == result)
 
-    :ok == Sup.remove_group_worker(@sup_id, group_id, 1)
+    {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, 1)
     {:error, _ } = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
   end
 
