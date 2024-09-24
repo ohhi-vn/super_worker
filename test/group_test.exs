@@ -25,6 +25,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
   @doc """
   Test for adding group strategy.
   """
+  @tag :group_verify_strategy
   test "add group & verify strategy" do
     {:ok, _} = Sup.add_group(@sup_id, [id: :group2, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_group(@sup_id, [id: :group3, restart_strategy: :one_for_all])
@@ -33,6 +34,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     assert(:one_for_one == group2.restart_strategy && :one_for_all == group3.restart_strategy)
   end
 
+  @tag :group_add_workers
   test "add workers to group" do
     {:ok,_} = Sup.add_group(@sup_id, [id: @group, restart_strategy: :one_for_one])
     list =
@@ -50,6 +52,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     assert(length(list) == length(workers))
   end
 
+  @tag :group_send_data
   test "send data to worker in group" do
     group_id = :group_loop_send
     {:ok,_} = Sup.add_group(@sup_id, [id: group_id, restart_strategy: :one_for_one])
@@ -67,6 +70,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     assert(true == result )
   end
 
+  @tag :group_remove_worker
   test "remove worker from group" do
     group_id = :group_loop_remove
     {:ok,_} = Sup.add_group(@sup_id, [id: group_id, restart_strategy: :one_for_one])

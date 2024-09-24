@@ -200,16 +200,19 @@ defmodule SuperWorker.Supervisor.Chain do
       case chain.finished_callback do
         nil ->
           Logger.debug("No callback found for chain #{chain.id}")
+          {:error, :no_worker_or_callback}
         {:fun, fun} ->
           fun.(msg.data)
+          {:ok, :call_back}
         {m, f, a} ->
           apply(m, f, [msg.data|a])
+          {:ok, :call_back}
       end
 
     [{pid, worker_id}] -> # just one worker doesn't check type.
      Logger.debug("#{inspect chain.id}, order: #{order}, found a next worker: #{inspect worker_id}, send msg #{inspect msg.id}")
       send(pid, {:new_data, msg})
-
+      {:ok, :send_one}
     [_|_] = entries ->
       Logger.debug("#{inspect chain.id}, order: #{order}, found next workers: #{inspect entries}")
 
@@ -220,10 +223,12 @@ defmodule SuperWorker.Supervisor.Chain do
               Logger.debug("Sending data to the next worker #{worker_id}")
               send(pid, {:new_data, msg})
             end)
+          {:ok, :send_all}
         :random ->
           {pid, _} = Enum.random(entries)
           send(pid, {:new_data, msg})
           Logger.debug("Sending data to the next worker #{inspect pid} (random)")
+          {:ok, :send_random}
         end
       end
   end
@@ -271,6 +276,10 @@ defmodule SuperWorker.Supervisor.Chain do
 
       loop_chain(%MapQueue{}, worker)
     end)
+
+    # Link to child for case supervisor is down.
+    # TO-DO: Improve case worker crash immediately.
+    Process.link(pid)
 
     worker
     |> Map.put(:pid, pid)

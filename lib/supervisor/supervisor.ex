@@ -48,7 +48,8 @@ defmodule SuperWorker.Supervisor do
     :owner, # owner of the supervisor
     :number_of_partitions, # number of partitions, default is number of online schedulers
     link: true, # link the supervisor to the caller
-    report_to: [] # list of pid or callback function, for reporting worker crashed or worker finished.
+    report_to: [], # list of pid or callback function, for reporting worker crashed or worker finished.
+    linked_pids: [], # list of linked external pids
   ]
 
   @sup_params [:id, :number_of_partitions, :link]
@@ -354,10 +355,16 @@ defmodule SuperWorker.Supervisor do
     # Register the supervisor process.
     Process.register(self(), get_master_id(opts.id))
 
-    # Link to remote pid if link is a pid.
-    # Other cases, process at start with/without link at start function.
-    if is_pid(opts.link) do
-      Process.link(opts.link)
+    # Link to remote pid if link is a pids
+    case opts.link do
+      pid when is_pid(pid) ->
+        Process.link(pid)
+      list_pid when is_list(list_pid) ->
+        Enum.each(list_pid, fn pid ->
+          Process.link(pid)
+        end)
+      bool when bool in [true, false] ->
+        :ok
     end
 
     # Create Registry for map worker/group/chain id to pid.
@@ -367,6 +374,9 @@ defmodule SuperWorker.Supervisor do
 
     # Store group, chain, workers in Ets
     create_table(state.data_table)
+
+    # Turn main process to system process.
+    Process.flag(:trap_exit, true)
 
     Ets.insert(state.data_table, {:number_of_partitions, opts.number_of_partitions})
     Ets.insert(state.data_table, {:owner, opts.owner})
@@ -443,10 +453,14 @@ defmodule SuperWorker.Supervisor do
         Logger.debug("#{inspect state.prefix} Worker died: #{inspect(pid)}, reason: #{inspect(reason)}")
         process_worker_down(state, sup_opts, msg)
 
+      {:'EXIT', from, reason} ->
+        process_exit_message(state, sup_opts, from, reason)
+
       {:stop_partition, type} ->
         Logger.info("#{inspect state.prefix} Stopping supervisor partition, for #{inspect self()}")
         # Stop the supervisor.
         shutdown(state, type)
+
       unknown ->
         Logger.warning("#{inspect state.prefix} main_loop, unknown message: #{inspect(unknown)}")
         main_loop(state, sup_opts)
@@ -474,6 +488,18 @@ defmodule SuperWorker.Supervisor do
     {:ok, :brutal_kill}
   end
 
+  # process exit message for outside processes.
+  defp process_exit_message(state, sup_opts, from, reason) do
+    Logger.debug("#{inspect state.prefix} Exit message from: #{inspect from}, reason: #{inspect reason}")
+
+    if from in sup_opts.linked_pids do
+      Logger.warning("#{inspect state.prefix} exited follow external process (crashed): #{inspect from}")
+      raise "#{inspect state.master} crashed follow external process: #{inspect from}"
+    else
+      Logger.debug("#{inspect state.prefix} skipped exit for internal process: #{inspect from}")
+      main_loop(state, sup_opts)
+    end
+  end
 
   # Add new worker to group/chain/standalone.
   defp process_api_message(state, sup_opts, {:start_worker, ref, opts}) do
@@ -587,8 +613,9 @@ defmodule SuperWorker.Supervisor do
         api_response(ref, error)
       {:ok, chain} ->
         msg = Message.new(from, nil, data)
-        Chain.new_data(chain, msg)
-        api_response(ref, :ok)
+        result = Chain.new_data(chain, msg)
+        Logger.debug("#{inspect state.prefix} Add data to chain: #{inspect chain_id}, result: #{inspect result}")
+        api_response(ref, result)
     end
     main_loop(state, sup_opts)
   end
@@ -879,6 +906,9 @@ defmodule SuperWorker.Supervisor do
         end
       end)
 
+    # Link to child for case supervisor is down.
+    Process.link(pid)
+
     Ets.insert(state.data_table, {{:worker, :ref, ref}, id, pid, :standalone})
 
     state
@@ -1041,12 +1071,18 @@ defmodule SuperWorker.Supervisor do
     case opts.link do
       true ->
         Logger.debug("Starting supervisor with link.")
+        opts = Map.put(opts, :linked_pids, [self()])
         spawn_link(__MODULE__, :init, [opts, ref])
       false ->
         Logger.debug("Starting supervisor without link.")
         spawn(__MODULE__, :init, [opts, ref])
       pid when is_pid(pid) ->
         Logger.debug("Starting supervisor and link with remote pid.")
+        opts = Map.put(opts, :linked_pids, [pid])
+        spawn(__MODULE__, :init, [opts, ref])
+      list_pid when is_list(list_pid) ->
+        Logger.debug("Starting supervisor and link with remote pids.")
+        opts = Map.put(opts, :linked_pids, list_pid)
         spawn(__MODULE__, :init, [opts, ref])
     end
 

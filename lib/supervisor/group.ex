@@ -196,6 +196,10 @@ defmodule SuperWorker.Supervisor.Group do
       end
     end)
 
+    # Link to child for case supervisor is down.
+    # TO-DO: Improve case worker crash immediately.
+    Process.link(pid)
+
     worker
     |> Map.put(:pid, pid)
     |> Map.put(:ref, ref)

@@ -1,6 +1,7 @@
 defmodule SuperWorker.Supervisor.ChainTest do
   use ExUnit.Case, async: false
 
+  require Logger
   alias SuperWorker.Supervisor, as: Sup
   alias SuperWorker.Supervisor.{Chain, Worker}
 
@@ -15,6 +16,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
     :ok
   end
 
+  @tag :chain_verify_strategy
   test "add chain & verify strategy" do
     {:ok, _} = Sup.add_chain(@sup_id, [id: :chain2, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_chain(@sup_id, [id: :chain3, restart_strategy: :one_for_all])
@@ -24,6 +26,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
     assert :one_for_all == chain3.restart_strategy
   end
 
+  @tag :chain_add_workers
   test "add workers to chain" do
     {:ok,_} = Sup.add_chain(@sup_id, [id: :chain1, restart_strategy: :one_for_one])
     list =
@@ -41,13 +44,15 @@ defmodule SuperWorker.Supervisor.ChainTest do
     assert(length(list) == length(workers))
   end
 
-  test "send data to worker in chain" do
+  @tag :chain_send_data
+  test "send data to chain" do
     chain_id = :chain_loop_send
     {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, []}, [id: 1])
 
     Process.sleep(100)
-    Sup.send_to_chain(@sup_id, chain_id, 1, {:ping, self()})
+    result = Sup.send_to_chain(@sup_id, chain_id, 1, {:ping, self()})
+    Logger.debug("send data to chain: #{inspect result}")
 
     result =
       receive do
