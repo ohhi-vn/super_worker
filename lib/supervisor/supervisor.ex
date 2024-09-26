@@ -46,6 +46,7 @@ defmodule SuperWorker.Supervisor do
   defstruct [
     :id, # supervisor id
     :owner, # owner of the supervisor
+    :master,
     :number_of_partitions, # number of partitions, default is number of online schedulers
     link: true, # link the supervisor to the caller
     report_to: [], # list of pid or callback function, for reporting worker crashed or worker finished.
@@ -55,6 +56,7 @@ defmodule SuperWorker.Supervisor do
   @sup_params [:id, :number_of_partitions, :link]
 
   @me __MODULE__
+  alias __MODULE__
 
   # Default timeout (miliseconds) for API calls.
   @default_time 5_000
@@ -77,8 +79,9 @@ defmodule SuperWorker.Supervisor do
     report_to: list()]) :: {:ok, pid} | {:error, any()}
   def start(opts, timeout \\ 5_000) when is_list(opts) do
     with {:ok, opts} <- check_opts(opts),
-      false <- is_running?(opts.id) do
-        start_supervisor(opts, timeout)
+      {:ok, sup} <- map_to_struct(opts),
+      false <- is_running?(sup.id) do
+        start_supervisor(sup, timeout)
     else
       true ->
         Logger.error("Supervisor is already running.")
@@ -340,7 +343,7 @@ defmodule SuperWorker.Supervisor do
 
   ## Internal public functions
 
-  def init(opts, ref) do
+  def init(opts = %Supervisor{}, ref) do
     state = %{
       groups: MapSet.new(), # storage for group processes
       chains: MapSet.new(), # storage for chain processes
@@ -399,7 +402,7 @@ defmodule SuperWorker.Supervisor do
 
   ## Private functions
 
-  defp init_partition(opts) do
+  defp init_partition(opts = %Supervisor{}) do
     # TO-DO: Implement partition supervisor.
 
     state = %{
@@ -408,7 +411,7 @@ defmodule SuperWorker.Supervisor do
       standalone: %{}, # storage for standalone processes
       ref_to_id: %{}, # storage for refs to id & type
       id: opts.id, # supervisor id
-      owner: opts[:owner],
+      owner: opts.owner,
       role: :partition,
       master: opts.master,
       number_of_partitions: opts.number_of_partitions,
@@ -1029,7 +1032,8 @@ defmodule SuperWorker.Supervisor do
 
   defp check_opts(opts) do
     with {:ok, opts} <- normalize_opts(opts, @sup_params),
-      {:ok, opts} <- validate_opts(opts) do
+      {:ok, opts} <- validate_opts(opts),
+      {:ok, sup} <- map_to_struct(opts) do
         {:ok, opts}
       end
   end
@@ -1062,7 +1066,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   # Start the supervisor main processes.
-  defp start_supervisor(opts, timeout) do
+  defp start_supervisor(opts = %Supervisor{}, timeout) do
     Logger.debug("Starting supervisor with options: #{inspect opts}")
 
     ref = response_ref()
@@ -1210,4 +1214,9 @@ defmodule SuperWorker.Supervisor do
           error
     end
   end
+
+  defp map_to_struct(opts) when is_map(opts) do
+    {:ok, struct(__MODULE__, opts)}
+  end
+
 end

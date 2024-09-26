@@ -3,9 +3,11 @@ defmodule SuperWorker.Supervisor.Chain do
   Documentation for `SuperWorker.Supervisor.Chain`.
   """
 
-  @chain_params [:id, :restart_strategy, :finished_callback]
+  @chain_params [:id, :restart_strategy, :finished_callback, :queue_length, :send_type]
 
   @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
+
+  @send_types [:broadcast, :random, :partition, :round_robin]
 
   alias :ets, as: Ets
   alias __MODULE__
@@ -18,7 +20,7 @@ defmodule SuperWorker.Supervisor.Chain do
     partition: nil,
     finished_callback: nil,
     queue_length: 50,
-    send_type: :random,
+    send_type: :random, # :broadcast, :random, :partition, :round_robin
     data_table: nil, # ets table of supervisor.
   ]
 
@@ -30,7 +32,7 @@ defmodule SuperWorker.Supervisor.Chain do
     partition: atom,
     finished_callback: nil | {:fun, fun} | {module, atom, [any]},
     queue_length: non_neg_integer,
-    send_type: :broadcast | :random,
+    send_type: :broadcast | :random | :partition | :round_robin,
     data_table: atom
   }
 
@@ -46,9 +48,8 @@ defmodule SuperWorker.Supervisor.Chain do
   @spec check_options([atom() | keyword()]) :: {:error, atom | {atom, any}} | {:ok, Chain.t}
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @chain_params),
-         {:ok, opts} <- validate_restart_strategy(opts),
-         {:ok, opts} <- validate_opts(opts),
-         {:ok, chain} <- map_to_struct(opts) do
+         {:ok, chain} <- map_to_struct(opts),
+         {:ok, chain} <- validate_opts(chain) do
       {:ok, chain}
     end
   end
@@ -220,17 +221,36 @@ defmodule SuperWorker.Supervisor.Chain do
         :broadcast ->
           Enum.each(entries,
             fn {pid, worker_id} ->
-              Logger.debug("Sending data to the next worker #{worker_id}")
+              Logger.debug("Sending data to the next worker #{inspect worker_id} (broadcast)")
               send(pid, {:new_data, msg})
             end)
           {:ok, :send_all}
         :random ->
           {pid, _} = Enum.random(entries)
-          send(pid, {:new_data, msg})
           Logger.debug("Sending data to the next worker #{inspect pid} (random)")
+          send(pid, {:new_data, msg})
           {:ok, :send_random}
+        :partition ->
+          order = get_hash_order(msg.data, length(entries))
+          {pid, {:multi_workers, worker_id, index}} = Enum.at(entries, order)
+          Logger.debug("Sending data to the next worker #{inspect worker_id} (partition, #{index})")
+          send(pid, {:new_data, msg})
+          {:ok, :send_partition}
+        :round_robin ->
+          [{_, {:multi_workers, worker_id, _}} | _] = entries
+          order = get_next_round_robin_order(chain, worker_id, length(entries) - 1)
+          {pid, {_, _, index}} = Enum.at(entries, order)
+          Logger.debug("Sending data to the next worker #{inspect worker_id} (round_robin, #{index})")
+          send(pid, {:new_data, msg})
+          {:ok, :send_round_robin}
         end
       end
+  end
+
+  defp get_next_round_robin_order(chain, worker_id, max_order) do
+    Logger.debug("Getting next round robin order for worker #{inspect worker_id}, max_order: #{max_order}")
+    Ets.update_counter(chain.data_table, {:round_robin, {:chain, chain.id}, worker_id}, {2, 1, max_order, 0},
+    {{:round_robin, {:chain, chain.id}, worker_id}, 0})
   end
 
   defp update_chain_first(chain, worker) do
@@ -380,9 +400,37 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  defp validate_opts(opts) do
-    # TO-DO: Implement the validation
-    {:ok, opts}
+  defp validate_send_type(opts) do
+    if opts.send_type in @send_types do
+      {:ok, opts}
+    else
+      {:error, "Invalid send type, #{inspect opts.send_type}"}
+    end
+  end
+
+  defp validate_callback(opts) do
+    case opts.finished_callback do
+      nil -> {:ok, opts}
+      {:fun, fun} when is_function(fun) -> {:ok, opts}
+      {m, f, a} when is_atom(m) and is_atom(f) -> {:ok, opts}
+      _ -> {:error, "Invalid callback"}
+    end
+  end
+
+  defp validate_queue_length(opts) do
+    case opts.queue_length do
+      n when is_integer(n) and n > 0 -> {:ok, opts}
+      _ -> {:error, "Invalid queue length"}
+    end
+  end
+
+  defp validate_opts(chain) do
+    with {:ok, chain} <- validate_restart_strategy(chain),
+         {:ok, chain} <- validate_send_type(chain),
+         {:ok, chain} <- validate_callback(chain),
+         {:ok, chain} <- validate_queue_length(chain) do
+      {:ok, chain}
+    end
   end
 
   defp map_to_struct(opts) when is_map(opts) do
