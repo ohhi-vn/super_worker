@@ -53,7 +53,7 @@ defmodule SuperWorker.Supervisor do
     linked_pids: [], # list of linked external pids
   ]
 
-  @sup_params [:id, :number_of_partitions, :link]
+  @sup_params [:id, :number_of_partitions, :link, :report_to]
 
   @me __MODULE__
   alias __MODULE__
@@ -797,10 +797,10 @@ defmodule SuperWorker.Supervisor do
   defp restart_group(state, %{restart_strategy: :one_for_one} = group, child_id, {pid, reason}) do
     case reason do
       :normal ->
-        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is normal, ignore restarting.")
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is shutdown with reason :normal, ignore restarting.")
         state
-      _ ->
-        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting.")
+      reason ->
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down with reason: #{inspect reason}, restarting.")
         Group.restart_worker(group, child_id)
 
         state
@@ -810,10 +810,10 @@ defmodule SuperWorker.Supervisor do
   defp restart_group(state, %{restart_strategy: :one_for_all} = group, _child_id, {pid, reason}) do
     case reason do
       :normal ->
-        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is normal, ignore restarting.")
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is :normal shutdown, ignore restarting.")
         state
-      _ ->
-        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down, restarting...")
+      reason ->
+        Logger.debug("#{inspect state.id}, Child process(#{inspect(pid)}) is down with reason #{inspect reason}, restarting...")
 
         old_ref_keys = Enum.reduce(Group.get_all_workers(group), [], fn  worker, acc ->
           [worker.ref | acc]

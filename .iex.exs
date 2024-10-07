@@ -1,6 +1,7 @@
 alias SuperWorker.Supervisor, as: Sup
 alias SuperWorker.Supervisor.{Group, Chain, Standalone}
 alias SuperWorker.TermStorage, as: KV
+alias SuperWorker.Supervisor.ConfigWrapper, as: DevConfig
 
 IO.puts "Dev mode is running"
 IO.puts "SuperWorker.Supervisor has alias is Sup"
@@ -121,5 +122,81 @@ defmodule Dev do
     end
 
     loop(id)
+  end
+end
+
+defmodule SupConfig do
+  def sup_options do
+    [
+      link: false,
+      id: :sup_c1
+    ]
+  end
+
+  def chains do
+    [
+      chain1: [
+        options: [
+          restart_strategy: :one_for_one,
+          id: :chain1,
+          finished_callback: {Dev, :print, [:chain1]},
+          send_type: :round_robin
+        ],
+        default_worker_options: [
+          restart_strategy: :temporary,
+          num_workers: 1
+        ],
+        workers: [
+          worker1: [
+            task: {Dev, :task, [15]}
+          ],
+          worker2: [
+            options: [
+              num_workers: 5,
+              restart_strategy: :transient
+            ],
+            task: {Dev, :task_crash, [15, 5]}
+          ]
+        ]
+      ]
+    ]
+  end
+
+  def workers do
+    [
+      worker1: [
+        task: {Dev, :task, [15]}
+      ],
+      worker2: [
+        options: [
+          num_workers: 5,
+          restart_strategy: :transient
+        ],
+        task: {Dev, :task_crash, [15, 5]}
+      ]
+    ]
+  end
+
+  def groups do
+    [
+      group1: [
+        options: [
+          restart_strategy: :one_for_all,
+          id: :group1
+        ],
+        workers: [
+          worker1: [
+            task: {Dev, :task, [15]}
+          ],
+          worker2: [
+            options: [
+              num_workers: 5,
+              restart_strategy: :transient
+            ],
+            task: {Dev, :task_crash, [15, 5]}
+          ]
+        ]
+      ]
+    ]
   end
 end
