@@ -100,17 +100,21 @@ defmodule SuperWorker.Supervisor.ConfigWrapper do
 
         # add groups & workers of groups
         if Keyword.has_key?(config, :groups) do
-          groups = Keyword.get_values(config, :groups)
+          [groups] = Keyword.get_values(config, :groups)
 
           Enum.each(groups, fn {group_id, group} ->
             group = put_in(group, [:options, :id], group_id)
+            group_id = get_in(group, [:options, :id])
 
-            Sup.add_group(sup_id, group.options)
-            Logger.debug("Group #{inspect group.options.id} added to #{inspect sup_id}")
+            Sup.add_group(sup_id, Keyword.get(group, :options))
+            Logger.debug("Group #{inspect group_id} added to #{inspect sup_id}")
 
-            Enum.each( get_in(group, [:workers]), fn worker ->
-              Sup.add_group_worker(sup_id, group.options.id, worker.task, worker.options)
-              Logger.debug("Worker #{inspect worker.options.id} added to group #{inspect group.options.id}")
+            default_worker_options = Keyword.get(group, :default_worker_options, [])
+
+            Enum.each( get_in(group, [:workers]), fn {worker_id, worker} ->
+              opts = Keyword.merge(default_worker_options, Keyword.get(worker, :options, []))
+              Sup.add_group_worker(sup_id, group_id, Keyword.get(worker, :task), opts)
+              Logger.debug("Worker #{inspect worker_id} added to group #{inspect group_id}")
             end)
           end)
         else
@@ -128,7 +132,7 @@ defmodule SuperWorker.Supervisor.ConfigWrapper do
             Sup.add_chain(sup_id, get_in(chain, [:options]))
             Logger.debug("Chain #{inspect chain_id} added to #{inspect sup_id}")
 
-            default_worker_options = get_in(chain, [:default_worker_options])
+            default_worker_options = Keyword.get(chain, :default_worker_options, [])
 
             Enum.each(get_in(chain, [:workers]), fn {worker_id, worker} ->
               opts = Keyword.merge(default_worker_options, Keyword.get(worker, :options, []))

@@ -14,16 +14,10 @@ config :super_worker,
         link: true,
         report_to: {Dev, :report, []}
       ],
-      chains: [
-        chain1: [
+      groups: [
+        group1: [
           options: [
-            restart_strategy: :one_for_one,
-            finished_callback: {Dev, :print, []},
-            send_type: :round_robin
-          ],
-          default_worker_options: [
-            restart_strategy: :temporary,
-            num_workers: 1
+            restart_strategy: :one_for_all
           ],
           workers: [
             worker1: [
@@ -33,6 +27,31 @@ config :super_worker,
               options: [
                 num_workers: 5,
                 restart_strategy: :transient
+              ],
+              task: {Dev, :task_crash, [15, 5]}
+            ]
+          ]
+        ],
+      ],
+      chains: [
+        chain1: [
+          options: [
+            restart_strategy: :one_for_one,
+            finished_callback: {Dev, :print, [:chain1]},
+            send_type: :round_robin
+          ],
+          default_worker_options: [
+            # restart_strategy: :transient,
+            num_workers: 1
+          ],
+          workers: [
+            worker1: [
+              task: {Dev, :task, [15]}
+            ],
+            worker2: [
+              options: [
+                num_workers: 5,
+                # restart_strategy: :transient
               ],
               task: {Dev, :task_crash, [15, 5]}
             ]

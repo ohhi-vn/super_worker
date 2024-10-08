@@ -138,7 +138,6 @@ defmodule SupConfig do
       chain1: [
         options: [
           restart_strategy: :one_for_one,
-          id: :chain1,
           finished_callback: {Dev, :print, [:chain1]},
           send_type: :round_robin
         ],
@@ -181,8 +180,7 @@ defmodule SupConfig do
     [
       group1: [
         options: [
-          restart_strategy: :one_for_all,
-          id: :group1
+          restart_strategy: :one_for_all
         ],
         workers: [
           worker1: [
