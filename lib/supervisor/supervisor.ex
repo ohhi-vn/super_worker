@@ -53,7 +53,7 @@ defmodule SuperWorker.Supervisor do
     linked_pids: [], # list of linked external pids
   ]
 
-  @sup_params [:id, :number_of_partitions, :link, :report_to]
+  @sup_params [:id, :number_of_partitions, :link, :report_to, :children]
 
   @me __MODULE__
   alias __MODULE__
@@ -129,7 +129,7 @@ defmodule SuperWorker.Supervisor do
   If worker crashes, it will check the restart strategy of worker then act accordingly.
   """
   @spec add_standalone_worker(atom(), {module(), atom(), list()} | fun(), list(), integer()) :: {:ok, atom()} | {:error, any()}
-  def add_standalone_worker(sup_id, mfa_or_fun, opts, timeout \\ @default_time)
+  def add_standalone_worker(sup_id, mfa_or_fun, opts \\ [], timeout \\ @default_time)
   def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
    when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
     do_add_worker(sup_id, :standalone, [{:fun, mfa} | opts], timeout)
@@ -394,10 +394,35 @@ defmodule SuperWorker.Supervisor do
 
     Logger.debug("Supervisor #{inspect state.id} initialized: #{inspect state}")
 
+    # TO-DO: Add group, chain, worker from opts.
+    if opts.children != nil do
+      Enum.each(opts.children, fn child ->
+        case child do
+          {:group, group} ->
+            add_group(state.id, group)
+          {:chain, chain} ->
+            add_chain(state.id, chain)
+          {:standalone, worker} ->
+            if Keyword.get(worker, :options) == nil do
+              add_standalone_worker(state.id, worker.task)
+            else
+              add_standalone_worker(state.id, worker.task, worker.opts)
+            end
+        end
+      end)
+    end
+
     api_response(ref, {:ok, self()})
 
     # Start the main loop
     main_loop(state, opts)
+  end
+
+  def child_spec(opts) do
+    %{
+      id: Keyworld.get(opts, :id, @me), # default id is module name
+      start: {@me, :start, [opts]}
+    }
   end
 
   ## Private functions
@@ -1076,18 +1101,18 @@ defmodule SuperWorker.Supervisor do
       true ->
         Logger.debug("Starting supervisor with link.")
         opts = Map.put(opts, :linked_pids, [self()])
-        spawn_link(__MODULE__, :init, [opts, ref])
+        spawn_link(@me, :init, [opts, ref])
       false ->
         Logger.debug("Starting supervisor without link.")
-        spawn(__MODULE__, :init, [opts, ref])
+        spawn(@me, :init, [opts, ref])
       pid when is_pid(pid) ->
         Logger.debug("Starting supervisor and link with remote pid.")
         opts = Map.put(opts, :linked_pids, [pid])
-        spawn(__MODULE__, :init, [opts, ref])
+        spawn(@me, :init, [opts, ref])
       list_pid when is_list(list_pid) ->
         Logger.debug("Starting supervisor and link with remote pids.")
         opts = Map.put(opts, :linked_pids, list_pid)
-        spawn(__MODULE__, :init, [opts, ref])
+        spawn(@me, :init, [opts, ref])
     end
 
     api_receiver(ref, timeout)
@@ -1216,7 +1241,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp map_to_struct(opts) when is_map(opts) do
-    {:ok, struct(__MODULE__, opts)}
+    {:ok, struct(@me, opts)}
   end
 
 end

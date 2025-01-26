@@ -10,11 +10,9 @@ defmodule SuperWorker.Supervisor.ConfigWrapper do
   @params [:options, :chains, :groups, :standalones]
 
   require Logger
-
   def load(opts) do
     opts
   end
-
   def load() do
     config =
       Application.get_all_env(@app)
@@ -25,6 +23,19 @@ defmodule SuperWorker.Supervisor.ConfigWrapper do
           true
       end)
 
+    Enum.each(config, fn {sup_id, sup_config} ->
+      {:ok, sup_config} =
+        sup_config
+        |> expand_config()
+        |> verify_config()
+
+      # add supervisor id to options
+      sup_config = put_in(sup_config, [:options, :id], sup_id)
+
+      Logger.debug("Starting supervisor #{inspect sup_id} with config: #{inspect sup_config}")
+
+      start_supervisor(sup_config)
+    end)
 
     Logger.debug("Config: #{inspect config}")
   end
