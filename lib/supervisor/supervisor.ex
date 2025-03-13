@@ -51,6 +51,7 @@ defmodule SuperWorker.Supervisor do
     link: true, # link the supervisor to the caller
     report_to: [], # list of pid or callback function, for reporting worker crashed or worker finished.
     linked_pids: [], # list of linked external pids
+    children: [] # list of children (group, chain, worker) to start when supervisor starts.
   ]
 
   @sup_params [:id, :number_of_partitions, :link, :report_to, :children]
@@ -420,7 +421,7 @@ defmodule SuperWorker.Supervisor do
 
   def child_spec(opts) do
     %{
-      id: Keyworld.get(opts, :id, @me), # default id is module name
+      id: Keyword.get(opts, :id, @me), # default id is module name
       start: {@me, :start, [opts]}
     }
   end
@@ -653,7 +654,7 @@ defmodule SuperWorker.Supervisor do
       {:error, _} = error ->
         Logger.error("#{inspect state.prefix} Worker not found: #{inspect worker_id}")
         api_response(ref, error)
-      worker ->
+      {:ok, worker} ->
         send(worker.pid, data)
         api_response(ref, :ok)
     end
@@ -942,7 +943,7 @@ defmodule SuperWorker.Supervisor do
     state
   end
 
-  defp sup_start_child(state, %Worker{} = %{id: id, group_id: group_id, type: :group} = opts) do
+  defp sup_start_child(state, %Worker{id: id, parent: group_id, type: :group} = opts) do
     # Start a child process
     Logger.debug("Starting child process(#{inspect(id)}) for group #{inspect(group_id)}")
     [{_, group}] = Ets.lookup(state.data_table, {:group, group_id})
@@ -952,7 +953,7 @@ defmodule SuperWorker.Supervisor do
     state
   end
 
-  defp sup_start_child(state, %Worker{} = %{id: id, chain_id: chain_id, type: :chain} = opts) do
+  defp sup_start_child(state, %Worker{id: id, parent: chain_id, type: :chain} = opts) do
     Logger.debug("Starting child process(#{inspect(id)}) for chain #{inspect(chain_id)}")
 
     [{_, chain}] = Ets.lookup(state.data_table, {:chain, chain_id})
@@ -1059,7 +1060,7 @@ defmodule SuperWorker.Supervisor do
     with {:ok, opts} <- normalize_opts(opts, @sup_params),
       {:ok, opts} <- validate_opts(opts),
       {:ok, sup} <- map_to_struct(opts) do
-        {:ok, opts}
+        {:ok, sup}
       end
   end
 

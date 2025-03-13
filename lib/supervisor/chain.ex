@@ -178,7 +178,7 @@ defmodule SuperWorker.Supervisor.Chain do
     workers = chain.workers
 
     Enum.each(workers, fn worker_id ->
-      worker = get_worker(chain, worker_id)
+      {:ok, worker} = get_worker(chain, worker_id)
       Process.exit(worker.pid, :kill)
     end)
 
@@ -307,7 +307,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   # Support receive data from the previous process in the chain and pass it to the next process.
-  defp loop_chain(queue, %Worker{} = %{id: id, chain_id: chain_id} = worker) do
+  defp loop_chain(queue, %Worker{id: id, parent: chain_id} = worker) do
     receive do
       {:processed, msg_id, worker_id} ->
         Logger.debug("Worker #{inspect worker_id} processed the data, msg_id: #{msg_id}")
@@ -377,7 +377,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  defp loop_send(queue, %{id: id, chain_id: chain_id} = _worker) do
+  defp loop_send(queue, %Worker{id: id, parent: chain_id} = _worker) do
     receive do
       {:processed, msg_id, worker_id} ->
         Logger.debug("Worker #{worker_id} processed the data, msg_id: #{msg_id}")
@@ -412,7 +412,7 @@ defmodule SuperWorker.Supervisor.Chain do
     case opts.finished_callback do
       nil -> {:ok, opts}
       {:fun, fun} when is_function(fun) -> {:ok, opts}
-      {m, f, a} when is_atom(m) and is_atom(f) -> {:ok, opts}
+      {m, f, a} when is_atom(m) and is_atom(f) and is_list(a) -> {:ok, opts}
       _ -> {:error, "Invalid callback"}
     end
   end

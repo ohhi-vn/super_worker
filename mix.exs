@@ -4,8 +4,8 @@ defmodule SuperWorker.MixProject do
   def project do
     [
       app: :super_worker,
-      version: "0.0.1",
-      elixir: "~> 1.14",
+      version: "0.0.2",
+      elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
@@ -44,9 +44,8 @@ defmodule SuperWorker.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
-      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
+      {:benchee, "~> 1.3", only: :dev},
     ]
   end
 
@@ -60,8 +59,8 @@ defmodule SuperWorker.MixProject do
 
   defp package do
     [
-      licenses: ["MIT"],
-      maintainers: ["ohhi-vn"],
+      licenses: ["MPL 2.0"],
+      maintainers: ["Manh Van Vu"],
       links: %{
         "GitHub" => "https://github.com/ohhi-vn/super_worker",
         "About us" => "https://ohhi.vn"
@@ -71,7 +70,37 @@ defmodule SuperWorker.MixProject do
 
   defp docs do
     [
-      main: "README.md"
+      main: "readme",
+      extras: extras()
     ]
+  end
+
+  defp extras do
+    list =
+      "guides/**/*.md"
+      |> Path.wildcard()
+
+    list = list ++ ["README.md"]
+
+    list
+    |> Enum.map(fn path ->
+      title =
+        path
+        |> Path.basename(".md")
+        |> String.split(~r|[-_]|)
+        |> Enum.map_join(" ", &String.capitalize/1)
+        |> case do
+          "F A Q" ->"FAQ"
+          no_change -> no_change
+        end
+
+      {String.to_atom(path),
+        [
+          title: title,
+          default: title == "Guide"
+        ]
+      }
+    end)
+
   end
 end

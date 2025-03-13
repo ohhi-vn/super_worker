@@ -32,6 +32,7 @@ defmodule SuperWorker.Supervisor.Worker do
     num_workers: 1, # number of workers in chain.
     parent: nil, # parent(group/chain) id.
     order: nil, # order in chain.
+    first_worker_id: nil, # first worker id in chain.
   ]
 
   @type t :: %__MODULE__{
