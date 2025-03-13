@@ -19,7 +19,7 @@ defmodule SuperWorker.TermStorage do
   Get the value of the key from the storage.
   """
   def get(key) do
-    Logger.debug("Get key: #{inspect key}")
+    Logger.debug("SuperWorker, TermStorage, get key: #{inspect key}")
     case :persistent_term.get({@me, key}, nil) do
       nil -> {:error, :not_found}
       value -> {:ok, value}

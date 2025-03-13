@@ -27,7 +27,7 @@ defmodule SuperWorker.Supervisor.Group do
     restart_strategy: atom,
     supervisor: atom,
     partition: atom,
-    data_table: atom
+    data_table: atom,
   }
 
   import SuperWorker.Supervisor.Utils
@@ -39,7 +39,7 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Check, validate and convert key-value pairs to struct.
   """
-  @spec check_options([atom | keyword]) :: {:ok, } | {:error, atom | {atom, any}}
+  @spec check_options([ keyword]) :: {:ok, term} | {:error, atom | {atom, any}}
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @group_params),
          {:ok, opts} <- validate_restart_strategy(opts),
@@ -53,7 +53,7 @@ defmodule SuperWorker.Supervisor.Group do
   Get worker from the group.
   """
   def get_worker(%Group{} = group, worker_id) do
-    Logger.debug("get_worker: #{inspect group.supervisor}, #{inspect worker_id}")
+    Logger.debug("SuperWorker, Group, get_worker: #{inspect group.supervisor}, #{inspect worker_id}")
     case Ets.lookup(group.data_table, {:worker, {:group, group.id}, worker_id}) do
       [{_, worker}] -> {:ok, worker}
       [] -> {:error, :worker_not_found}
@@ -64,11 +64,18 @@ defmodule SuperWorker.Supervisor.Group do
   Get all workers from the group.
   """
   def get_all_workers(%Group{} = group) do
-    Logger.debug("get_all_workers: #{inspect group.supervisor}")
+    Logger.debug("SuperWorker, Group, get_all_workers: #{inspect group.supervisor}")
     result =
     Ets.match(group.data_table, {{:worker, {:group, group.id}, :_}, :"$1"})
     |> List.flatten()
+
     {:ok, result}
+  end
+
+  def count_workers(%Group{} = group) do
+    {:ok, workers} = get_all_workers(group)
+
+    length(workers)
   end
 
   @doc """
@@ -84,11 +91,20 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   A internal function. Add a worker to the group.
   """
-  def add_worker(group, %Worker{} = worker)  do
+  def add_worker(group = %Group{}, %Worker{} = worker)  do
     case get_worker(group, worker.id) do
       {:ok, _} -> {:error, :worker_exists}
       {:error, _} ->
-        worker = Map.put(worker, :parent, group.id)
+        worker = %Worker{worker | parent: group.id}
+
+        worker  =
+          if worker.id == nil do
+            %Worker{worker | id: count_workers(group) + 1}
+          else
+            worker
+          end
+
+
 
         with {:ok, group} <- spawn_worker(group, worker)  do
           Ets.insert(group.data_table, {{:group, group.id}, group})
@@ -119,7 +135,7 @@ defmodule SuperWorker.Supervisor.Group do
           {:ok, :worker_removed}
       else
         {:error, reason} = error ->
-          Logger.error("failed to kill worker #{inspect(worker_id)} in group #{inspect group.id}, error: #{inspect reason}")
+          Logger.error("SuperWorker, Group, failed to kill worker #{inspect(worker_id)} in group #{inspect group.id}, error: #{inspect reason}")
           error
       end
 
@@ -134,7 +150,7 @@ defmodule SuperWorker.Supervisor.Group do
 
   def kill_worker(group, worker = %Worker{}, reason) do
     if Process.alive?(worker.pid) do
-      Logger.debug("group: #{inspect group.id}, kill_worker: #{inspect worker}, reason: #{inspect reason}")
+      Logger.debug("SuperWorker, Group, group: #{inspect group.id}, kill_worker: #{inspect worker}, reason: #{inspect reason}")
       Ets.delete(group.data_table, {:worker, :ref, worker.ref})
       Process.exit(worker.pid, reason)
       {:ok, :killed}
@@ -159,7 +175,7 @@ defmodule SuperWorker.Supervisor.Group do
 
   defp spawn_worker(group, %Worker{} = worker) do
     worker = do_spawn_worker(group, worker)
-    Logger.debug("spawn_worker: #{inspect worker}")
+    Logger.debug("SuperWorker, Group, spawn_worker: #{inspect worker}")
 
     # add or update data, ref, pid
     Ets.insert(group.data_table, {{:worker, {:group, group.id}, worker.id}, worker})

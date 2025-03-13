@@ -8,6 +8,8 @@ defmodule SuperWorker.SupervisorTest do
   @sup_id :sup_test
   @chain :chain1
 
+  doctest Sup
+
   setup_all do
     :ok
   end
@@ -141,7 +143,6 @@ defmodule SuperWorker.SupervisorTest do
 
   # Basic loop, receive messages and print them.
   def loop2(pid) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
     send(pid, {:ping, self()})
     Process.sleep(100)
     loop(pid)

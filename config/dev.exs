@@ -2,12 +2,12 @@ import Config
 
 config :super_worker,
     options: :hello,
-    sup_fun_1: [ # Generate config by user functions.
-      option: {SupConfig, :sup_options, []},
-      chains: {SupConfig, :chains, []},
-      workers: {SupConfig, :workers, []},
-      groups: {SupConfig, :groups, []}
-    ],
+    # sup_fun_1: [ # Generate config by user functions.
+    #   option: {SupConfig, :sup_options, []},
+    #   chains: {SupConfig, :chains, []},
+    #   workers: {SupConfig, :workers, []},
+    #   groups: {SupConfig, :groups, []}
+    # ],
     sup_cfg_1: [  # Declare config by config file.
       options: [
         number_of_partitions: 2,
@@ -25,8 +25,7 @@ config :super_worker,
             ],
             worker2: [
               options: [
-                num_workers: 5,
-                restart_strategy: :transient
+
               ],
               task: {Dev, :task_crash, [15, 5]}
             ]

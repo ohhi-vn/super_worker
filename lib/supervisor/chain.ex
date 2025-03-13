@@ -98,7 +98,7 @@ defmodule SuperWorker.Supervisor.Chain do
           {:ok, chain} = do_add_worker(acc, worker)
           chain
         end)
-        Logger.debug("Added multi workers (#{inspect worker.id}) to the chain #{inspect chain.id}")
+        Logger.debug("SuperWorker, added multi workers (#{inspect worker.id}) to the chain #{inspect chain.id}")
         {:ok, chain}
       end
     end
@@ -106,7 +106,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec do_add_worker(Chain.t, Worker.t) :: {:error, :already_exists} | {:ok, Chain.t}
   defp do_add_worker(chain, %Worker{} = worker) do
-    Logger.debug("Adding worker #{inspect worker.id} to the chain #{inspect chain.id}")
+    Logger.debug("SuperWorker, adding worker #{inspect worker.id} to the chain #{inspect chain.id}")
     if worker_exists?(chain, worker.id) do
       {:error, :already_exists}
     else
@@ -137,7 +137,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
       Enum.map(workers,
         fn worker ->
-          Logger.info("Restarting worker #{worker.id}, pid: #{worker.pid}")
+          Logger.info("SuperWorker, restarting worker #{worker.id}, pid: #{worker.pid}")
           Process.exit(worker.pid, :kill)
           worker = do_spawn_worker(worker)
           worker.id
@@ -154,7 +154,7 @@ defmodule SuperWorker.Supervisor.Chain do
         # TO-DO: remove other info of worker.
         {:ok, chain}
       {:error, reason} = error ->
-        Logger.error("Failed to remove worker #{inspect(worker_id)} in chain #{inspect chain.id}, error: #{inspect reason}")
+        Logger.error("SuperWorker, failed to remove worker #{inspect(worker_id)} in chain #{inspect chain.id}, error: #{inspect reason}")
         error
     end
   end
@@ -167,7 +167,7 @@ defmodule SuperWorker.Supervisor.Chain do
         Process.exit(worker.pid, :kill)
         {:ok, chain}
       {:error, reason} = error ->
-        Logger.error("Failed to kill worker #{inspect(worker_id)} in chain #{inspect chain.id}, error: #{inspect reason}")
+        Logger.error("SuperWorker, failed to kill worker #{inspect(worker_id)} in chain #{inspect chain.id}, error: #{inspect reason}")
         error
     end
   end
@@ -196,11 +196,11 @@ defmodule SuperWorker.Supervisor.Chain do
   defp send_next(chain = %Chain{}, order, msg = %Message{}) do
    case Registry.lookup(chain.supervisor, {:chain_order, chain.id, order}) do
     [] ->
-      Logger.debug("No next worker found for order #{order}, chain: #{chain.id}, go to finished callback.")
+      Logger.debug("SuperWorker, not found next worker for order #{order}, chain: #{chain.id}, go to finished callback.")
       # TO-DO: catch throw, error from outside.
       case chain.finished_callback do
         nil ->
-          Logger.debug("No callback found for chain #{chain.id}")
+          Logger.debug("SuperWorker, not found callback for chain #{chain.id}")
           {:error, :no_worker_or_callback}
         {:fun, fun} ->
           fun.(msg.data)
@@ -211,36 +211,36 @@ defmodule SuperWorker.Supervisor.Chain do
       end
 
     [{pid, worker_id}] -> # just one worker doesn't check type.
-     Logger.debug("#{inspect chain.id}, order: #{order}, found a next worker: #{inspect worker_id}, send msg #{inspect msg.id}")
+     Logger.debug("SuperWorker, chain #{inspect chain.id}, order: #{order}, found a next worker: #{inspect worker_id}, send msg #{inspect msg.id}")
       send(pid, {:new_data, msg})
       {:ok, :send_one}
     [_|_] = entries ->
-      Logger.debug("#{inspect chain.id}, order: #{order}, found next workers: #{inspect entries}")
+      Logger.debug("SuperWorker, chain #{inspect chain.id}, order: #{order}, found next workers: #{inspect entries}")
 
       case chain.send_type do
         :broadcast ->
           Enum.each(entries,
             fn {pid, worker_id} ->
-              Logger.debug("Sending data to the next worker #{inspect worker_id} (broadcast)")
+              Logger.debug("SuperWorker, sending data to the next worker #{inspect worker_id} (broadcast)")
               send(pid, {:new_data, msg})
             end)
           {:ok, :send_all}
         :random ->
           {pid, _} = Enum.random(entries)
-          Logger.debug("Sending data to the next worker #{inspect pid} (random)")
+          Logger.debug("SuperWorker, sending data to the next worker #{inspect pid} (random)")
           send(pid, {:new_data, msg})
           {:ok, :send_random}
         :partition ->
           order = get_hash_order(msg.data, length(entries))
           {pid, {:multi_workers, worker_id, index}} = Enum.at(entries, order)
-          Logger.debug("Sending data to the next worker #{inspect worker_id} (partition, #{index})")
+          Logger.debug("SuperWorker, sending data to the next worker #{inspect worker_id} (partition, #{index})")
           send(pid, {:new_data, msg})
           {:ok, :send_partition}
         :round_robin ->
           [{_, {:multi_workers, worker_id, _}} | _] = entries
           order = get_next_round_robin_order(chain, worker_id, length(entries) - 1)
           {pid, {_, _, index}} = Enum.at(entries, order)
-          Logger.debug("Sending data to the next worker #{inspect worker_id} (round_robin, #{index})")
+          Logger.debug("SuperWorker, sending data to the next worker #{inspect worker_id} (round_robin, #{index})")
           send(pid, {:new_data, msg})
           {:ok, :send_round_robin}
         end
@@ -248,7 +248,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   defp get_next_round_robin_order(chain, worker_id, max_order) do
-    Logger.debug("Getting next round robin order for worker #{inspect worker_id}, max_order: #{max_order}")
+    Logger.debug("SuperWorker, getting next round robin order for worker #{inspect worker_id}, max_order: #{max_order}")
     Ets.update_counter(chain.data_table, {:round_robin, {:chain, chain.id}, worker_id}, {2, 1, max_order, 0},
     {{:round_robin, {:chain, chain.id}, worker_id}, 0})
   end
@@ -310,7 +310,7 @@ defmodule SuperWorker.Supervisor.Chain do
   defp loop_chain(queue, %Worker{id: id, parent: chain_id} = worker) do
     receive do
       {:processed, msg_id, worker_id} ->
-        Logger.debug("Worker #{inspect worker_id} processed the data, msg_id: #{msg_id}")
+        Logger.debug("SuperWorker, worker #{inspect worker_id} processed the data, msg_id: #{msg_id}")
         {:ok, queue} = MapQueue.remove(queue, msg_id)
         loop_chain(queue, worker)
       {:new_data, msg = %Message{}} ->
@@ -330,11 +330,11 @@ defmodule SuperWorker.Supervisor.Chain do
         case result do
           {:next, new_data} ->
             if MapQueue.is_full?(queue) do
-              Logger.debug("worker #{inspect(id)}, queue is full, go to loop waiting for consume last data.")
+              Logger.debug("SuperWorker, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data.")
               loop_send(queue, worker)
             end
 
-            Logger.debug("worker #{inspect(id)}, passing data to the next process, chain: #{inspect(chain_id)}")
+            Logger.debug("SuperWorker, worker #{inspect(id)}, passing data to the next process, chain: #{inspect(chain_id)}")
 
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
             {:ok,chain} = Sup.get_chain(get_my_supervisor(), chain_id)
@@ -344,19 +344,19 @@ defmodule SuperWorker.Supervisor.Chain do
 
             loop_chain(queue, worker)
           {:error, reason} ->
-            Logger.error("worker #{inspect(id)}, error in chain process, chain: #{inspect(chain_id)}: #{inspect(reason)}")
+            Logger.error("SuperWorker, worker #{inspect(id)}, error in chain process, chain: #{inspect(chain_id)}: #{inspect(reason)}")
             # TO-DO: decide to ignore or stop the chain.
           {:drop, reason} ->
-            Logger.info("worker #{inspect(id)}, dropping chain process, chain: #{inspect(chain_id)}: #{inspect(reason)}")
+            Logger.info("SuperWorker, worker #{inspect(id)}, dropping chain process, chain: #{inspect(chain_id)}: #{inspect(reason)}")
             loop_chain(queue, worker)
           {:stop, reason} ->
-            Logger.info("worker #{inspect(id)}, stopping chain process, chain: #{inspect(chain_id)}")
+            Logger.info("SuperWorker, worker #{inspect(id)}, stopping chain process, chain: #{inspect(chain_id)}")
             exit(reason)
           data ->
-            Logger.debug("worker #{inspect(id)}, passing data (default) to the next process, chain: #{inspect(chain_id)}")
+            Logger.debug("SuperWorker, worker #{inspect(id)}, passing data (default) to the next process, chain: #{inspect(chain_id)}")
 
             if MapQueue.is_full?(queue) do
-              Logger.debug("worker #{inspect(id)}, queue is full, go to loop waiting for consume last data.")
+              Logger.debug("SuperWorker, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data.")
               loop_send(queue, worker)
             end
 
@@ -369,25 +369,25 @@ defmodule SuperWorker.Supervisor.Chain do
         end
 
       {:kill, reason} ->
-        Logger.debug("worker #{inspect(id)}, killing chain, chain: #{inspect(chain_id)}")
+        Logger.debug("SuperWorker, worker #{inspect(id)}, killing chain, chain: #{inspect(chain_id)}")
         exit(reason)
 
       {:stop, ^chain_id} ->
-        Logger.debug("worker #{inspect(id)}, stopping chain, chain: #{inspect(chain_id)}")
+        Logger.debug("SuperWorker, worker #{inspect(id)}, stopping chain, chain: #{inspect(chain_id)}")
     end
   end
 
   defp loop_send(queue, %Worker{id: id, parent: chain_id} = _worker) do
     receive do
       {:processed, msg_id, worker_id} ->
-        Logger.debug("Worker #{worker_id} processed the data, msg_id: #{msg_id}")
+        Logger.debug("SuperWorker, worker #{worker_id} processed the data, msg_id: #{msg_id}")
         {:ok, MapQueue.remove(queue, msg_id)}
       {:kill, reason} ->
-        Logger.debug("Worker #{id}, killing chain, chain: #{inspect(chain_id)}")
+        Logger.debug("SuperWorker, worker #{id}, killing chain, chain: #{inspect(chain_id)}")
         exit(reason)
 
       {:stop, ^chain_id} ->
-        Logger.debug("Worker #{id}, stopping chain process, chain: #{inspect(chain_id)}")
+        Logger.debug("SuperWorker, worker #{id}, stopping chain process, chain: #{inspect(chain_id)}")
         :stop
     end
   end

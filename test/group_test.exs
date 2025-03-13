@@ -4,6 +4,8 @@ defmodule SuperWorker.Supervisor.GroupTest do
   alias SuperWorker.Supervisor, as: Sup
   alias SuperWorker.Supervisor.{Group, Worker}
 
+  doctest Group
+
   @group {:group1, "test group"}
   @sup_id :sup_test_group
 
@@ -31,6 +33,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     {:ok, _} = Sup.add_group(@sup_id, [id: :group3, restart_strategy: :one_for_all])
     {:ok, group2} = Sup.get_group(@sup_id, :group2)
     {:ok, group3} = Sup.get_group(@sup_id, :group3)
+
     assert(:one_for_one == group2.restart_strategy && :one_for_all == group3.restart_strategy)
   end
 

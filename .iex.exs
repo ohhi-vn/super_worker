@@ -7,11 +7,7 @@ IO.puts "Dev mode is running"
 IO.puts "SuperWorker.Supervisor has alias is Sup"
 
 defmodule Dev do
-  @moduledoc """
-  Module for development purpose.
-  """
-
-  @me __MODULE__
+  @doc false
 
   # Start the supervisor, add a group and a chain.
   def start(sup_id \\ :sup1) do

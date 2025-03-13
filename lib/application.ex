@@ -11,14 +11,14 @@ defmodule SuperWorker.Application do
   @impl true
   @spec start(any, any) :: {:error, any} | {:ok, pid}
   def start(_type, _args) do
-    Logger.debug("start SuperWorker app")
+    Logger.debug("SuperWorker, Application, start app")
 
-    Cfg.load()
+    #Cfg.load()
 
     children = [
     ]
 
-    Logger.debug("SuperWorker application load with children: #{inspect children}")
+    Logger.debug("SuperWorker, Application, load with children: #{inspect children}")
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

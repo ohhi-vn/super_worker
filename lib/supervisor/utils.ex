@@ -62,13 +62,13 @@ defmodule SuperWorker.Supervisor.Utils do
   def check_type(opts, key, fun) do
     case Map.get(opts, key) do
       nil ->
-        Logger.warning("Option #{inspect key} is not found")
+        Logger.warning("SuperWorker,  Utils, option #{inspect key} is not found")
         {:error, :invalid_type}
       value ->
         if fun.(value) do
           {:ok, opts}
         else
-          Logger.warning("Option #{inspect key} is invalid")
+          Logger.warning("SuperWorker, Utils, option #{inspect key} is invalid")
           {:error, :invalid_type}
         end
     end
@@ -106,9 +106,10 @@ defmodule SuperWorker.Supervisor.Utils do
 
   @spec call_api(atom() | pid(), atom(), any(), integer() | :infinity) :: any()
   def call_api(target, api, params, timeout) when is_atom(target) or is_pid(target) do
-    Logger.debug("Call API: #{inspect api}, #{inspect params}, target: #{inspect target}")
+    Logger.debug("SuperWorker, Utils, call API: #{inspect api}, #{inspect params}, target: #{inspect target}")
     ref = response_ref()
     send(target, {api, ref, params})
+
     api_receiver(ref, timeout)
   end
 

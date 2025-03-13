@@ -5,6 +5,8 @@ defmodule SuperWorker.Supervisor.ChainTest do
   alias SuperWorker.Supervisor, as: Sup
   alias SuperWorker.Supervisor.{Chain, Worker}
 
+  doctest Chain
+
   @sup_id :sup_test_chain
 
   setup_all do
