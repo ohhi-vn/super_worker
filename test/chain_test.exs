@@ -1,5 +1,5 @@
 defmodule SuperWorker.Supervisor.ChainTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   require Logger
   alias SuperWorker.Supervisor, as: Sup
@@ -50,16 +50,20 @@ defmodule SuperWorker.Supervisor.ChainTest do
   test "send data to chain" do
     chain_id = :chain_loop_send
     {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, []}, [id: 1])
+    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :ping_pong, []}, [id: 1])
 
     Process.sleep(100)
+    Logger.debug("send data to chain: #{inspect chain_id}")
     result = Sup.send_to_chain(@sup_id, chain_id, 1, {:ping, self()})
-    Logger.debug("send data to chain: #{inspect result}")
+    Logger.debug("send result to chain: #{inspect result}")
 
     result =
       receive do
         {:pong, _} -> true
-      after 1_000 -> :timeout
+        other ->
+          IO.inspect other
+          false
+      after 1500 -> :timeout
       end
 
     assert(true == result )
@@ -79,6 +83,17 @@ defmodule SuperWorker.Supervisor.ChainTest do
     end
 
     loop(id)
+  end
+
+  def ping_pong(id) do
+    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
+    receive do
+      {:ping, sender} ->
+        IO.puts prefix <> " Pong to #{inspect sender}"
+        send(sender, {:pong, self()})
+
+      msg -> IO.puts prefix <> " task received: #{inspect msg}"
+    end
   end
 
   def task(n, sleep \\ 100) do

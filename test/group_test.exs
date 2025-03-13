@@ -1,16 +1,15 @@
 defmodule SuperWorker.Supervisor.GroupTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Group, Worker}
+  alias SuperWorker.Supervisor.{Group}
 
   doctest Group
 
-  @group {:group1, "test group"}
   @sup_id :sup_test_group
 
   setup_all do
-    {:ok, _} = Sup.start([link: false, id: @sup_id])
+    {:ok, _} = Sup.start([link: false, id: @sup_id, number_of_partitions: 2])
     :ok
   end
 
@@ -39,13 +38,16 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_add_workers
   test "add workers to group" do
-    {:ok,_} = Sup.add_group(@sup_id, [id: @group, restart_strategy: :one_for_one])
-    list =
-    for index <- 1..3 do
-      {:ok, _} = Sup.add_group_worker(@sup_id, @group, {__MODULE__, :loop, [index]}, [id: index])
-    end
+    group_id = :test_add_workers
 
-    {:ok, group} = Sup.get_group(@sup_id, @group)
+    {:ok,_} = Sup.add_group(@sup_id, [id: group_id, restart_strategy: :one_for_one])
+
+    list =
+      for index <- 1..5 do
+        {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [index]}, [id: index])
+      end
+
+    {:ok, group} = Sup.get_group(@sup_id, group_id)
     # wait for workers to be added, need to adjust for slow machines.
     # TO-DO: Improve code for add worker (wait for worker to be added).
     Process.sleep(100)
@@ -58,6 +60,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
   @tag :group_send_data
   test "send data to worker in group" do
     group_id = :group_loop_send
+
     {:ok,_} = Sup.add_group(@sup_id, [id: group_id, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, [id: 1])
 
@@ -76,6 +79,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
   @tag :group_remove_worker
   test "remove worker from group" do
     group_id = :group_loop_remove
+
     {:ok,_} = Sup.add_group(@sup_id, [id: group_id, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, [id: 1])
 

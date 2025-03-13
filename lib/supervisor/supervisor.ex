@@ -74,7 +74,7 @@ defmodule SuperWorker.Supervisor do
   alias __MODULE__
 
   # Default timeout (miliseconds) for API calls.
-  @default_time 5_000
+  @default_time 3_000
 
   # List message from api.
   @api_messages [:start_worker, :get_group, :remove_group_worker, :restart_group_worker,
@@ -546,13 +546,13 @@ defmodule SuperWorker.Supervisor do
     runable =
       case opts.type do
         :group ->
-          if has_group?(state, opts.group_id) or has_group_worker?(state, opts.group_id, opts.id) do
+          if has_group?(state, opts.parent) and not has_group_worker?(state, opts.parent, opts.id) do
             true
           else
             :group_not_found_or_worker_already_exists
           end
         :chain ->
-          if has_chain?(state, opts.chain_id) or  has_chain_worker?(state, opts.chain_id, opts.id) do
+          if has_chain?(state, opts.parent) and not has_chain_worker?(state, opts.parent, opts.id) do
               true
             else
               :chain_not_found_or_worker_already_exists
@@ -569,8 +569,11 @@ defmodule SuperWorker.Supervisor do
       if runable == true do # start child process.
         Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Everything is fine, starting child process with options: #{inspect(opts)}")
 
+        state = sup_start_child(state, opts)
         api_response(ref, {:ok, opts.id})
-        sup_start_child(state, opts)
+
+        state
+
       else # not found group or chain, return error to the caller.
         Logger.error("SuperWorker, Supervisor, #{ state.prefix} Error when starting worker: #{inspect runable}")
         api_response(ref, {:error, runable})
@@ -655,8 +658,9 @@ defmodule SuperWorker.Supervisor do
         api_response(ref, error)
       {:ok, chain} ->
         msg = Message.new(from, nil, data)
+        Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Add data to chain: #{inspect chain_id}, msg: #{inspect msg}")
         result = Chain.new_data(chain, msg)
-        Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Add data to chain: #{inspect chain_id}, result: #{inspect result}")
+        Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Added data to chain: #{inspect chain_id}, result: #{inspect result}")
         api_response(ref, result)
     end
     main_loop(state, sup_opts)
@@ -741,12 +745,12 @@ defmodule SuperWorker.Supervisor do
         main_loop(state, sup_opts)
       [] ->
         Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Adding chain: #{inspect(chain.id)}")
+
+        state = add_new_chain(state, chain)
         # Send the response to the caller.
         api_response(ref, {:ok, chain.id})
 
-        state
-        |> add_new_chain(chain)
-        |> main_loop(sup_opts)
+        main_loop(state, sup_opts)
     end
   end
 
@@ -957,7 +961,7 @@ defmodule SuperWorker.Supervisor do
     state
   end
 
-  defp sup_start_child(state, %Worker{id: id, parent: group_id, type: :group} = opts) when id != nil and group_id != nil do
+  defp sup_start_child(state, %Worker{id: id, parent: group_id, type: :group} = opts) when group_id != nil do
     # Start a child process
     Logger.debug("SuperWorker, Supervisor, starting child process(#{inspect(id)}) for group #{inspect(group_id)}")
     [{_, group}] = Ets.lookup(state.data_table, {:group, group_id})
@@ -1029,7 +1033,7 @@ defmodule SuperWorker.Supervisor do
       {:ok, pid} <-verify_and_get_pid(sup_id, opts.id) do
         opts =
           opts
-          |> Map.put(:group_id, group_id)
+          |> Map.put(:parent, group_id)
           |> Map.put(:type, :group)
 
         Logger.debug("SuperWorker, Supervisor, start call :start_worker api with opts: #{inspect opts}")
@@ -1047,7 +1051,7 @@ defmodule SuperWorker.Supervisor do
       {:ok, pid} <- verify_and_get_pid(sup_id, opts.id) do
         opts =
           opts
-          |> Map.put(:chain_id, chain_id)
+          |> Map.put(:parent, chain_id)
           |> Map.put(:type, :chain)
 
         call_api(pid, :start_worker, opts, timeout)
