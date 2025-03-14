@@ -83,7 +83,7 @@ defmodule Dev do
     {:next, n + 1}
   end
 
-  def send_to_chain(sup_id, chain_id, data \\ 10) do
+  def send_to_chain(sup_id \\ :sup_1, chain_id \\ :chain_1, data \\ 10) do
     Sup.send_to_chain(sup_id, chain_id, data)
   end
 
@@ -118,6 +118,17 @@ defmodule Dev do
     end
 
     loop(id)
+  end
+
+  def ping_pong(id) do
+    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
+    receive do
+      {:ping, sender} ->
+        IO.puts prefix <> " Pong to #{inspect sender}"
+        send(sender, {:pong, self()})
+
+      msg -> IO.puts prefix <> " task received: #{inspect msg}"
+    end
   end
 end
 

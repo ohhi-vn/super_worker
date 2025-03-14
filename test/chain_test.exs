@@ -48,13 +48,12 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_send_data
   test "send data to chain" do
-    chain_id = :chain_loop_send
+    chain_id = :chain_send_test
     {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :ping_pong, []}, [id: 1])
 
-    Process.sleep(100)
     Logger.debug("send data to chain: #{inspect chain_id}")
-    result = Sup.send_to_chain(@sup_id, chain_id, 1, {:ping, self()})
+    result = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 1_000)
     Logger.debug("send result to chain: #{inspect result}")
 
     result =
@@ -85,15 +84,11 @@ defmodule SuperWorker.Supervisor.ChainTest do
     loop(id)
   end
 
-  def ping_pong(id) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-    receive do
-      {:ping, sender} ->
-        IO.puts prefix <> " Pong to #{inspect sender}"
-        send(sender, {:pong, self()})
+  def ping_pong({:ping, sender}) do
+    IO.puts "ping_pong(#{inspect self()}), new task"
 
-      msg -> IO.puts prefix <> " task received: #{inspect msg}"
-    end
+    IO.puts  " Pong to #{inspect sender}"
+    send(sender, {:pong, self()})
   end
 
   def task(n, sleep \\ 100) do
