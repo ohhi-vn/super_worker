@@ -120,7 +120,7 @@ defmodule SuperWorker.Supervisor.Group do
   def remove_worker(group, worker_id) do
     if worker_exists?(group, worker_id) do
       with {:ok, worker} <- get_worker(group, worker_id),
-        {:ok, _} <- kill_worker(group, worker, :remove) do
+        {:ok, _} <- kill_worker(group, worker, :removed) do
           Registry.delete_meta(group.supervisor, {:worker, {:group, group.id}, worker_id})
           {:ok, :worker_removed}
       else
@@ -128,8 +128,6 @@ defmodule SuperWorker.Supervisor.Group do
           Logger.error("SuperWorker, Group, failed to kill worker #{inspect(worker_id)} in group #{inspect group.id}, error: #{inspect reason}")
           error
       end
-
-      {:ok, group}
     else
       {:error, :worker_not_found}
     end

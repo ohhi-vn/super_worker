@@ -437,10 +437,6 @@ defmodule SuperWorker.Supervisor.Chain do
     {:ok, struct(__MODULE__, opts)}
   end
 
-  defp get_my_chain_id() do
-    Process.get({:supervisor, :chain_id})
-  end
-
   defp get_my_supervisor() do
     Process.get({:supervisor, :sup_id})
   end

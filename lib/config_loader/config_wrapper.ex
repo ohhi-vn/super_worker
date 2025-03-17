@@ -7,7 +7,7 @@ defmodule SuperWorker.Supervisor.ConfigWrapper do
 
   alias SuperWorker.Supervisor, as: Sup
 
-  @params [:options, :chains, :groups, :standalones]
+  # @params [:options, :chains, :groups, :standalones]
 
   require Logger
 

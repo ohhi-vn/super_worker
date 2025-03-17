@@ -97,12 +97,11 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_remove_worker
   test "remove worker from group" do
-    group_id = :group_loop_remove
+    group_id = :group_test_remove_worker
 
     {:ok,_} = Sup.add_group(@sup_id, [id: group_id, restart_strategy: :one_for_one])
     {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, [id: 1])
 
-    Process.sleep(100)
     :ok = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
 
     result =
@@ -114,7 +113,9 @@ defmodule SuperWorker.Supervisor.GroupTest do
     assert(true == result)
 
     {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, 1)
-    {:error, _ } = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
+    result = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
+
+    assert result == {:error, :worker_not_found}
   end
 
   ## Helper functions

@@ -183,32 +183,27 @@ defmodule SuperWorker.Supervisor do
   @spec add_group(atom(), list(), integer()) :: {:ok, atom()} | {:error, any()}
   def add_group(sup_id, opts, timeout \\ @default_time) do
     with {:ok, group} <- Group.check_options(opts),
-      true <- is_running?(sup_id) do
-      case Registry.meta(sup_id, {:group, group.id}) do
-        :error ->
-          with {:ok, pid} <- get_host_partition(sup_id, group.id) do
-            call_api(pid, :add_group, group, timeout)
-          end
-        _ ->
-          {:error, :already_exists}
-      end
+      true <- is_running?(sup_id),
+      :error <- Registry.meta(sup_id, {:group, group.id}),
+      {:ok, parititon_id, pid} <- get_host_partition(sup_id, group.id)
+    do
+      group = %Group{group | supervisor: sup_id, partition: parititon_id}
+      call_api(pid, :add_group, group, timeout)
     else
-      false ->
-        Logger.error("SuperWorker, Supervisor, supervisor #{inspect sup_id} is not running.")
-        {:error, :supervisor_is_not_running}
-      {:error, _} = error ->
-        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect error}")
-        error
+      wrong ->
+        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect wrong}")
+        {:error, :supervisor_not_found_or_group_exists}
     end
   end
 
   @doc """
   get group structure from supervisor.
   """
-  @spec get_group(atom(), atom(), integer()) :: {:ok, map()} | {:error, any()}
-  def get_group(sup_id, group_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
-        call_api(pid, :get_group, group_id, timeout)
+  @spec get_group(atom(), atom()) :: {:ok, Group.t} | {:error, any()}
+  def get_group(sup_id, group_id) do
+    case Registry.meta(sup_id, {:group, group_id}) do
+      {:ok, group} -> {:ok, group}
+      :error -> {:error, :group_not_found}
     end
   end
 
@@ -218,15 +213,16 @@ defmodule SuperWorker.Supervisor do
   """
   def add_chain(sup_id, opts, timeout \\ 5_000) do
     with {:ok, chain} <- Chain.check_options(opts),
-      true <- is_running?(sup_id) do
-        case Registry.lookup(sup_id, {:chain, chain.id}) do
-          [] ->
-            with {:ok, pid} <- get_host_partition(sup_id, chain.id) do
-              call_api(pid, :add_chain, chain, timeout)
-            end
-          _ ->
-            {:error, :already_exists}
-        end
+      true <- is_running?(sup_id),
+      :error <- Registry.meta(sup_id, {:chain, chain.id}),
+      {:ok, parition_id, pid} <- get_host_partition(sup_id, chain.id)
+    do
+      chain = %Chain{chain | supervisor: sup_id, partition: parition_id}
+      call_api(pid, :add_chain, chain, timeout)
+    else
+      wrong ->
+        Logger.error("SuperWorker, Supervisor, error when adding chain: #{inspect wrong}")
+        {:error, :supervisor_not_found_or_chain_exists}
     end
   end
 
@@ -340,9 +336,10 @@ defmodule SuperWorker.Supervisor do
     Process.get({:supervisor, :sup_id})
   end
 
-  def get_chain(sup_id, chain_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, chain_id) do
-        call_api(pid, :get_chain, chain_id, timeout)
+  def get_chain(sup_id, chain_id) do
+    case Registry.meta(sup_id, {:chain, chain_id}) do
+      {:ok, chain} -> {:ok, chain}
+      :error -> {:error, :chain_not_found}
     end
   end
 
@@ -474,7 +471,6 @@ defmodule SuperWorker.Supervisor do
 
     # Start the main loop
     pid = spawn_link(Supervisor, :start_partition, [state, opts])
-    Process.register(pid, state.id)
 
     Logger.debug("SuperWorker, Supervisor, #{state.prefix} initialized, pid: #{inspect pid}")
 
@@ -487,6 +483,9 @@ defmodule SuperWorker.Supervisor do
     {:ok, _} =  Registry.register(state.master, :all_partitions, state.id)
 
     send(get_master_id(opts.master), {:partition_started, state.id})
+
+    # Turn partition process to system process.
+    Process.flag(:trap_exit, true)
 
     main_loop(state, opts)
   end
@@ -564,7 +563,7 @@ defmodule SuperWorker.Supervisor do
       Logger.warning("SuperWorker, Supervisor, #{ state.prefix} exited follow external process (crashed): #{inspect from}")
       raise "#{inspect state.master} crashed follow external process: #{inspect from}"
     else
-      Logger.debug("SuperWorker, Supervisor, #{ state.prefix} skipped exit for internal process: #{inspect from}")
+      Logger.debug("SuperWorker, Supervisor, #{ state.prefix} skipped exit for internal process: #{inspect from}, reason: #{inspect reason}")
       main_loop(state, sup_opts)
     end
   end
@@ -722,6 +721,7 @@ defmodule SuperWorker.Supervisor do
           Logger.error("SuperWorker, Supervisor, #{ state.prefix} Group not found: #{inspect group_id}")
           error
       end
+
     api_response(ref, result)
     main_loop(state, sup_opts)
   end
@@ -743,17 +743,17 @@ defmodule SuperWorker.Supervisor do
         Logger.debug("SuperWorker,Supervisor,  #{ state.prefix} Adding group: #{inspect(group.id)}")
 
         state = add_new_group(state, group)
-
         # Send the response to the caller.
         api_response(ref, {:ok, group.id})
 
-        main_loop(state, sup_opts)
+        state
       {:ok, _} ->
         Logger.error("SuperWorker, Supervisor, #{ state.prefix} Group already exists: #{inspect(group.id)}")
         api_response(ref, {:error, :already_exists})
 
-        main_loop(state, sup_opts)
+       state
     end
+    |> main_loop(sup_opts)
   end
 
    # get group info from api.
@@ -772,20 +772,22 @@ defmodule SuperWorker.Supervisor do
 
   # add chain from api.
   defp process_api_message(state, sup_opts, {:add_chain, ref, chain}) do
-    case Registry.lookup(state.master, {:chain, chain.id}) do
-      [_] ->
-        Logger.error("SuperWorker, Supervisor, #{ state.prefix} Chain already exists: #{inspect(chain.id)}")
-        api_response(ref, {:error, :already_exists})
-        main_loop(state, sup_opts)
-      [] ->
+    case Registry.meta(state.master, {:chain, chain.id}) do
+      :error ->
         Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Adding chain: #{inspect(chain.id)}")
 
         state = add_new_chain(state, chain)
         # Send the response to the caller.
         api_response(ref, {:ok, chain.id})
 
-        main_loop(state, sup_opts)
+        state
+      {:ok, _} ->
+        Logger.error("SuperWorker, Supervisor, #{ state.prefix} Chain already exists: #{inspect(chain.id)}")
+        api_response(ref, {:error, :already_exists})
+
+        state
     end
+    |> main_loop(sup_opts)
   end
 
   # Stop supervisor from api.
@@ -836,7 +838,11 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp process_worker_down(state, sup_opts, {:DOWN, _ref, :process, pid, :restart}) do
-    Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Ignore died process (process by other msg): #{inspect(pid)}")
+    Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Ignore died process (restarting): #{inspect(pid)}")
+    main_loop(state, sup_opts)
+  end
+  defp process_worker_down(state, sup_opts, {:DOWN, _ref, :process, pid, :removed}) do
+    Logger.debug("SuperWorker, Supervisor, #{ state.prefix} Ignore died process (removed by user): #{inspect(pid)}")
     main_loop(state, sup_opts)
   end
   defp process_worker_down(state, sup_opts, {:DOWN, ref, :process, pid, reason})  do
@@ -924,7 +930,7 @@ defmodule SuperWorker.Supervisor do
         Group.kill_all_workers(group, :restart)
 
         Enum.each(Group.get_all_workers(group), fn %Worker{id: worker_id} ->
-          {:ok, pid} = get_host_partition(state.master, worker_id)
+          {:ok, _, pid} = get_host_partition(state.master, worker_id)
           send(pid, {:restart_group_worker, worker_id, group.id})
         end)
 
@@ -1216,12 +1222,12 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  @spec get_host_partition(atom(), any()) :: {:error, atom()} | {:ok, pid()}
+  @spec get_host_partition(atom, any) :: {:error, atom} | {:ok, atom, pid}
   def get_host_partition(sup_id, data) do
     with {:ok, sup} <- Registry.meta(sup_id, :supervisor),
       partition_id <- get_target_partition(sup_id, data, sup.number_of_partitions),
       {:ok, pid} <- get_partition_pid(sup_id, partition_id) do
-        {:ok, pid}
+        {:ok, partition_id, pid}
     else
       :error ->
         Logger.error("SuperWorker, Supervisor, not found partition, data: #{inspect data}, sup_id: #{inspect sup_id}")
@@ -1287,7 +1293,7 @@ defmodule SuperWorker.Supervisor do
   @spec verify_and_get_pid(atom(), any()) :: {:error, atom()} | {:ok, pid()}
   defp verify_and_get_pid(sup_id, id) do
     with true <- is_running?(sup_id),
-      {:ok, pid} <- get_host_partition(sup_id, id) do
+      {:ok, _partition_id, pid} <- get_host_partition(sup_id, id) do
         {:ok, pid}
       else
         false ->

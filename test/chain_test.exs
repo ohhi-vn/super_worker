@@ -46,6 +46,63 @@ defmodule SuperWorker.Supervisor.ChainTest do
     assert(length(list) == length(workers))
   end
 
+  @tag :chain_add_workers_2
+  test "add workers to chain 2" do
+    for index <- 1..10 do
+      chain_id =  {:chain_test, index}
+      {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
+
+      list =
+        for worker_index <- 1..10 do
+          {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]}, [id: worker_index])
+        end
+
+      {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
+
+      {:ok, workers} = Chain.get_all_workers(chain)
+
+      assert(length(list) == length(workers))
+    end
+  end
+
+  @tag :chain_add_workers_parallel
+  test "add workers to chain parallel" do
+    num_chains = 20
+    num_workers = 1_000
+    me = self()
+
+    f = fn index ->
+      chain_id =  {:chain_para, index}
+      {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
+
+      list =
+        for worker_index <- 1..num_workers do
+          {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]}, [id: worker_index])
+        end
+
+        send me, {:ok, index}
+    end
+
+    for index <- 1..num_chains do
+      spawn(fn -> f.(index) end)
+    end
+
+    for index <- 1..num_chains do
+      receive do
+        {:ok, index} -> true
+      after 5_000 -> raise "timeout for adding chains and workers"
+      end
+    end
+
+    for index <- 1..num_chains do
+      chain_id =  {:chain_para, index}
+      {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
+      {:ok, workers} = Chain.get_all_workers(chain)
+      assert(num_workers == length(workers))
+    end
+
+  end
+
   @tag :chain_send_data
   test "send data to chain" do
     chain_id = :chain_send_test

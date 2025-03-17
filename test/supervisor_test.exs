@@ -54,7 +54,7 @@ defmodule SuperWorker.SupervisorTest do
   @tag :supervisor_start_link_2
   test "start supervisor with link, process still alive if linked process exit :normal" do
     pid = spawn fn ->
-      {:ok, _} = Sup.start([link: true, id: @sup_id])
+      {:ok, _} = Sup.start([link: true, id: @sup_id,  number_of_partitions: 1])
       receive do
         {from, :exit, reason} ->
           send from, {:ok, from}
@@ -109,9 +109,10 @@ defmodule SuperWorker.SupervisorTest do
   @tag :supervisor_children_crash_follow_supervisor
   test "children crash follow supervisor" do
     pid = spawn fn ->
-      {:ok, _} = Sup.start([link: true, id: @sup_id])
+      {:ok, _} = Sup.start([link: true, id: @sup_id, number_of_partitions: 1])
       {:ok, _} = Sup.add_group(@sup_id, [id: :group1, restart_strategy: :one_for_one])
       {:ok, _} = Sup.add_group_worker(@sup_id, :group1, {__MODULE__, :loop, [:w1]}, [id: :w1])
+
       receive do
         {from, :crash} ->
           send(from, {:ok, from})
@@ -120,6 +121,7 @@ defmodule SuperWorker.SupervisorTest do
       end
     end
 
+    # wait for spawned process to start supervisor and add group.
     Process.sleep(100)
 
     assert true == Sup.is_running?(@sup_id)

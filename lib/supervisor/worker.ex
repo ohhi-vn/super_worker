@@ -9,11 +9,13 @@ defmodule SuperWorker.Supervisor.Worker do
 
   @standalone_restart_strategies [:permanent, :transient, :temporary]
 
-  @worker_restart_strategies [:permanent, :transient, :temporary]
+  # @worker_restart_strategies [:permanent, :transient, :temporary]
 
   @group_params [:group_id]
 
   @chain_params [:chain_id, :num_workers]
+
+  alias __MODULE__
 
   @enforce_keys [:id, :fun]
   defstruct [
