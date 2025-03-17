@@ -4,7 +4,7 @@ defmodule SuperWorker.MixProject do
   def project do
     [
       app: :super_worker,
-      version: "0.0.3",
+      version: "0.0.5",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -44,6 +44,7 @@ defmodule SuperWorker.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:uniq, "~> 0.6.1"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:benchee, "~> 1.3", only: :dev},
     ]
@@ -53,13 +54,13 @@ defmodule SuperWorker.MixProject do
     """
     SuperWorker is a powerful Elixir library for working with supervisor & background jobs.
     Much more simply than traditional supervisor (suit for telecom application).
-    This library is in development, so it's not recommended for production use.
+    This library is in development & unstable, so it's not recommended for production use.
     """
   end
 
   defp package do
     [
-      licenses: ["MPL 2.0"],
+      licenses: ["MPL-2.0"],
       maintainers: ["Manh Van Vu"],
       links: %{
         "GitHub" => "https://github.com/ohhi-vn/super_worker",

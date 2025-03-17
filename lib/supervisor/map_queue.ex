@@ -27,7 +27,7 @@ defmodule SuperWorker.Supervisor.MapQueue do
 
   def get(%MapQueue{} = queue, id) do
     case Map.get(queue.msgs, id) do
-      nil -> {:error, :not_found}
+      nil -> {:error, {:not_found, id}}
       msg -> {:ok, msg}
     end
   end

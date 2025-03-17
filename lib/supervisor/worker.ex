@@ -3,9 +3,7 @@ defmodule SuperWorker.Supervisor.Worker do
   Documentation for `SuperWorker.Supervisor.Worker`.
   """
 
-  alias :ets, as: Ets
-
-  @worker_params [:id, :type, :fun]
+  @worker_params [:id, :type, :name, :fun]
 
   @standalone_params [:restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
 
@@ -21,6 +19,7 @@ defmodule SuperWorker.Supervisor.Worker do
   defstruct [
     :id, # worker id, unique in supervior.
     :pid, # current pid of worker.
+    :name, # name of worker.
     :ref, # reference created when spawning the worker.
     :start_time, # start time of worker. if worker is restarted, this value is updated.
     restart_strategy: :transient, # restart strategy of worker. Affected by the supervisor restart strategy.
@@ -89,14 +88,6 @@ defmodule SuperWorker.Supervisor.Worker do
     end
   end
 
-  defp validate_worker_restart_strategy(opts) do
-    if opts.restart_strategy in @worker_restart_strategies do
-      {:ok, opts}
-    else
-      {:error, {:invalid_option, [inspect opts.restart_strategy]}}
-    end
-  end
-
   defp validate_opts(opts) do
     # TO-DO: Implement the validation.
     {:ok, opts}
@@ -111,22 +102,18 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   def save(worker) do
-    get_table_name(worker.supervisor)
-    |> Ets.insert({{:worker, worker.id}, worker})
+    Registry.put_meta(worker.supervisor, {:worker, worker.id}, worker)
   end
 
   def get(supervisor, worker_id) do
-    get_table_name(supervisor)
-    |> Ets.lookup({{:worker, worker_id}})
-    |> case do
-      [{_, worker}] -> {:ok, worker}
-      [] -> {:error, :not_found}
+    case Registry.meta(supervisor, {:worker, worker_id}) do
+      :error -> {:error, :worker_not_found}
+      {:ok, worker}  -> worker
     end
   end
 
   def remove(supervisor, worker_id) do
-    get_table_name(supervisor)
-    |> Ets.delete({{:worker, worker_id}})
+    Registry.delete_meta(supervisor, {:worker, worker_id})
   end
 
   # Update the worker information.
@@ -143,16 +130,16 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   defp update_process_info(supervisor, key, pid, ref) do
-    table = get_table_name(supervisor)
-    case Ets.lookup(table, key) do
-      [{_, worker}] ->
+    case Worker.get(supervisor, {:worker, key}) do
+      {:error, _} = error ->
+        error
+      worker ->
         worker =
           worker
           |> Map.put(:pid, pid)
           |> Map.put(:ref, ref)
 
-        Ets.insert(table, {key, worker})
-      [] -> {:error, :not_found}
+        Worker.save(worker)
     end
   end
 

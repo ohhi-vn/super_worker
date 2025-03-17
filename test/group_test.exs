@@ -1,12 +1,12 @@
 defmodule SuperWorker.Supervisor.GroupTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SuperWorker.Supervisor, as: Sup
   alias SuperWorker.Supervisor.{Group}
 
   doctest Group
 
-  @sup_id :sup_test_group
+  @sup_id :sup_group_test
 
   setup_all do
     {:ok, _} = Sup.start([link: false, id: @sup_id, number_of_partitions: 2])
@@ -48,13 +48,32 @@ defmodule SuperWorker.Supervisor.GroupTest do
       end
 
     {:ok, group} = Sup.get_group(@sup_id, group_id)
-    # wait for workers to be added, need to adjust for slow machines.
-    # TO-DO: Improve code for add worker (wait for worker to be added).
-    Process.sleep(100)
 
     {:ok, workers} = Group.get_all_workers(group)
 
     assert(length(list) == length(workers))
+  end
+
+
+  @tag :group_add_workers_2
+  test "add workers to group 2" do
+    Enum.each(1..10, fn index ->
+      group_id = {:test_add_workers_parallel, index}
+
+      {:ok,_} = Sup.add_group(@sup_id, [id: group_id, restart_strategy: :one_for_one])
+
+      list =
+        for worker_index <- 1..10 do
+          {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [worker_index]}, [id: {index, worker_index}])
+        end
+
+      {:ok, group} = Sup.get_group(@sup_id, group_id)
+
+      {:ok, workers} = Group.get_all_workers(group)
+
+      assert(10 == length(workers))
+    end)
+
   end
 
   @tag :group_send_data

@@ -35,7 +35,7 @@ defmodule SuperWorker.Supervisor.Utils do
   @spec get_item(map(), any()) :: {:ok, any()} | {:error, atom()}
   def get_item(map, key) do
     case Map.get(map, key) do
-      nil -> {:error, :not_found}
+      nil -> {:error, {:not_found, key}}
       value -> {:ok, value}
     end
   end
@@ -72,11 +72,6 @@ defmodule SuperWorker.Supervisor.Utils do
           {:error, :invalid_type}
         end
     end
-  end
-
-  @spec get_table_name(atom()) :: atom()
-  def get_table_name(id) when is_atom(id) do
-    String.to_atom("#{Atom.to_string(id)}_data_table")
   end
 
   @spec random_id() :: binary()
