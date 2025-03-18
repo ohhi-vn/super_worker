@@ -919,7 +919,9 @@ defmodule SuperWorker.Supervisor do
       reason ->
         Logger.debug("SuperWorker, Supervisor, #{inspect state.id}, Child process(#{inspect(pid)}) is down with reason #{inspect reason}, restarting...")
 
-        old_ref_keys = Enum.reduce(Group.get_all_workers(group), [], fn  worker, acc ->
+        {:ok, list_worker_id} = Group.get_all_workers(group)
+        old_ref_keys = Enum.reduce(list_worker_id, [], fn  {_pid, worker_id}, acc ->
+          {:ok, worker} = Group.get_worker(group, worker_id)
           [worker.ref | acc]
         end)
 
@@ -929,7 +931,7 @@ defmodule SuperWorker.Supervisor do
         # TO-DO: make sure pid, ref in worker struct is cleaned & correct after restart.
         Group.kill_all_workers(group, :restart)
 
-        Enum.each(Group.get_all_workers(group), fn %Worker{id: worker_id} ->
+        Enum.each(list_worker_id, fn {_worker_pid, worker_id} ->
           {:ok, _, pid} = get_host_partition(state.master, worker_id)
           send(pid, {:restart_group_worker, worker_id, group.id})
         end)

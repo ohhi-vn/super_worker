@@ -112,9 +112,17 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   A internal function. Restart a worker in the group.
   """
-  def restart_worker(group, worker) do
+  def restart_worker(group, worker = %Worker{}) do
     kill_worker(group, worker, :restart)
     spawn_worker(group, worker)
+  end
+
+  def restart_worker(group, worker_id) do
+    case get_worker(group, worker_id) do
+      {:ok, worker} ->
+        restart_worker(group, worker)
+      {:error, _} -> {:error, :worker_not_found}
+    end
   end
 
   def remove_worker(group, worker_id) do
@@ -152,8 +160,10 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   def kill_all_workers(group, reason \\ :kill) do
-    get_all_workers(group)
-    |> Enum.each(fn %Worker{} = worker ->
+    {:ok, list_worker} = get_all_workers(group)
+
+    Enum.each(list_worker, fn {_pid, id} ->
+      {:ok, worker} = get_worker(group, id)
       kill_worker(group, worker, reason)
     end)
   end
