@@ -89,3 +89,22 @@ graph LR
 - Multiprocess per chain node.
 - Auto scale for chain.
 - Distributed in cluster.
+
+
+## Support AI agents & MCP
+
+Run this command for update guide & rules from deps to repo for supporting ai agents.
+
+```bash
+mix usage_rules.sync AGENTS.md --all \
+  --link-to-folder deps \
+  --inline usage_rules:all
+```
+
+Run this command for enable MCP server
+
+```bash
+mix tidewave
+```
+
+Config MCP for agent `http://localhost:4115/tidewave/mcp`, changes port in `mix.exs` file if needed. Go to [Tidewave](https://hexdocs.pm/tidewave/) for more informations.

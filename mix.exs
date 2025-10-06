@@ -4,7 +4,7 @@ defmodule SuperWorker.MixProject do
   def project do
     [
       app: :super_worker,
-      version: "0.0.7",
+      version: "0.0.8",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -16,7 +16,8 @@ defmodule SuperWorker.MixProject do
       home_url: "https://ohhi.vn",
       docs: docs(),
       description: description(),
-      package: package()
+      package: package(),
+      aliases: aliases()
     ]
   end
 
@@ -32,10 +33,9 @@ defmodule SuperWorker.MixProject do
 
     [
       mod: {SuperWorker.Application, []},
-      extra_applications: dev_app ++ required,
+      extra_applications: dev_app ++ required
     ]
   end
-
 
   # Specifies which paths to compile per environment.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -47,6 +47,11 @@ defmodule SuperWorker.MixProject do
       {:uniq, "~> 0.6.1"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:benchee, "~> 1.3", only: :dev},
+
+      # Support for AI agent
+      {:tidewave, "~> 0.5", only: :dev},
+      {:bandit, "~> 1.8", only: :dev},
+      {:usage_rules, "~> 0.1", only: [:dev]}
     ]
   end
 
@@ -91,17 +96,30 @@ defmodule SuperWorker.MixProject do
         |> String.split(~r|[-_]|)
         |> Enum.map_join(" ", &String.capitalize/1)
         |> case do
-          "F A Q" ->"FAQ"
+          "F A Q" -> "FAQ"
           no_change -> no_change
         end
 
       {String.to_atom(path),
-        [
-          title: title,
-          default: title == "Guide"
-        ]
-      }
+       [
+         title: title,
+         default: title == "Guide"
+       ]}
     end)
+  end
 
+  defp aliases do
+    [
+      tidewave:
+        "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4115) end)'",
+      "usage_rules.update": [
+        """
+        usage_rules.sync AGENTS.md --all \
+          --inline usage_rules:all \
+          --link-to-folder deps
+        """
+        |> String.trim()
+      ]
+    ]
   end
 end
