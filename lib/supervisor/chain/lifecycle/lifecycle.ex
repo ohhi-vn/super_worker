@@ -184,7 +184,7 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
         first_worker_id: chain.first_worker_id
     }
 
-    {pid, ref} = spawn_monitor(__MODULE__, &worker_process_loop/2, [%MapQueue{}, worker_with_sup])
+    {pid, ref} = spawn_monitor(__MODULE__, :worker_process_loop, [%MapQueue{}, worker_with_sup])
     Process.link(pid)
 
     final_worker = %{worker_with_sup | pid: pid, ref: ref}

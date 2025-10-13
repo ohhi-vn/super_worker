@@ -229,7 +229,8 @@ defmodule SuperWorker.Supervisor do
          true <- is_running?(sup_id),
          :error <- Registry.meta(sup_id, {:group, group.id}),
          {:ok, parititon_id, pid} <- get_host_partition(sup_id, group.id) do
-      group = %Group{group | supervisor: sup_id, partition: parititon_id}
+      %Group{} = group
+      group = %{group | supervisor: sup_id, partition: parititon_id}
       call_api(pid, :add_group, group, timeout)
     else
       wrong ->
@@ -258,7 +259,8 @@ defmodule SuperWorker.Supervisor do
          true <- is_running?(sup_id),
          :error <- Registry.meta(sup_id, {:chain, chain.id}),
          {:ok, parition_id, pid} <- get_host_partition(sup_id, chain.id) do
-      chain = %Chain{chain | supervisor: sup_id, partition: parition_id}
+      %Chain{} = chain
+      chain = %{chain | supervisor: sup_id, partition: parition_id}
       call_api(pid, :add_chain, chain, timeout)
     else
       wrong ->
@@ -1338,15 +1340,15 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  defp add_new_group(state, group) do
-    group = %Group{group | supervisor: state.master, partition: state.id}
+  defp add_new_group(state, %Group{} = group) do
+    group = %{group | supervisor: state.master, partition: state.id}
     Registry.put_meta(state.master, {:group, group.id}, group)
 
     state
   end
 
-  defp add_new_chain(state, chain) do
-    chain = %Chain{chain | supervisor: state.master, partition: state.id}
+  defp add_new_chain(state, %Chain{} = chain) do
+    chain = %{chain | supervisor: state.master, partition: state.id}
     Registry.put_meta(state.master, {:chain, chain.id}, chain)
 
     state

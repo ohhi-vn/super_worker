@@ -30,3 +30,5 @@ erl_crash.dump
 
 mix.lock
 .DS_Store
+IMPROVEMENTS.md
+REFACTORING_SUMMARY.md

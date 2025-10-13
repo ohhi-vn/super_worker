@@ -93,7 +93,7 @@ graph LR
 
 ## Support AI agents & MCP
 
-Run this command for update guide & rules from deps to repo for supporting ai agents.
+Run this command for update guide & rules from deps to repo for supporting ai agents in dev.
 
 ```bash
 mix usage_rules.sync AGENTS.md --all \
