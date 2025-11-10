@@ -10,9 +10,7 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
 
   require Logger
 
-  alias SuperWorker.Supervisor.Chain
-  alias SuperWorker.Supervisor.Message
-  alias SuperWorker.Supervisor.ErrorHandler
+  alias SuperWorker.Supervisor.{Chain, Db, Message, ErrorHandler}
 
   # ============================================================================
   # Public API
@@ -34,28 +32,17 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   @spec send_next(Chain.t(), non_neg_integer(), Message.t()) ::
           {:ok, atom()} | {:error, atom()}
   def send_next(chain = %Chain{}, order, msg = %Message{}) do
-    case Registry.lookup(chain.supervisor, {:chain_order, chain.id, order}) do
-      [] ->
-        Logger.debug(
-          "Chain.Messaging: End of chain #{inspect(chain.id)} reached at order #{order}. Invoking callback."
-        )
+    with {:ok, {worker_id, pid}} <-
+           Db.get_chain_order(chain.supervisor, chain.id, order) do
+      Logger.debug(
+        "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker: #{inspect(worker_id)}. Sending message."
+      )
 
+      send(pid, {:new_data, msg})
+      {:ok, :sent_to_one}
+    else
+      {:error, :not_found} ->
         handle_finished_callback(chain, msg)
-
-      [{pid, worker_id}] ->
-        Logger.debug(
-          "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker: #{inspect(worker_id)}. Sending message."
-        )
-
-        send(pid, {:new_data, msg})
-        {:ok, :sent_to_one}
-
-      workers ->
-        Logger.debug(
-          "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found multiple next workers. Routing based on send type: #{chain.send_type}."
-        )
-
-        route_to_multiple_workers(chain, workers, msg)
     end
   end
 

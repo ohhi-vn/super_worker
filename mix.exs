@@ -44,9 +44,8 @@ defmodule SuperWorker.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:uniq, "~> 0.6.1"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
-      {:benchee, "~> 1.3", only: :dev},
+      {:benchee, "~> 1.5", only: :dev},
 
       # Support for AI agent
       {:tidewave, "~> 0.5", only: :dev},

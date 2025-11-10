@@ -1,6 +1,18 @@
 defmodule SuperWorker.ConfigLoader.ParserTest do
   use ExUnit.Case, async: true
 
+  defmodule GenServerTest do
+    use GenServer
+
+    def start_link(opts) do
+      GenServer.start_link(__MODULE__, opts)
+    end
+
+    def init(opts) do
+      {:ok, opts}
+    end
+  end
+
   alias SuperWorker.ConfigLoader.Parser
 
   describe "parse/1 with valid configurations" do
@@ -67,13 +79,15 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
           [
             mfa: {MyModule, :my_function, [:arg1]},
             options: [id: :worker1]
-          ]
+          ],
+          GenServerTest,
+          {GenServerTest, []}
         ]
       ]
 
       assert {:ok, parsed} = Parser.parse(config)
-      assert length(parsed.children) == 1
-      assert [worker] = parsed.children
+      assert length(parsed.children) == 3
+      assert [worker | _] = parsed.children
       assert worker.type == :standalone
       assert worker.mfa == {MyModule, :my_function, [:arg1]}
       assert worker.options[:id] == :worker1
@@ -114,7 +128,9 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
               [
                 mfa: {MyModule, :worker2, []},
                 options: [id: :w2]
-              ]
+              ],
+              GenServerTest,
+              {GenServerTest, []}
             ]
           ]
         ]
@@ -122,7 +138,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
 
       assert {:ok, parsed} = Parser.parse(config)
       assert [group] = parsed.children
-      assert length(group.workers) == 2
+      assert length(group.workers) == 4
       assert Enum.at(group.workers, 0).mfa == {MyModule, :worker1, []}
       assert Enum.at(group.workers, 1).mfa == {MyModule, :worker2, []}
     end
@@ -143,7 +159,9 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
               [
                 mfa: {MyModule, :step2, []},
                 options: [id: :step2]
-              ]
+              ],
+              GenServerTest,
+              {GenServerTest, []}
             ]
           ]
         ]
@@ -151,7 +169,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
 
       assert {:ok, parsed} = Parser.parse(config)
       assert [chain] = parsed.children
-      assert length(chain.workers) == 2
+      assert length(chain.workers) == 4
       assert chain.options[:send_type] == :broadcast
       assert chain.options[:restart_strategy] == :before_for_one
     end

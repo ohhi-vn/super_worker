@@ -110,7 +110,7 @@ defmodule MyApp.Worker do
 
   defp worker_loop do
     receive do
-      msg -> 
+      msg ->
         # Handle message
         worker_loop()
     end
@@ -124,10 +124,10 @@ Load supervisors manually:
 
 ```elixir
 # Load all configured supervisors
-SuperWorker.ConfigLoader.ConfigWrapper.load()
+SuperWorker.ConfigLoader.ConfigParser.load()
 
 # Load a specific supervisor
-SuperWorker.ConfigLoader.ConfigWrapper.load_one(:my_app_supervisor)
+SuperWorker.ConfigLoader.ConfigParser.load_one(:my_app_supervisor)
 ```
 
 Check if running:
@@ -195,7 +195,7 @@ config :super_worker, :my_supervisor,
 
 ## Next Steps
 
-- Read [README.md](README.md) for complete documentation
+- Read [CONFIG_GUIDE.md](CONFIG_GUIDE.md) for complete documentation
 - See [config/examples/config_loader_example.exs](../../config/examples/config_loader_example.exs) for more examples
 - Check [tests](../../../test/config_loader/) for usage patterns
 
@@ -211,4 +211,4 @@ config :super_worker, :my_supervisor,
 
 ## Help
 
-Questions? Check the [full README](README.md) or the test files for examples.
+Questions? Check the [full CONFIG GUIDE](CONFIG_GUIDE.md) or the test files for examples.

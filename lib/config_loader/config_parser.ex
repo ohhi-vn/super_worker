@@ -1,4 +1,4 @@
-defmodule SuperWorker.ConfigLoader.ConfigWrapper do
+defmodule SuperWorker.ConfigLoader.ConfigParser do
   @moduledoc """
   This module is the main entry point for loading supervisor configurations.
   It reads configurations from the application environment, uses the Parser
@@ -34,14 +34,14 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapper do
   """
   @spec load() :: :ok
   def load() do
-    Logger.debug("SuperWorker, ConfigWrapper, loading all supervisor configurations.")
+    Logger.debug("SuperWorker, ConfigParser, loading all supervisor configurations.")
 
     configs =
       Application.get_all_env(@app)
       |> Enum.reject(fn {key, _value} -> key == :options end)
 
     if Enum.empty?(configs) do
-      Logger.info("SuperWorker, ConfigWrapper, no supervisor configurations found to load.")
+      Logger.info("SuperWorker, ConfigParser, no supervisor configurations found to load.")
     else
       Enum.each(configs, fn {sup_id, sup_config} ->
         load_and_start(sup_id, sup_config)
@@ -57,12 +57,12 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapper do
   """
   @spec load_one(sup_id :: atom()) :: {:ok, pid} | {:error, any}
   def load_one(sup_id) do
-    Logger.debug("SuperWorker, ConfigWrapper, loading supervisor: #{inspect(sup_id)}")
+    Logger.debug("SuperWorker, ConfigParser, loading supervisor: #{inspect(sup_id)}")
 
     case Application.get_env(@app, sup_id) do
       nil ->
         Logger.error(
-          "SuperWorker, ConfigWrapper, configuration for supervisor #{inspect(sup_id)} not found."
+          "SuperWorker, ConfigParser, configuration for supervisor #{inspect(sup_id)} not found."
         )
 
         {:error, :config_not_found}
@@ -74,21 +74,21 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapper do
 
   defp load_and_start(sup_id, sup_config) do
     Logger.debug(
-      "SuperWorker, ConfigWrapper, processing supervisor #{inspect(sup_id)} with config: #{inspect(sup_config)}"
+      "SuperWorker, ConfigParser, processing supervisor #{inspect(sup_id)} with config: #{inspect(sup_config)}"
     )
 
     with {:ok, parsed_config} <- Parser.parse(sup_config) do
       config_with_id = put_in(parsed_config, [:options, :id], sup_id)
 
       Logger.debug(
-        "SuperWorker, ConfigWrapper, starting supervisor #{inspect(sup_id)} with processed config: #{inspect(config_with_id)}"
+        "SuperWorker, ConfigParser, starting supervisor #{inspect(sup_id)} with processed config: #{inspect(config_with_id)}"
       )
 
       Bootstrap.start_supervisor(config_with_id)
     else
       {:error, reason} ->
         Logger.error(
-          "SuperWorker, ConfigWrapper, failed to process configuration for supervisor #{inspect(sup_id)}: #{inspect(reason)}"
+          "SuperWorker, ConfigParser, failed to process configuration for supervisor #{inspect(sup_id)}: #{inspect(reason)}"
         )
 
         {:error, reason}

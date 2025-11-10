@@ -6,7 +6,7 @@ The ConfigLoader module provides a declarative way to configure and automaticall
 
 The ConfigLoader system consists of three main modules:
 
-- **`ConfigWrapper`** - Main entry point that loads configurations from the application environment
+- **`ConfigParser`** - Main entry point that loads configurations from the application environment
 - **`Parser`** - Validates and transforms raw configurations into structured data
 - **`Bootstrap`** - Starts supervisors and their children from parsed configurations
 
@@ -48,10 +48,10 @@ You can also load supervisors manually:
 
 ```elixir
 # Load all configured supervisors
-SuperWorker.ConfigLoader.ConfigWrapper.load()
+SuperWorker.ConfigLoader.ConfigParser.load()
 
 # Load a specific supervisor
-SuperWorker.ConfigLoader.ConfigWrapper.load_one(:my_supervisor)
+SuperWorker.ConfigLoader.ConfigParser.load_one(:my_supervisor)
 ```
 
 ## Configuration Format
@@ -192,7 +192,7 @@ config :super_worker, :app_supervisor,
 
 ## Module Details
 
-### ConfigWrapper
+### ConfigParser
 
 Main entry point for loading configurations.
 
@@ -283,7 +283,7 @@ Starts supervisors from parsed configurations.
    ```elixir
    # config/dev.exs
    config :super_worker, :my_sup, options: [number_of_partitions: 1]
-   
+
    # config/prod.exs
    config :super_worker, :my_sup, options: [number_of_partitions: 8]
    ```
@@ -392,8 +392,8 @@ The ConfigLoader is automatically invoked in `SuperWorker.Application.start/2`:
 
 ```elixir
 def start(_type, _args) do
-  SuperWorker.ConfigLoader.ConfigWrapper.load()
-  
+  SuperWorker.ConfigLoader.ConfigParser.load()
+
   children = []
   Supervisor.start_link(children, strategy: :one_for_one, name: SuperWorker.Supervisor)
 end

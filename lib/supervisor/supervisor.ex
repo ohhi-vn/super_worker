@@ -51,33 +51,39 @@ defmodule SuperWorker.Supervisor do
   ```
   """
 
-  alias SuperWorker.Supervisor.{Group, Chain, Worker, Message}
+  alias __MODULE__
 
-  import SuperWorker.Supervisor.Utils
+  alias Supervisor.{Group, Chain, Worker, Message}
+
+  import Supervisor.Utils
 
   require Logger
 
   defstruct [
-    # supervisor id
+    # partition id, if :id == :master that mean is master process
     :id,
     # owner of the supervisor
     :owner,
+    # name of supervisor
     :master,
+
     # number of partitions, default is number of online schedulers
     :number_of_partitions,
     # link the supervisor to the caller
+
     link: true,
+    children: [],
     # list of pid or callback function, for reporting worker crashed or worker finished.
     report_to: [],
     # list of linked external pids
     linked_pids: [],
-    # list of children (group, chain, worker) to start when supervisor starts.
-    children: []
+    partitions: []
   ]
 
   @sup_params [:id, :number_of_partitions, :link, :report_to, :children]
 
   alias __MODULE__
+  alias Supervisor.Db
 
   # Default timeout (miliseconds) for API calls.
   @default_time 3_000
@@ -124,7 +130,7 @@ defmodule SuperWorker.Supervisor do
         {:error, :already_running}
 
       {:error, _} = error ->
-        Logger.error("SuperWorker, Supervisor, Eeror when starting supervisor: #{inspect(error)}")
+        Logger.error("SuperWorker, Supervisor, Error when starting supervisor: #{inspect(error)}")
         error
     end
   end
@@ -176,12 +182,29 @@ defmodule SuperWorker.Supervisor do
 
   def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
       when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_add_worker(sup_id, :standalone, [{:fun, mfa} | opts], timeout)
+    do_add_standalone_worker(sup_id, [{:fun, mfa} | opts], timeout)
   end
 
   def add_standalone_worker(sup_id, fun, opts, timeout)
       when is_list(opts) and is_function(fun, 0) do
-    do_add_worker(sup_id, :standalone, [{:fun, {:fun, fun}} | opts], timeout)
+    do_add_standalone_worker(sup_id, [{:fun, {:fun, fun}} | opts], timeout)
+  end
+
+  def add_standalone_worker(sup_id, {:fun, fun} = f, opts, timeout)
+      when is_list(opts) and is_function(fun, 0) do
+    do_add_standalone_worker(sup_id, [{:fun, f} | opts], timeout)
+  end
+
+  def add_standalone_worker(sup_id, {genserver_module, _} = f, opts, timeout)
+      when is_list(opts) and is_atom(genserver_module) do
+    {:ok, %{mfa: mfa}} = SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(f)
+
+    do_add_standalone_worker(sup_id, [{:fun, mfa} | opts], timeout)
+  end
+
+  def add_standalone_worker(sup_id, genserver_module, opts, timeout)
+      when is_list(opts) and is_atom(genserver_module) do
+    add_standalone_worker(sup_id, {genserver_module, []}, opts, timeout)
   end
 
   @doc """
@@ -194,12 +217,29 @@ defmodule SuperWorker.Supervisor do
 
   def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
       when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) and group_id != nil do
-    do_add_worker(sup_id, {:group_id, group_id}, [{:fun, mfa} | opts], timeout)
+    do_add_group_worker(sup_id, group_id, [{:fun, mfa} | opts], timeout)
+  end
+
+  def add_group_worker(sup_id, group_id, {:gen_server, {m, f, a}} = mfa, opts, timeout)
+      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) and group_id != nil do
+    do_add_group_worker(sup_id, group_id, [{:fun, mfa} | opts], timeout)
   end
 
   def add_group_worker(sup_id, group_id, fun, opts, timeout)
       when is_list(opts) and is_function(fun, 0) do
-    do_add_worker(sup_id, {:group_id, group_id}, [{:fun, {:fun, fun}} | opts], timeout)
+    do_add_group_worker(sup_id, group_id, [{:fun, {:fun, fun}} | opts], timeout)
+  end
+
+  def add_group_worker(sup_id, group_id, module, opts, timeout)
+      when is_atom(module) and group_id != nil do
+    specs = SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(module)
+    do_add_group_worker(sup_id, {:group_id, group_id}, [{:fun, specs.mfa} | opts], timeout)
+  end
+
+  def add_group_worker(sup_id, group_id, {module, _} = worker, opts, timeout)
+      when is_atom(module) and group_id != nil do
+    specs = SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(worker)
+    do_add_group_worker(sup_id, group_id, [{:fun, specs.mfa} | opts], timeout)
   end
 
   @doc """
@@ -211,12 +251,12 @@ defmodule SuperWorker.Supervisor do
 
   def add_chain_worker(sup_id, chain_id, {m, f, a} = mfa, opts, timeout)
       when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_add_worker(sup_id, {:chain_id, chain_id}, [{:fun, mfa} | opts], timeout)
+    do_add_chain_worker(sup_id, chain_id, [{:fun, mfa} | opts], timeout)
   end
 
   def add_chain_worker(sup_id, chain_id, fun, opts, timeout)
       when is_list(opts) and is_function(fun, 0) do
-    do_add_worker(sup_id, {:chain_id, chain_id}, [{:fun, {:fun, fun}} | opts], timeout)
+    do_add_chain_worker(sup_id, chain_id, [{:fun, {:fun, fun}} | opts], timeout)
   end
 
   @doc """
@@ -227,7 +267,7 @@ defmodule SuperWorker.Supervisor do
   def add_group(sup_id, opts, timeout \\ @default_time) do
     with {:ok, group} <- Group.check_options(opts),
          true <- is_running?(sup_id),
-         :error <- Registry.meta(sup_id, {:group, group.id}),
+         {:error, _} <- get_group(sup_id, group.id),
          {:ok, parititon_id, pid} <- get_host_partition(sup_id, group.id) do
       %Group{} = group
       group = %{group | supervisor: sup_id, partition: parititon_id}
@@ -244,10 +284,7 @@ defmodule SuperWorker.Supervisor do
   """
   @spec get_group(atom(), atom()) :: {:ok, Group.t()} | {:error, any()}
   def get_group(sup_id, group_id) do
-    case Registry.meta(sup_id, {:group, group_id}) do
-      {:ok, group} -> {:ok, group}
-      :error -> {:error, :group_not_found}
-    end
+    Db.get_group(sup_id, group_id)
   end
 
   @doc """
@@ -257,7 +294,7 @@ defmodule SuperWorker.Supervisor do
   def add_chain(sup_id, opts, timeout \\ 5_000) do
     with {:ok, chain} <- Chain.check_options(opts),
          true <- is_running?(sup_id),
-         :error <- Registry.meta(sup_id, {:chain, chain.id}),
+         {:error, _} <- get_chain(sup_id, chain.id),
          {:ok, parition_id, pid} <- get_host_partition(sup_id, chain.id) do
       %Chain{} = chain
       chain = %{chain | supervisor: sup_id, partition: parition_id}
@@ -280,11 +317,11 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Send data directly to the worker (standalone, group, chain) in the supervisor.
+  Send data directly to the worker standalone in the supervisor.
   """
   def send_to_worker(sup_id, worker_id, data, timeout \\ @default_time) do
     with true <- is_running?(sup_id),
-         [{pid, _}] <- Registry.lookup(sup_id, {:worker, worker_id}) do
+         [{pid, _}] <- Db.get_worker_by_id(sup_id, worker_id, {:standalone, nil}) do
       call_api(pid, :send_to_worker, {worker_id, data}, timeout)
     end
   end
@@ -386,10 +423,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   def get_chain(sup_id, chain_id) do
-    case Registry.meta(sup_id, {:chain, chain_id}) do
-      {:ok, chain} -> {:ok, chain}
-      :error -> {:error, :chain_not_found}
-    end
+    Db.get_chain(sup_id, chain_id)
   end
 
   def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
@@ -400,26 +434,12 @@ defmodule SuperWorker.Supervisor do
 
   ## Internal public functions
 
-  def init(opts = %Supervisor{}, ref) do
-    state = %{
-      # storage for group processes
-      groups: MapSet.new(),
-      # storage for chain processes
-      chains: MapSet.new(),
-      # storage for standalone processes
-      standalone: MapSet.new(),
-      # supervisor id
-      id: opts.id,
-      owner: opts.owner,
-      master: opts.id,
-      prefix: "{#{inspect(opts.id)}, master}"
-    }
-
+  def init(sup = %Supervisor{}, ref) do
     # Register the supervisor process.
-    Process.register(self(), get_master_id(opts.id))
+    Process.register(self(), get_master_id(sup.id))
 
     # Link to remote pid if link is a pids
-    case opts.link do
+    case sup.link do
       pid when is_pid(pid) ->
         Process.link(pid)
 
@@ -432,45 +452,30 @@ defmodule SuperWorker.Supervisor do
         :ok
     end
 
-    # Create Registry for map worker/group/chain id to pid.
-    pid =
-      case Registry.start_link(
-             keys: :duplicate,
-             name: opts.id,
-             partitions: opts.number_of_partitions
-           ) do
-        {:ok, pid} ->
-          pid
+    Db.init(sup.id)
 
-        {:error, _} ->
-          Logger.error(
-            "SuperWorker, Supervisor, failed to start registry with name #{inspect(opts.id)}"
-          )
+    Logger.debug("SuperWorker, Supervisor, create table for #{inspect(sup.id)} done.")
 
-          raise "SuperWorker, Supervisor, failed to start registry with name #{inspect(opts.id)}"
-      end
-
-    Registry.register(state.master, :master, opts)
-    Registry.put_meta(state.master, :supervisor, opts)
+    Db.put_sup_info(sup.id, :master, sup)
 
     # Turn main process to system process.
     Process.flag(:trap_exit, true)
 
-    list_partitions = init_additional_partitions(opts)
+    list_partitions = init_additional_partitions(sup)
 
     started_partitions =
       Enum.reduce(1..length(list_partitions), [], fn _, acc ->
         receive do
           {:partition_started, id} ->
             Logger.debug(
-              "SuperWorker, Supervisor, supervisor #{inspect(state.id)} received started partition msg from #{inspect(id)}"
+              "SuperWorker, Supervisor, supervisor #{inspect(sup.id)} received started partition msg from #{inspect(id)}"
             )
 
             [id | acc]
         after
-          3_000 ->
+          @default_time ->
             Logger.debug(
-              "SuperWorker, Supervisor, supervisor #{inspect(state.id)} timeout when starting partition. Current list: #{inspect(acc)}"
+              "SuperWorker, Supervisor, supervisor #{inspect(sup.id)} timeout when starting partition. Current list: #{inspect(acc)}"
             )
 
             acc
@@ -479,24 +484,22 @@ defmodule SuperWorker.Supervisor do
 
     if length(started_partitions) != length(list_partitions) do
       Logger.error(
-        "SuperWorker, Supervisor, supervisor #{inspect(state.id)} failed to start partitions."
+        "SuperWorker, Supervisor, supervisor #{inspect(sup.id)} failed to start partitions."
       )
 
       api_response(ref, {:error, :failed_to_start_partitions})
     else
       state =
-        state
+        sup
         |> Map.put(:partitions, list_partitions)
-        |> Map.put(:role, :master)
-        |> Map.put(:registry_pid, pid)
 
       Logger.debug(
         "SuperWorker, Supervisor, supervisor #{inspect(state.id)} initialized: #{inspect(state)}"
       )
 
       # TO-DO: Add group, chain, worker from opts.
-      if opts.children != nil do
-        Enum.each(opts.children, fn child ->
+      if sup.children != nil do
+        Enum.each(sup.children, fn child ->
           case child do
             {:group, group} ->
               add_group(state.id, group)
@@ -517,7 +520,7 @@ defmodule SuperWorker.Supervisor do
       api_response(ref, {:ok, self()})
 
       # Start the main loop
-      main_loop(state, opts)
+      main_loop(state)
     end
   end
 
@@ -531,88 +534,67 @@ defmodule SuperWorker.Supervisor do
 
   ## Private functions
 
-  defp init_partition(opts = %Supervisor{}) do
-    # TO-DO: Implement partition supervisor.
-
-    state = %{
-      # storage for group processes
-      groups: %{},
-      # storage for chain processes
-      chains: %{},
-      # storage for standalone processes
-      standalone: %{},
-      # storage for refs to id & type
-      ref_to_id: %{},
-      # supervisor id
-      id: opts.id,
-      owner: opts.owner,
-      role: :partition,
-      master: opts.master,
-      number_of_partitions: opts.number_of_partitions,
-      prefix: "{#{inspect(opts.master)}, #{inspect(opts.id)}}"
-    }
-
+  defp init_partition(partition = %Supervisor{}) do
     # Start the main loop
-    pid = spawn_link(Supervisor, :start_partition, [state, opts])
+    pid = spawn_link(Supervisor, :start_partition, [partition])
 
-    Logger.debug("SuperWorker, Supervisor, #{state.prefix} initialized, pid: #{inspect(pid)}")
+    Logger.debug(
+      "SuperWorker, Supervisor, #{inspect(partition.id)} initialized, pid: #{inspect(pid)}"
+    )
 
-    {:ok, opts.id, pid}
+    {:ok, partition.id, pid}
   end
 
-  def start_partition(state, opts) do
-    {:ok, _} = Registry.register(state.master, {:partition, state.id}, state.id)
+  def start_partition(state) do
+    Db.put_sup_pid(state.master, state.id, self())
 
-    {:ok, _} = Registry.register(state.master, :all_partitions, state.id)
-
-    send(get_master_id(opts.master), {:partition_started, state.id})
+    send(get_master_id(state.master), {:partition_started, state.id})
 
     # Turn partition process to system process.
     Process.flag(:trap_exit, true)
 
-    main_loop(state, opts)
+    main_loop(state)
   end
 
-  defp init_additional_partitions(opts) do
-    partitions = opts.number_of_partitions
+  defp init_additional_partitions(sup) do
+    partitions = sup.number_of_partitions
 
     Enum.map(0..(partitions - 1), fn i ->
-      Logger.debug("SuperWorker, Supervisor, [#{inspect(opts.id)}] add partition: #{inspect(i)}")
+      Logger.debug("SuperWorker, Supervisor, [#{inspect(sup.id)}] add partition: #{inspect(i)}")
 
-      opts =
-        opts
-        |> Map.put(:master, opts.id)
-        |> Map.put(:id, String.to_atom("#{Atom.to_string(opts.id)}_#{i}"))
-        |> Map.put(:role, :partition)
+      sup =
+        sup
+        |> Map.put(:master, sup.id)
+        |> Map.put(:id, String.to_atom("#{Atom.to_string(sup.id)}_#{i}"))
 
-      {:ok, partition, pid} = init_partition(opts)
+      {:ok, partition, pid} = init_partition(sup)
       {partition, pid}
     end)
   end
 
   # Main loop for the supervisor & partition.
-  def main_loop(state, sup_opts) do
+  def main_loop(state) do
     receive do
       {msg_type, _, _} = msg when msg_type in @api_messages ->
         Logger.debug(
-          "SuperWorker, Supervisor, #{state.prefix} received a api message: #{inspect(msg)}"
+          "SuperWorker, Supervisor, #{state.id} received a api message: #{inspect(msg)}"
         )
 
-        process_api_message(state, sup_opts, msg)
+        process_api_message(state, msg)
 
       {:DOWN, _ref, :process, pid, reason} = msg ->
         Logger.debug(
-          "SuperWorker, Supervisor, #{state.prefix} Worker died: #{inspect(pid)}, reason: #{inspect(reason)}"
+          "SuperWorker, Supervisor, #{state.id} Worker died: #{inspect(pid)}, reason: #{inspect(reason)}"
         )
 
-        process_worker_down(state, sup_opts, msg)
+        process_worker_down(state, msg)
 
       {:EXIT, from, reason} ->
-        process_exit_message(state, sup_opts, from, reason)
+        process_exit_message(state, from, reason)
 
       {:stop_partition, type} ->
         Logger.info(
-          "SuperWorker, Supervisor, #{state.prefix} Stopping supervisor partition, for #{inspect(self())}"
+          "SuperWorker, Supervisor, #{state.id} Stopping supervisor partition, for #{inspect(self())}"
         )
 
         # Stop the supervisor.
@@ -622,13 +604,13 @@ defmodule SuperWorker.Supervisor do
 
       unknown ->
         Logger.warning(
-          "SuperWorker, Supervisor, #{state.prefix} main_loop, unknown message: #{inspect(unknown)}"
+          "SuperWorker, Supervisor, #{state.id} main_loop, unknown message: #{inspect(unknown)}"
         )
 
-        main_loop(state, sup_opts)
+        main_loop(state)
     end
 
-    Logger.debug("SuperWorker, Supervisor, #{state.prefix} #{inspect(self())} main loop exited.")
+    Logger.debug("SuperWorker, Supervisor, #{state.id} #{inspect(self())} main loop exited.")
   end
 
   defp shutdown(state, :kill) do
@@ -651,36 +633,36 @@ defmodule SuperWorker.Supervisor do
   end
 
   # process exit message for outside processes.
-  defp process_exit_message(state, sup_opts, from, reason) do
+  defp process_exit_message(state, from, reason) do
     Logger.debug(
-      "SuperWorker, Supervisor, #{state.prefix} Exit message from: #{inspect(from)}, reason: #{inspect(reason)}"
+      "SuperWorker, Supervisor, #{state.id} Exit message from: #{inspect(from)}, reason: #{inspect(reason)}"
     )
 
-    if from in sup_opts.linked_pids do
+    if from in state.linked_pids do
       Logger.warning(
-        "SuperWorker, Supervisor, #{state.prefix} exited follow external process (crashed): #{inspect(from)}"
+        "SuperWorker, Supervisor, #{state.id} exited follow external process (crashed): #{inspect(from)}"
       )
 
       raise "#{inspect(state.master)} crashed follow external process: #{inspect(from)}"
     else
       Logger.debug(
-        "SuperWorker, Supervisor, #{state.prefix} skipped exit for internal process: #{inspect(from)}, reason: #{inspect(reason)}"
+        "SuperWorker, Supervisor, #{state.id} skipped exit for internal process: #{inspect(from)}, reason: #{inspect(reason)}"
       )
 
-      main_loop(state, sup_opts)
+      main_loop(state)
     end
   end
 
   # Add new worker to group/chain/standalone.
-  defp process_api_message(state, sup_opts, {:start_worker, ref, opts}) do
+  defp process_api_message(state, {:start_worker, ref, worker = %Worker{}}) do
     runable =
-      case opts.type do
+      case worker.type do
         :group ->
           cond do
-            !has_group?(state, opts.parent) ->
+            !has_group?(state, worker.parent) ->
               :group_not_found
 
-            has_group_worker?(state, opts.parent, opts.id) ->
+            has_group_worker?(state, worker.parent, worker.id) ->
               :worker_already_exists
 
             true ->
@@ -689,10 +671,10 @@ defmodule SuperWorker.Supervisor do
 
         :chain ->
           cond do
-            !has_chain?(state, opts.parent) ->
+            !has_chain?(state, worker.parent) ->
               :chain_not_found
 
-            has_chain_worker?(state, opts.parent, opts.id) ->
+            has_chain_worker?(state, worker.parent, worker.id) ->
               :worker_already_exists
 
             true ->
@@ -700,7 +682,7 @@ defmodule SuperWorker.Supervisor do
           end
 
         :standalone ->
-          if has_worker?(state, opts.id) do
+          if has_standalone_worker?(state, worker.id) do
             :worker_already_exists
           else
             true
@@ -712,57 +694,69 @@ defmodule SuperWorker.Supervisor do
     state =
       if runable == true do
         Logger.debug(
-          "SuperWorker, Supervisor, #{state.prefix} Everything is fine, starting child process with options: #{inspect(opts)}"
+          "SuperWorker, Supervisor, #{state.id} Everything is fine, starting worker: #{inspect(worker)}"
         )
 
-        state = sup_start_child(state, opts)
-        api_response(ref, {:ok, opts.id})
+        result =
+          case worker.type do
+            :group ->
+              with {:ok, group} <- get_group(state.master, worker.parent) do
+                Group.add_worker(group, worker)
+                {:ok, worker.id}
+              else
+                _ ->
+                  {:error, :not_found}
+              end
+
+            :chain ->
+              with {:ok, chain} <- get_chain(state.master, worker.parent) do
+                Chain.add_worker(chain, worker)
+                {:ok, worker.id}
+              else
+                _ ->
+                  {:error, :not_found}
+              end
+
+            :standalone ->
+              sup_start_child(state, worker)
+              {:ok, worker.id}
+          end
+
+        api_response(ref, result)
 
         state
       else
         Logger.error(
-          "SuperWorker, Supervisor, #{state.prefix} Error when starting worker: #{inspect(runable)}"
+          "SuperWorker, Supervisor, #{state.id} Error when starting worker: #{inspect(runable)}"
         )
 
         api_response(ref, {:error, runable})
         state
       end
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
   # Get chain in supervisor and return to the caller.
-  defp process_api_message(state, sup_opts, {:get_chain, ref, chain_id}) do
-    result =
-      case get_group_or_chain(state, chain_id, :chain) do
-        {:error, _} = error ->
-          Logger.error(
-            "SuperWorker, Supervisor, #{state.prefix} Not found chain with id #{inspect(chain_id)}"
-          )
-
-          error
-
-        {:ok, _} = res ->
-          res
-      end
+  defp process_api_message(state, {:get_chain, ref, chain_id}) do
+    result = Db.get_chain(state.master, chain_id)
 
     api_response(ref, result)
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
   # broadcast a data to all worker in group.
-  defp process_api_message(state, sup_opts, {:broadcast_to_group, ref, {group_id, data}}) do
+  defp process_api_message(state, {:broadcast_to_group, ref, {group_id, data}}) do
     result =
-      case get_group_or_chain(state, group_id, :group) do
-        {:ok, group} ->
-          Group.broadcast(group, data)
-          # TO-DO: Improve response
-          :ok
+      with {:ok, group} <- Db.get_group(state.master, group_id) do
+        Group.broadcast(group, data)
 
+        :ok
+      else
         {:error, _} = error ->
           Logger.error(
-            "SuperWorker, Supervisor, #{state.prefix} Not found group with id #{inspect(group_id)}"
+            "SuperWorker, Supervisor, #{state.id} Not found group with id #{inspect(group_id)}"
           )
 
           error
@@ -770,14 +764,14 @@ defmodule SuperWorker.Supervisor do
 
     api_response(ref, result)
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
   # send data directly to worker from api.
-  defp process_api_message(state, sup_opts, {:send_to_group, ref, {group_id, worker_id, data}}) do
-    with {:ok, group} <- get_group_or_chain(state, group_id, :group),
-         {:ok, worker} <- Group.get_worker(group, worker_id) do
-      send(worker.pid, data)
+  defp process_api_message(state, {:send_to_group, ref, {group_id, worker_id, data}}) do
+    with {:ok, group} <- Db.get_group(state.master, group_id),
+         {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.master, worker_id, {:group, group_id}) do
+      send(pid, data)
       api_response(ref, :ok)
     else
       failed ->
@@ -788,127 +782,123 @@ defmodule SuperWorker.Supervisor do
         api_response(ref, failed)
     end
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
   # send data to random worker from api.
-  defp process_api_message(state, sup_opts, {:send_to_group_random, ref, {group_id, data}}) do
-    case get_group_or_chain(state, group_id, :group) do
-      {:error, _} = error ->
-        Logger.error(
-          "SuperWorker, Supervisor, #{state.prefix} Group not found: #{inspect(group_id)}, error: #{inspect(error)}"
-        )
-
-        api_response(ref, error)
-
-      {:ok, group} ->
-        worker_id = Enum.random(group.workers)
-
-        case Group.get_worker(group, worker_id) do
-          {:ok, worker} ->
-            send(worker.pid, data)
-            api_response(ref, :ok)
-
-          {:error, _} = error ->
-            Logger.error(
-              "SuperWorker, Supervisor, #{state.prefix} Not found worker #{inspect(worker_id)} in group #{inspect(group_id)}"
-            )
-
-            api_response(ref, error)
-        end
-    end
-
-    main_loop(state, sup_opts)
-  end
-
-  # add data to chain from api.
-  defp process_api_message(
-         state,
-         sup_opts,
-         {:add_data_to_chain, {from, _} = ref, {chain_id, data}}
-       ) do
-    case get_group_or_chain(state, chain_id, :chain) do
-      {:error, _} = error ->
-        Logger.error(
-          "SuperWorker, Supervisor, #{state.prefix} Chain not found: #{inspect(chain_id)}"
-        )
-
-        api_response(ref, error)
-
-      {:ok, chain} ->
-        msg = Message.new(from, nil, data)
-
-        Logger.debug(
-          "SuperWorker, Supervisor, #{state.prefix} Add data to chain: #{inspect(chain_id)}, msg: #{inspect(msg)}"
-        )
-
-        result = Chain.new_data(chain, msg)
-
-        Logger.debug(
-          "SuperWorker, Supervisor, #{state.prefix} Added data to chain: #{inspect(chain_id)}, result: #{inspect(result)}"
-        )
-
-        api_response(ref, result)
-    end
-
-    main_loop(state, sup_opts)
-  end
-
-  defp process_api_message(state, sup_opts, {:send_to_worker, ref, {worker_id, data}}) do
-    case get_group_or_chain(state, worker_id, :not_implement) do
-      {:error, _} = error ->
-        Logger.error(
-          "SuperWorker, Supervisor, #{state.prefix} Worker not found: #{inspect(worker_id)}"
-        )
-
-        api_response(ref, error)
-
-      {:ok, worker} ->
-        send(worker.pid, data)
-        api_response(ref, :ok)
-    end
-
-    main_loop(state, sup_opts)
-  end
-
-  # remove worker from group.
-  defp process_api_message(state, sup_opts, {:remove_group_worker, ref, {worker_id, group_id}}) do
+  defp process_api_message(state, {:send_to_group_random, ref, {group_id, data}}) do
     result =
-      case get_group_or_chain(state, group_id, :group) do
-        {:ok, group} ->
-          Group.remove_worker(group, worker_id)
+      with {:ok, group} <- Db.get_group(state.master, group_id),
+           workers <- Db.get_workers_by_parent(state.master, {:group, group_id}) do
+        if length(workers) > 0 do
+          {worker_id, _} = Enum.random(workers)
 
+          Group.send_message(group, worker_id, data)
+        else
+          {:error, :no_worker}
+        end
+      else
         {:error, _} = error ->
           Logger.error(
-            "SuperWorker, Supervisor, #{state.prefix} Group not found: #{inspect(group_id)}"
+            "SuperWorker, Supervisor, #{state.id} Group not found: #{inspect(group_id)}, error: #{inspect(error)}"
           )
 
           error
       end
 
     api_response(ref, result)
-    main_loop(state, sup_opts)
+
+    main_loop(state)
   end
 
-  defp process_api_message(state, sup_opts, {:restart_group_worker, worker_id, group_id}) do
+  # add data to chain from api.
+  defp process_api_message(
+         state,
+         {:add_data_to_chain, {from, _} = ref, {chain_id, data}}
+       ) do
+    result =
+      with {:ok, chain} <- Db.get_chain(state.master, chain_id) do
+        msg = Message.new(from, nil, data)
+
+        Logger.debug(
+          "SuperWorker, Supervisor, #{state.id} Add data to chain: #{inspect(chain_id)}, msg: #{inspect(msg)}"
+        )
+
+        Chain.new_data(chain, msg)
+      else
+        error ->
+          Logger.error(
+            "SuperWorker, Supervisor, #{state.id} cannot send to chain, error: #{inspect(error)}"
+          )
+
+          {:error, :cannot_send}
+      end
+
     Logger.debug(
-      "SuperWorker, Supervisor, #{state.prefix} Starting worker process, worker id: #{inspect(worker_id)}, group id: #{inspect(group_id)}"
+      "SuperWorker, Supervisor, #{state.id} Added data to chain: #{inspect(chain_id)}, result: #{inspect(result)}"
     )
 
-    {:ok, group} = Registry.meta(state.master, {:group, group_id})
-    # Restart the worker process.
-    Group.restart_worker(group, worker_id)
+    api_response(ref, result)
 
-    main_loop(state, sup_opts)
+    main_loop(state)
+  end
+
+  defp process_api_message(state, {:send_to_worker, ref, {worker_id, data}}) do
+    result =
+      with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.master, worker_id, {:standalone, nil}) do
+        send(pid, data)
+        :ok
+      else
+        error ->
+          Logger.warning(
+            "SuperWorker, Supervisor, not found standalone worker #{inspect(worker_id)}"
+          )
+
+          error
+      end
+
+    api_response(ref, result)
+
+    main_loop(state)
+  end
+
+  # remove worker from group.
+  defp process_api_message(state, {:remove_group_worker, ref, {worker_id, group_id}}) do
+    result =
+      with {:ok, group} <- Db.get_group(state.master, group_id) do
+        Group.remove_worker(group, worker_id)
+      else
+        error ->
+          Logger.error(
+            "SuperWorker, Supervisor, #{state.id} Group not found: #{inspect(group_id)}"
+          )
+
+          error
+      end
+
+    api_response(ref, result)
+
+    main_loop(state)
+  end
+
+  defp process_api_message(state, {:restart_group_worker, worker_id, group_id}) do
+    Logger.debug(
+      "SuperWorker, Supervisor, #{state.id} Starting worker process, worker id: #{inspect(worker_id)}, group id: #{inspect(group_id)}"
+    )
+
+    with {:ok, group} <- Db.get_group(state.master, group_id) do
+      # Restart the worker process.
+      Group.restart_worker(group, worker_id)
+    end
+
+    main_loop(state)
   end
 
   # add group from api.
-  defp process_api_message(state, sup_opts, {:add_group, ref, group}) do
-    case Registry.meta(state.master, {:group, group.id}) do
-      :error ->
-        Logger.debug(
-          "SuperWorker,Supervisor,  #{state.prefix} Adding group: #{inspect(group.id)}"
-        )
+  defp process_api_message(state, {:add_group, ref, group}) do
+    case Db.get_group(state.master, group.id) do
+      {:error, :not_found} ->
+        Logger.debug("SuperWorker,Supervisor,  #{state.id} Adding group: #{inspect(group.id)}")
 
         state = add_new_group(state, group)
         # Send the response to the caller.
@@ -918,42 +908,29 @@ defmodule SuperWorker.Supervisor do
 
       {:ok, _} ->
         Logger.error(
-          "SuperWorker, Supervisor, #{state.prefix} Group already exists: #{inspect(group.id)}"
+          "SuperWorker, Supervisor, #{state.id} Group already exists: #{inspect(group.id)}"
         )
 
         api_response(ref, {:error, :already_exists})
 
         state
     end
-    |> main_loop(sup_opts)
+    |> main_loop()
   end
 
   # get group info from api.
-  defp process_api_message(state, sup_opts, {:get_group, ref, group_id}) do
-    result =
-      case Registry.meta(state.master, {:group, group_id}) do
-        :error ->
-          Logger.error(
-            "SuperWorker, Supervisor, #{state.prefix} Group not found: #{inspect(group_id)}"
-          )
-
-          {:error, :group_not_found}
-
-        {:ok, _group} = result ->
-          result
-      end
+  defp process_api_message(state, {:get_group, ref, group_id}) do
+    result = Db.get_group(state.master, group_id)
 
     api_response(ref, result)
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
   # add chain from api.
-  defp process_api_message(state, sup_opts, {:add_chain, ref, chain}) do
-    case Registry.meta(state.master, {:chain, chain.id}) do
-      :error ->
-        Logger.debug(
-          "SuperWorker, Supervisor, #{state.prefix} Adding chain: #{inspect(chain.id)}"
-        )
+  defp process_api_message(state, {:add_chain, ref, chain}) do
+    case Db.get_chain(state.master, chain.id) do
+      {:error, :not_found} ->
+        Logger.debug("SuperWorker, Supervisor, #{state.id} Adding chain: #{inspect(chain.id)}")
 
         state = add_new_chain(state, chain)
         # Send the response to the caller.
@@ -963,28 +940,28 @@ defmodule SuperWorker.Supervisor do
 
       {:ok, _} ->
         Logger.error(
-          "SuperWorker, Supervisor, #{state.prefix} Chain already exists: #{inspect(chain.id)}"
+          "SuperWorker, Supervisor, #{state.id} Chain already exists: #{inspect(chain.id)}"
         )
 
         api_response(ref, {:error, :already_exists})
 
         state
     end
-    |> main_loop(sup_opts)
+    |> main_loop()
   end
 
   # Stop supervisor from api.
-  defp process_api_message(state, _sup_opts, {:stop, ref, type}) do
+  defp process_api_message(state, {:stop, ref, type}) do
     Logger.info(
-      "SuperWorker, Supervisor, #{state.prefix} Stopping supervisor, request from #{inspect(ref)}"
+      "SuperWorker, Supervisor, #{state.id} Stopping supervisor, request from #{inspect(ref)}"
     )
 
-    list_partitions = Registry.lookup(state.master, :all_partitions)
+    {:ok, list_partitions} = Db.get_all_sup_pids(state.master)
 
     # Send shutdown signal to all partitions.
-    Enum.each(list_partitions, fn {pid, id} ->
+    Enum.each(list_partitions, fn {id, pid} ->
       Logger.debug(
-        "SuperWorker, Supervisor, #{state.prefix} Sending shutdown signal to partition: #{inspect(id)} (#{inspect(pid)})"
+        "SuperWorker, Supervisor, #{state.id} Sending shutdown signal to partition: #{inspect(id)} (#{inspect(pid)})"
       )
 
       send(pid, {:stop_partition, type})
@@ -995,14 +972,14 @@ defmodule SuperWorker.Supervisor do
         receive do
           {:partition_stopped, id} ->
             Logger.debug(
-              "SuperWorker, Supervisor, #{state.prefix} received stopped partition msg from #{inspect(id)}"
+              "SuperWorker, Supervisor, #{state.id} received stopped partition msg from #{inspect(id)}"
             )
 
             [id | acc]
         after
-          3_000 ->
+          @default_time ->
             Logger.debug(
-              "SuperWorker, Supervisor, #{state.prefix} timeout when stopping partition. Current list: #{inspect(acc)}"
+              "SuperWorker, Supervisor, #{state.id} timeout when stopping partition. Current list: #{inspect(acc)}"
             )
 
             acc
@@ -1011,10 +988,10 @@ defmodule SuperWorker.Supervisor do
 
     result =
       if length(list_partitions) != length(stopped_partitions) do
-        Logger.error("SuperWorker, Supervisor, #{state.prefix} failed to stop partitions.")
+        Logger.error("SuperWorker, Supervisor, #{state.id} failed to stop partitions.")
         {:error, :failed_to_stop_partitions}
       else
-        Logger.debug("SuperWorker, Supervisor, #{state.prefix} stopped all partitions.")
+        Logger.debug("SuperWorker, Supervisor, #{state.id} stopped all partitions.")
         {:ok, :stopped}
       end
 
@@ -1028,74 +1005,65 @@ defmodule SuperWorker.Supervisor do
     exit(:normal)
   end
 
-  defp process_api_message(state, sup_opts, unknown_msg) do
+  defp process_api_message(state, unknown_msg) do
     Logger.warning(
-      "SuperWorker, Supervisor, #{state.prefix} Unknown api message: #{inspect(unknown_msg)}"
+      "SuperWorker, Supervisor, #{state.id} Unknown api message: #{inspect(unknown_msg)}"
     )
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
-  defp process_worker_down(state, sup_opts, {:DOWN, _ref, :process, pid, :restart}) do
+  defp process_worker_down(state, {:DOWN, _ref, :process, pid, :restart}) do
     Logger.debug(
-      "SuperWorker, Supervisor, #{state.prefix} Ignore died process (restarting): #{inspect(pid)}"
+      "SuperWorker, Supervisor, #{state.id} Ignore died process (restarting): #{inspect(pid)}"
     )
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
-  defp process_worker_down(state, sup_opts, {:DOWN, _ref, :process, pid, :removed}) do
+  defp process_worker_down(state, {:DOWN, _ref, :process, pid, :removed}) do
     Logger.debug(
-      "SuperWorker, Supervisor, #{state.prefix} Ignore died process (removed by user): #{inspect(pid)}"
+      "SuperWorker, Supervisor, #{state.id} Ignore died process (removed by user): #{inspect(pid)}"
     )
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
-  defp process_worker_down(state, sup_opts, {:DOWN, ref, :process, pid, reason}) do
+  defp process_worker_down(state, {:DOWN, ref, :process, pid, reason}) do
     Logger.debug(
       "SuperWorker, Supervisor, child process died: #{inspect(pid)}, ref: #{inspect(ref)}, reason: #{inspect(reason)}"
     )
 
-    state =
-      case Registry.lookup(state.master, {:worker, :ref, ref}) do
-        [] ->
-          Logger.debug(
-            "SuperWorker, Supervisor, child is not found in table: #{inspect(ref)}, maybe already stopped."
-          )
+    with {:ok, {worker_id, parent, _} = info} <- Db.get_worker(state.master, ref),
+         {:ok, worker} <- Db.get_worker_info(state.master, worker_id, parent) do
+      Logger.debug(
+        "SuperWorker, Supervisor, worker found: #{inspect(info)}, orig_pid: #{inspect(pid)}, restarting..."
+      )
 
-          state
+      # clean up old data
+      Db.delete_worker(state.master, ref)
 
-        [{pid, {type, worker_id}} = ref_data] ->
-          Logger.debug(
-            "SuperWorker, Supervisor, child found: #{inspect(pid)}, restarting. meta: #{inspect(ref_data)}"
-          )
+      case parent do
+        {:standalone, nil} ->
+          restart_standalone(state, worker, {pid, reason})
 
-          case type do
-            :standalone ->
-              {:ok, child} = Registry.meta(state.master, {:worker, :standalone, worker_id})
-              restart_standalone(state, child, {pid, reason})
+        {:group, group_id} ->
+          Logger.debug("SuperWorker, Supervisor, restart worker for group #{inspect(group_id)}")
 
-            {:group, group_id} = group_type ->
-              with {:ok, child} <- Registry.meta(state.master, {:worker, group_type, worker_id}),
-                   {:ok, group} <- Registry.meta(state.master, {:group, group_id}) do
-                restart_group(state, group, child, {pid, reason})
-              else
-                wrong ->
-                  Logger.error(
-                    "SuperWorker, Supervisor, #{state.prefix} Error when restarting group worker: #{inspect(wrong)}"
-                  )
+          with {:ok, group} <- Db.get_group(state.master, group_id) do
+            restart_group(state, group, worker_id, {pid, reason})
+          end
 
-                  state
-              end
+        {:chain, chain_id} ->
+          Logger.debug("SuperWorker, Supervisor, restart worker for chain #{inspect(chain_id)}")
 
-            {:chain, _chain_id} = chain_type ->
-              {:ok, chain} = Registry.meta(state.master, {:worker, chain_type, worker_id})
-              restart_chain(state, chain, worker_id, {pid, reason})
+          with {:ok, chain} <- Db.get_chain(state.master, chain_id) do
+            restart_chain(state, chain, worker, {pid, reason})
           end
       end
+    end
 
-    main_loop(state, sup_opts)
+    main_loop(state)
   end
 
   defp restart_standalone(state, %Worker{} = child, {pid, reason}) do
@@ -1134,21 +1102,21 @@ defmodule SuperWorker.Supervisor do
 
   defp restart_group(
          state,
-         %{restart_strategy: :one_for_one} = group,
+         %Group{restart_strategy: :one_for_one} = group,
          worker = %Worker{},
          {pid, reason}
        ) do
     case reason do
       :normal ->
         Logger.debug(
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is shutdown with reason :normal, ignore restarting."
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is shutdown with reason :normal, ignore restart phase."
         )
 
         state
 
       reason ->
         Logger.debug(
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is down with reason: #{inspect(reason)}, restarting."
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is down with reason: #{inspect(reason)}, restarting..."
         )
 
         Group.restart_worker(group, worker)
@@ -1157,11 +1125,16 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  defp restart_group(state, %{restart_strategy: :one_for_all} = group, _child_id, {pid, reason}) do
+  defp restart_group(
+         state,
+         %Group{restart_strategy: :one_for_all} = group,
+         _worker,
+         {pid, reason}
+       ) do
     case reason do
       :normal ->
         Logger.debug(
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is :normal shutdown, ignore restarting."
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is :normal shutdown, ignore restart phase."
         )
 
         state
@@ -1180,7 +1153,7 @@ defmodule SuperWorker.Supervisor do
           end)
 
         Logger.debug(
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Old ref: #{inspect(old_ref_keys)}"
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Old ref: #{inspect(old_ref_keys)}, group workers: #{inspect(list_worker_id)}"
         )
 
         # Clean up old process.
@@ -1189,6 +1162,11 @@ defmodule SuperWorker.Supervisor do
 
         Enum.each(list_worker_id, fn {_worker_pid, worker_id} ->
           {:ok, _, pid} = get_host_partition(state.master, worker_id)
+
+          Logger.debug(
+            "SuperWorker, Supervisor, send restart signal to #{inspect(pid)} for group worker #{inspect(worker_id)}"
+          )
+
           send(pid, {:restart_group_worker, worker_id, group.id})
         end)
 
@@ -1198,33 +1176,35 @@ defmodule SuperWorker.Supervisor do
 
   # TO-DO: Follow restart strategy for child group & chain.
 
-  defp restart_chain(state, %{restart_strategy: :one_for_one} = chain, child_id, {pid, reason}) do
+  defp restart_chain(
+         state,
+         %Chain{restart_strategy: :one_for_one} = chain,
+         worker = %Worker{},
+         {pid, reason}
+       ) do
     case reason do
       :normal ->
         Logger.debug(
-          "SuperWorker, Supervisor, worker(#{inspect(child_id)}) process(#{inspect(pid)}) is normal, ignore restarting."
+          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) process(#{inspect(pid)}) is normal, ignore restarting."
         )
 
         state
 
       _ ->
         Logger.debug(
-          "SuperWorker, Supervisor, worker(#{inspect(child_id)}) process(#{inspect(pid)}) is down, restarting."
+          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) process(#{inspect(pid)}) is down, restarting."
         )
 
-        {:ok, chain} = Chain.restart_worker(chain, child_id)
-        {:ok, worker} = Chain.get_worker(chain, child_id)
-        chains = Map.put(state.chains, chain.id, chain)
-
-        ref_to_id = Map.put(state.ref_to_id, worker.ref, {child_id, {:chain, chain.id}})
-
-        state
-        |> Map.put(:chains, chains)
-        |> Map.put(:ref_to_id, ref_to_id)
+        Chain.restart_worker(chain, worker.id)
     end
   end
 
-  defp restart_chain(state, %{restart_strategy: :one_for_all} = chain, _child_id, {pid, reason}) do
+  defp restart_chain(
+         state,
+         %Chain{restart_strategy: :one_for_all} = chain,
+         %Worker{},
+         {pid, reason}
+       ) do
     case reason do
       :normal ->
         Logger.debug(
@@ -1238,27 +1218,7 @@ defmodule SuperWorker.Supervisor do
           "SuperWorker, Supervisor, child process(#{inspect(pid)}) is down, restarting..."
         )
 
-        old_ref_keys =
-          Enum.reduce(chain.workers, [], fn {_, worker}, acc -> [worker.ref | acc] end)
-
-        Logger.debug("SuperWorker, Supervisor, chain, Old ref: #{inspect(old_ref_keys)}")
-
-        {:ok, chain} = Chain.restart_all_workers(chain)
-
-        new_refs =
-          state.ref_to_id
-          |> Map.drop(old_ref_keys)
-
-        new_refs =
-          Enum.reduce(chain.workers, new_refs, fn {child_id, worker}, acc ->
-            Map.put(acc, worker.ref, {child_id, {:chain, chain.id}})
-          end)
-
-        Logger.debug("SuperWorker, Supervisor, new ref: #{inspect(new_refs)}")
-
-        state
-        |> Map.put(:chains, Map.put(state.chains, chain.id, chain))
-        |> Map.put(:ref_to_id, new_refs)
+        Chain.restart_all_workers(chain)
     end
   end
 
@@ -1266,102 +1226,73 @@ defmodule SuperWorker.Supervisor do
     # Start a child process
     Logger.debug("SuperWorker, Supervisor, starting standalone worker process(#{inspect(id)})")
 
-    Registry.put_meta(state.master, {:standalone, {:worker, id}}, worker)
+    result =
+      case worker.fun do
+        {:gen_server, {m, f, a}} ->
+          case apply(m, f, a) do
+            {:ok, pid} ->
+              ref = Process.monitor(pid)
+              {:ok, {pid, ref}}
 
-    {pid, ref} =
-      spawn_monitor(fn ->
-        # Register the worker process.
-        Registry.register(state.master, {:worker, id}, [])
+            {:error, reason} ->
+              Logger.error("Failed to start gen_server: #{inspect(reason)}")
 
-        # Store for user can directly access to the worker.
-        Process.put({:supervisor, :sup_id}, state.id)
-        Process.put({:supervisor, :worker_id}, id)
+              {:error, reason}
+          end
 
-        case worker.fun do
-          {:fun, fun} ->
-            fun.()
+        _ ->
+          spawn_monitor(fn ->
+            # Store for user can directly access to the worker.
+            Process.put({:supervisor, :sup_id}, state.id)
+            Process.put({:supervisor, :worker_id}, id)
 
-          {m, f, a} ->
-            apply(m, f, a)
-        end
-      end)
+            case worker.fun do
+              {:fun, fun} ->
+                fun.()
 
-    # Link to child for case supervisor is down.
-    Process.link(pid)
+              {m, f, a} ->
+                apply(m, f, a)
+            end
+          end)
+      end
 
-    Registry.register(state.master, {:worker, :ref, ref}, {:standalone, worker.id})
+    case result do
+      {:ok, {pid, ref}} ->
+        # Link to child for case supervisor is down.
+        Process.link(pid)
 
-    state
-  end
+        Db.put_worker(state.master, ref, worker.id, {:standalone, nil}, pid)
 
-  defp sup_start_child(state, %Worker{id: id, parent: group_id, type: :group} = opts)
-       when group_id != nil do
-    # Start a child process
-    Logger.debug(
-      "SuperWorker, Supervisor, starting child process(#{inspect(id)}) for group #{inspect(group_id)}"
-    )
-
-    {:ok, group} = Registry.meta(state.master, {:group, group_id})
-
-    {:ok, _} = Group.add_worker(group, opts)
-
-    state
-  end
-
-  defp sup_start_child(state, %Worker{id: id, parent: chain_id, type: :chain} = opts) do
-    Logger.debug(
-      "SuperWorker, Supervisor, starting child process(#{inspect(id)}) for chain #{inspect(chain_id)}"
-    )
-
-    {:ok, chain} = Registry.meta(state.master, {:chain, chain_id})
-
-    with {:ok, chain} <- Chain.add_worker(chain, opts) do
-      Registry.put_meta(state.master, {:chain, chain_id}, chain)
-
-      Logger.debug(
-        "SuperWorker, Supervisor, part: #{inspect(state.id)}, added worker  to chain: #{inspect(chain)}"
-      )
+      # ignore failed worker
+      _ ->
+        :ok
     end
 
     state
-  end
-
-  defp get_group_or_chain(state, id, type) do
-    case Registry.meta(state.master, {type, id}) do
-      :error ->
-        Logger.warning(
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Chain/Group not found: #{inspect(id)}"
-        )
-
-        {:error, {:not_found, type}}
-
-      {:ok, _} = result ->
-        result
-    end
   end
 
   defp add_new_group(state, %Group{} = group) do
-    group = %{group | supervisor: state.master, partition: state.id}
-    Registry.put_meta(state.master, {:group, group.id}, group)
+    group = %Group{group | supervisor: state.master, partition: state.id}
+    Db.put_group(state.master, group)
 
     state
   end
 
   defp add_new_chain(state, %Chain{} = chain) do
     chain = %{chain | supervisor: state.master, partition: state.id}
-    Registry.put_meta(state.master, {:chain, chain.id}, chain)
+    Db.put_chain(state.master, chain)
 
     state
   end
 
-  @spec do_add_worker(atom(), atom() | tuple(), list(), integer()) ::
+  @spec do_add_standalone_worker(atom(), list(), integer()) ::
           {:ok, any()} | {:error, any()}
-  defp do_add_worker(sup_id, :standalone, opts, timeout) do
+  defp do_add_standalone_worker(sup_id, opts, timeout) do
     Logger.debug(
       "SuperWorker, Supervisor, starting standalone child process with options: #{inspect(opts)}"
     )
 
-    with {:ok, opts} <- Worker.check_standalone_options(opts),
+    with {:ok, opts} <- Worker.check_standalone_options([type: :standalone] ++ opts),
          {:ok, pid} <- verify_and_get_pid(sup_id, opts.id) do
       opts =
         opts
@@ -1369,21 +1300,22 @@ defmodule SuperWorker.Supervisor do
 
       call_api(pid, :start_worker, opts, timeout)
     else
-      other ->
+      error ->
         Logger.error(
-          "SuperWorker, Supervisor, cannot add standalone worker, something happened: #{inspect(other)}, options: #{inspect(opts)}"
+          "SuperWorker, Supervisor, cannot add standalone worker, something happened: #{inspect(error)}, options: #{inspect(opts)}"
         )
 
-        other
+        error
     end
   end
 
-  defp do_add_worker(sup_id, {:group_id, group_id} = group, opts, timeout) when group_id != nil do
+  defp do_add_group_worker(sup_id, group_id, opts, timeout)
+       when group_id != nil do
     Logger.debug(
       "SuperWorker, Supervisor, starting worker group(#{inspect(group_id)}) process with options: #{inspect(opts)}"
     )
 
-    with {:ok, opts} <- Worker.check_group_options([group | opts]),
+    with {:ok, opts} <- Worker.check_group_options([group_id: group_id] ++ opts),
          {:ok, pid} <- verify_and_get_pid(sup_id, opts.id) do
       opts =
         opts
@@ -1405,10 +1337,10 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  defp do_add_worker(sup_id, {:chain_id, chain_id} = chain, opts, timeout) do
+  defp do_add_chain_worker(sup_id, chain_id, opts, timeout) do
     Logger.debug("SuperWorker, Supervisor, starting child process with options: #{inspect(opts)}")
 
-    with {:ok, opts} <- Worker.check_chain_options([chain | opts]),
+    with {:ok, opts} <- Worker.check_chain_options([parent: chain_id, type: :chain] ++ opts),
          {:ok, pid} <- verify_and_get_pid(sup_id, opts.id) do
       opts =
         opts
@@ -1439,11 +1371,14 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp get_master_id(id) do
-    String.to_atom("#{Atom.to_string(id)}_master")
+    # String.to_atom("#{Atom.to_string(id)}_master")
+    id
   end
 
   defp check_opts(opts) do
     with {:ok, opts} <- normalize_opts(opts, @sup_params),
+         {:ok, opts} <- default_sup_opts(opts),
+         {:ok, opts} <- generic_default_sup_opts(opts),
          {:ok, opts} <- validate_opts(opts),
          {:ok, sup} <- map_to_struct(opts) do
       {:ok, sup}
@@ -1453,8 +1388,6 @@ defmodule SuperWorker.Supervisor do
   # Validate the type & value of options.
   defp validate_opts(opts) do
     with {:ok, opts} <- check_type(opts, :id, &is_atom/1),
-         opts <- default_sup_opts(opts),
-         opts <- generic_default_sup_opts(opts),
          {:ok, opts} <- check_type(opts, :number_of_partitions, &is_integer/1),
          {:ok, opts} <- check_type(opts, :number_of_partitions, &(&1 > 0)),
          {:ok, opts} <- check_type(opts, :owner, &is_pid/1),
@@ -1470,11 +1403,21 @@ defmodule SuperWorker.Supervisor do
   # Set the default options if not provided.
   # TO-DO: Merge with generic_default_sup_opts/1.
   defp default_sup_opts(opts) do
-    if Map.has_key?(opts, :number_of_partitions) do
-      opts
-    else
-      Map.put(opts, :number_of_partitions, :erlang.system_info(:schedulers_online))
-    end
+    opts =
+      if Map.has_key?(opts, :number_of_partitions) do
+        opts
+      else
+        Map.put(opts, :number_of_partitions, :erlang.system_info(:schedulers_online))
+      end
+
+    opts =
+      if Map.has_key?(opts, :link) do
+        opts
+      else
+        Map.put(opts, :link, true)
+      end
+
+    {:ok, opts}
   end
 
   # Start the supervisor main processes.
@@ -1525,11 +1468,11 @@ defmodule SuperWorker.Supervisor do
 
   @spec get_partition_pid(atom(), atom()) :: {:error, atom()} | {:ok, pid()}
   defp get_partition_pid(sup_id, partition_id) do
-    case Registry.lookup(sup_id, {:partition, partition_id}) do
-      [{pid, ^partition_id}] ->
+    case Db.get_sup_pid(sup_id, partition_id) do
+      {:ok, pid} ->
         {:ok, pid}
 
-      [] ->
+      _ ->
         Logger.error(
           "SuperWorker, Supervisor, supervisor #{inspect(sup_id)} partition not found: #{inspect(partition_id)}"
         )
@@ -1540,19 +1483,12 @@ defmodule SuperWorker.Supervisor do
 
   @spec get_host_partition(atom, any) :: {:error, atom} | {:ok, atom, pid}
   def get_host_partition(sup_id, data) do
-    with {:ok, sup} <- Registry.meta(sup_id, :supervisor),
+    with {:ok, sup} <- Db.get_sup_info(sup_id, :master),
          partition_id <- get_target_partition(sup_id, data, sup.number_of_partitions),
          {:ok, pid} <- get_partition_pid(sup_id, partition_id) do
       {:ok, partition_id, pid}
     else
-      :error ->
-        Logger.error(
-          "SuperWorker, Supervisor, not found partition, data: #{inspect(data)}, sup_id: #{inspect(sup_id)}"
-        )
-
-        {:error, {:supervisor_not_found, sup_id}}
-
-      {:error, _} = error ->
+      error ->
         Logger.error(
           "SuperWorker, Supervisor, get partition pid failed: #{inspect(error)}, data: #{inspect(data)}, sup_id: #{inspect(sup_id)}"
         )
@@ -1563,57 +1499,27 @@ defmodule SuperWorker.Supervisor do
 
   @spec has_group?(map(), any()) :: boolean()
   defp has_group?(%{} = state, group_id) do
-    case Registry.meta(state.master, {:group, group_id}) do
-      :error ->
-        false
-
-      {:ok, _} ->
-        true
-    end
+    match?({:ok, _}, Db.get_group(state.master, group_id))
   end
 
   @spec has_chain?(map(), any()) :: boolean()
   defp has_chain?(%{} = state, chain_id) do
-    case Registry.meta(state.master, {:chain, chain_id}) do
-      :error ->
-        false
-
-      {:ok, _} ->
-        true
-    end
+    match?({:ok, _}, Db.get_chain(state.master, chain_id))
   end
 
   @spec has_group_worker?(map(), any(), any()) :: boolean()
   defp has_group_worker?(%{} = state, group_id, worker_id) do
-    case Registry.lookup(state.master, {:worker, {:group, group_id}, worker_id}) do
-      [] ->
-        false
-
-      _ ->
-        true
-    end
+    match?({:ok, _}, Db.get_worker_info(state.master, worker_id, {:group, group_id}))
   end
 
   @spec has_chain_worker?(map(), any(), any()) :: boolean()
   defp has_chain_worker?(%{} = state, chain_id, worker_id) do
-    case Registry.lookup(state.master, {:worker, {:chain, chain_id}, worker_id}) do
-      [] ->
-        false
-
-      _ ->
-        true
-    end
+    match?({:ok, _}, Db.get_worker_info(state.master, worker_id, {:chain, chain_id}))
   end
 
-  @spec has_worker?(map(), any()) :: boolean()
-  defp has_worker?(%{} = state, worker_id) do
-    case Registry.lookup(state.data_table, {:worker, worker_id}) do
-      [] ->
-        false
-
-      _ ->
-        true
-    end
+  @spec has_standalone_worker?(map(), any()) :: boolean()
+  defp has_standalone_worker?(%{} = state, worker_id) do
+    match?({:ok, _}, Db.get_worker_info(state.master, worker_id, {:standalone, nil}))
   end
 
   # Check the supervisor is running or not.

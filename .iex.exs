@@ -1,7 +1,7 @@
 alias SuperWorker.Supervisor, as: Sup
 alias SuperWorker.Supervisor.{Group, Chain, Standalone}
 alias SuperWorker.TermStorage, as: KV
-alias SuperWorker.Supervisor.ConfigWrapper, as: DevConfig
+alias SuperWorker.Supervisor.ConfigParser, as: DevConfig
 
 IO.puts "Dev mode is running"
 IO.puts "SuperWorker.Supervisor has alias is Sup"
@@ -27,7 +27,7 @@ defmodule Dev do
   def add_group_data(sup_id \\ :sup1, group \\ :group_1, restart_strategy \\ :one_for_all, num_workers \\ 3) do
     {:ok, _} = Sup.add_group(sup_id, [id: group, restart_strategy: restart_strategy])
     for i <- 1..num_workers do
-      {:ok, _} = Sup.add_group_worker(sup_id, group, {__MODULE__, :task, [15]}, [id: :"w_#{i}"])
+      {:ok, _} = Sup.add_group_worker(sup_id, group, {__MODULE__, :task, [1500]}, [id: :"w_#{i}"])
     end
   end
 

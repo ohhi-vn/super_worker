@@ -152,8 +152,17 @@ defmodule SuperWorker.SupervisorTest do
   test "reuse id after stop" do
     {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
     assert true == Sup.is_running?(@sup_id)
+
+    result = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
+
+    assert(match?({:error, _}, result))
+
     Sup.stop(@sup_id)
     assert false == Sup.is_running?(@sup_id)
+
+    {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
+    assert true == Sup.is_running?(@sup_id)
+    Sup.stop(@sup_id)
 
     {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
     assert true == Sup.is_running?(@sup_id)

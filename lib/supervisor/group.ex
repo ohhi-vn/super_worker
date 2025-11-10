@@ -9,24 +9,28 @@ defmodule SuperWorker.Supervisor.Group do
   # Restart strategies for group.
   @group_restart_strategies [:one_for_one, :one_for_all]
 
-  alias SuperWorker.Supervisor.Worker
+  alias SuperWorker.Supervisor.{Worker, Db}
 
   alias __MODULE__
 
   @enforce_keys [:id]
   defstruct [
-    :id, # group id, unique in supervior.
-    restart_strategy: :one_for_all, # default restart strategy for group is :one_for_all.
-    supervisor: nil, # supervisor id (atom)
-    partition: nil, # partition id holding the group.
+    # group id, unique in supervior.
+    :id,
+    # default restart strategy for group is :one_for_all.
+    restart_strategy: :one_for_all,
+    # supervisor id (atom)
+    supervisor: nil,
+    # partition id holding the group.
+    partition: nil
   ]
 
   @type t :: %__MODULE__{
-    id: any,
-    restart_strategy: atom,
-    supervisor: atom,
-    partition: atom,
-  }
+          id: any,
+          restart_strategy: atom,
+          supervisor: atom,
+          partition: atom
+        }
 
   import SuperWorker.Supervisor.Utils
 
@@ -37,7 +41,7 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Check, validate and convert key-value pairs to struct.
   """
-  @spec check_options([ keyword]) :: {:ok, term} | {:error, atom | {atom, any}}
+  @spec check_options([keyword]) :: {:ok, term} | {:error, atom | {atom, any}}
   def check_options(opts) do
     with {:ok, opts} <- normalize_opts(opts, @group_params),
          {:ok, opts} <- validate_restart_strategy(opts),
@@ -46,7 +50,7 @@ defmodule SuperWorker.Supervisor.Group do
       {:ok, group}
     else
       {:error, reason} = error ->
-        Logger.error("SuperWorker, Group, incorrect options, #{inspect reason}")
+        Logger.error("SuperWorker, Group, incorrect options, #{inspect(reason)}")
         error
     end
   end
@@ -55,22 +59,28 @@ defmodule SuperWorker.Supervisor.Group do
   Get worker from the group.
   """
   def get_worker(%Group{} = group, worker_id) do
-    Logger.debug("SuperWorker, Group, supervisor #{inspect group.supervisor}, group #{inspect group.id}, get_worker: #{inspect worker_id}")
-    case Registry.meta(group.supervisor, {:worker, {:group, group.id}, worker_id}) do
-      {:ok, worker} -> {:ok, worker}
-      :error -> {:error, :worker_not_found}
-    end
+    Logger.debug(
+      "SuperWorker, Group, supervisor #{inspect(group.supervisor)}, group #{inspect(group.id)}, get_worker: #{inspect(worker_id)}"
+    )
+
+    worker_id =
+      case worker_id do
+        {_, id} -> id
+        _ -> worker_id
+      end
+
+    Db.get_worker_info(group.supervisor, worker_id, group.id)
   end
 
   @doc """
   Get all workers from the group.
   """
   def get_all_workers(%Group{} = group) do
-    Logger.debug("SuperWorker, Group, get_all_workers: #{inspect group.supervisor}")
+    Logger.debug(
+      "SuperWorker, Group, get_all_workers for supervisor #{inspect(group.supervisor)}"
+    )
 
-    result = Registry.lookup(group.supervisor, {:group, group.id})
-
-    {:ok, result}
+    Db.get_worker_infos_by_parent(group.supervisor, {:group, group.id})
   end
 
   def count_workers(%Group{} = group) do
@@ -92,18 +102,22 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   A internal function. Add a worker to the group.
   """
-  def add_worker(group = %Group{}, %Worker{} = worker)  do
+  def add_worker(group = %Group{}, %Worker{} = worker) do
     case get_worker(group, worker.id) do
-      {:ok, _} -> {:error, :worker_exists}
+      {:ok, _} ->
+        {:error, :worker_exists}
+
       {:error, _} ->
         worker = %Worker{worker | parent: group.id}
 
-        worker  =
+        worker =
           if !worker.id do
-            %Worker{worker | id: Uniq.UUID.uuid4()}
+            %Worker{worker | id: SuperWorker.Supervisor.Utils.random_id()}
           else
             worker
           end
+
+        Db.put_worker_info(group.supervisor, worker)
 
         spawn_worker(group, worker)
     end
@@ -112,28 +126,40 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   A internal function. Restart a worker in the group.
   """
-  def restart_worker(group, worker = %Worker{}) do
+  def restart_worker(group = %Group{}, worker = %Worker{}) do
+    Logger.debug("SuperWoker, Group, restart worker #{inspect(worker)}")
     kill_worker(group, worker, :restart)
     spawn_worker(group, worker)
   end
 
-  def restart_worker(group, worker_id) do
+  def restart_worker(group = %Group{}, worker_id) do
+    Logger.debug("SuperWoker, Group, restart worker by id #{inspect(worker_id)}")
+
     case get_worker(group, worker_id) do
       {:ok, worker} ->
         restart_worker(group, worker)
-      {:error, _} -> {:error, :worker_not_found}
+
+      {:error, _} ->
+        {:error, :worker_not_found}
     end
   end
 
-  def remove_worker(group, worker_id) do
+  def remove_worker(group = %Group{}, worker_id) do
     if worker_exists?(group, worker_id) do
       with {:ok, worker} <- get_worker(group, worker_id),
-        {:ok, _} <- kill_worker(group, worker, :removed) do
-          Registry.delete_meta(group.supervisor, {:worker, {:group, group.id}, worker_id})
-          {:ok, :worker_removed}
+           {:ok, _} <- kill_worker(group, worker, :removed) do
+        table = group.supervisor
+        parent = {:group, group.id}
+        Db.delete_worker_by_id(table, worker_id, parent)
+        Db.delete_worker_info(table, worker_id, parent)
+
+        {:ok, :worker_removed}
       else
         {:error, reason} = error ->
-          Logger.error("SuperWorker, Group, failed to kill worker #{inspect(worker_id)} in group #{inspect group.id}, error: #{inspect reason}")
+          Logger.error(
+            "SuperWorker, Group, failed to kill worker #{inspect(worker_id)} in group #{inspect(group.id)}, error: #{inspect(reason)}"
+          )
+
           error
       end
     else
@@ -141,25 +167,35 @@ defmodule SuperWorker.Supervisor.Group do
     end
   end
 
-  def kill_worker(group, worker = %Worker{}, reason) do
-    if Process.alive?(worker.pid) do
-      Logger.debug("SuperWorker, Group, group: #{inspect group.id}, kill_worker: #{inspect worker}, reason: #{inspect reason}")
+  def kill_worker(group = %Group{}, worker = %Worker{}, reason) do
+    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.supervisor, worker.id, {:group, group.id}) do
+      if Process.alive?(pid) do
+        Logger.debug(
+          "SuperWorker, Group, group: #{inspect(group.id)}, kill_worker: #{inspect(worker)}, reason: #{inspect(reason)}"
+        )
 
-      Process.exit(worker.pid, reason)
-      {:ok, :killed}
+        Process.exit(pid, reason)
+        {:ok, :killed}
+      else
+        {:error, :not_alive}
+      end
     else
-      {:error, :not_alive}
+      _ ->
+        {:error, :not_found}
     end
   end
-  def kill_worker(group, worker_id, reason) do
+
+  def kill_worker(group = %Group{}, worker_id, reason) do
     case get_worker(group, worker_id) do
       {:ok, worker} ->
         kill_worker(group, worker, reason)
-      {:error, _} -> {:error, :worker_not_found}
+
+      {:error, _} ->
+        {:error, :worker_not_found}
     end
   end
 
-  def kill_all_workers(group, reason \\ :kill) do
+  def kill_all_workers(group = %Group{}, reason \\ :kill) do
     {:ok, list_worker} = get_all_workers(group)
 
     Enum.each(list_worker, fn {_pid, id} ->
@@ -168,18 +204,14 @@ defmodule SuperWorker.Supervisor.Group do
     end)
   end
 
-  defp spawn_worker(group, %Worker{} = worker) do
-    Logger.debug("SuperWorker, Group, spawn_worker: #{inspect worker}")
-    worker = do_spawn_worker(group, worker)
-
-    # add or update data, ref, pid
-    Registry.put_meta(group.supervisor, {:worker, {:group, group.id}, worker.id}, worker)
-    Registry.register(group.supervisor, {:worker, :ref, worker.ref}, {{:group, group.id}, worker.id})
+  defp spawn_worker(group = %Group{}, %Worker{} = worker) do
+    Logger.debug("SuperWorker, Group, spawn_worker: #{inspect(worker)}")
+    do_spawn_worker(group, worker)
 
     {:ok, group}
   end
 
-  def broadcast(group, message) do
+  def broadcast(group = %Group{}, message) do
     Group.get_all_workers(group)
     |> Enum.each(fn %Worker{id: worker_id} ->
       {:ok, worker} = get_worker(group, worker_id)
@@ -187,32 +219,58 @@ defmodule SuperWorker.Supervisor.Group do
     end)
   end
 
+  def send_message(group = %Group{}, worker_id, message) do
+    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.supervisor, worker_id, {:group, group.id}) do
+      send(pid, message)
+    else
+      error ->
+        Logger.error(
+          "SuperWorker, Group, send to worker #{inspect(worker_id)} failed, #{inspect(error)}"
+        )
+
+        {:error, :cannot_send}
+    end
+  end
+
   ## Private functions
 
   defp do_spawn_worker(group, %Worker{} = worker) do
-    {pid, ref} = spawn_monitor(fn ->
-      Registry.register(group.supervisor, {:group, group.id}, worker.id)
-
-      Process.put({:supervisor, :sup_id}, group.supervisor)
-      Process.put({:supervisor, :group_id}, group.id)
-      Process.put({:supervisor, :worker_id}, worker.id)
-
-      if worker.name do
-        if Process.whereis(worker.name) do
-          Logger.warning("SuperWorker, Group, worker name already registered: #{inspect worker.name}")
-        else
-          Process.register(self(), worker.name)
-        end
-      end
-
+    {pid, ref} =
       case worker.fun do
-        {m, f, a} ->
-          apply(m, f, a)
+        {:gen_server, {m, f, a}} ->
+          {:ok, pid} = apply(m, f, a)
 
-        {:fun, fun} ->
-          fun.()
+          ref = Process.monitor(pid)
+
+          {pid, ref}
+
+        _ ->
+          spawn_monitor(fn ->
+            Process.put({:supervisor, :sup_id}, group.supervisor)
+            Process.put({:supervisor, :group_id}, group.id)
+            Process.put({:supervisor, :worker_id}, worker.id)
+
+            if worker.name do
+              if Process.whereis(worker.name) do
+                Logger.warning(
+                  "SuperWorker, Group, worker name already registered: #{inspect(worker.name)}"
+                )
+              else
+                Process.register(self(), worker.name)
+              end
+            end
+
+            case worker.fun do
+              {m, f, a} ->
+                apply(m, f, a)
+
+              {:fun, fun} ->
+                fun.()
+            end
+          end)
       end
-    end)
+
+    Db.put_worker(group.supervisor, ref, worker.id, {:group, group.id}, pid)
 
     # Link to child for case supervisor is down.
     # TO-DO: Improve case worker crash immediately.
@@ -227,7 +285,7 @@ defmodule SuperWorker.Supervisor.Group do
     if opts.restart_strategy in @group_restart_strategies do
       {:ok, opts}
     else
-      {:error, "Invalid group restart strategy, #{inspect opts.restart_strategy}"}
+      {:error, "Invalid group restart strategy, #{inspect(opts.restart_strategy)}"}
     end
   end
 

@@ -6,7 +6,7 @@ defmodule SuperWorker.Application do
   use Application
   require Logger
 
-  alias SuperWorker.ConfigLoader.ConfigWrapper, as: Cfg
+  alias SuperWorker.ConfigLoader.ConfigParser, as: Cfg
 
   @impl true
   @spec start(any, any) :: {:error, any} | {:ok, pid}

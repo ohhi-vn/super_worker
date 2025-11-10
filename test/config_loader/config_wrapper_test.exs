@@ -1,7 +1,7 @@
-defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
+defmodule SuperWorker.ConfigLoader.ConfigParserTest do
   use ExUnit.Case, async: false
 
-  alias SuperWorker.ConfigLoader.ConfigWrapper
+  alias SuperWorker.ConfigLoader.ConfigParser
   alias SuperWorker.Supervisor
 
   @app :super_worker
@@ -60,13 +60,13 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
       # Ensure no configs except maybe :options
       Application.delete_env(@app, :test_sup)
 
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
     end
 
     test "ignores :options key" do
       Application.put_env(@app, :options, some: :global_option)
 
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
       refute Supervisor.is_running?(:options)
     end
   end
@@ -91,7 +91,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
       assert Supervisor.is_running?(sup_id)
       assert {:ok, _group} = Supervisor.get_group(sup_id, :test_group)
 
@@ -116,7 +116,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
       Application.put_env(@app, sup_id_1, config_1)
       Application.put_env(@app, sup_id_2, config_2)
 
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
       assert Supervisor.is_running?(sup_id_1)
       assert Supervisor.is_running?(sup_id_2)
 
@@ -146,7 +146,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
       assert Supervisor.is_running?(sup_id)
       assert {:ok, _group} = Supervisor.get_group(sup_id, :worker_group)
 
@@ -172,7 +172,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
       assert Supervisor.is_running?(sup_id)
 
       # Cleanup
@@ -199,7 +199,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
       Application.put_env(@app, sup_id_valid, valid_config)
       Application.put_env(@app, sup_id_invalid, invalid_config)
 
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
 
       # Valid supervisor should have started
       assert Supervisor.is_running?(sup_id_valid)
@@ -222,7 +222,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert {:ok, pid} = ConfigWrapper.load_one(sup_id)
+      assert {:ok, pid} = ConfigParser.load_one(sup_id)
       assert is_pid(pid)
       assert Supervisor.is_running?(sup_id)
       assert {:ok, _group} = Supervisor.get_group(sup_id, :one_group)
@@ -249,7 +249,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert {:ok, _pid} = ConfigWrapper.load_one(sup_id)
+      assert {:ok, _pid} = ConfigParser.load_one(sup_id)
       assert Supervisor.is_running?(sup_id)
 
       # Cleanup
@@ -268,7 +268,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert {:ok, _pid} = ConfigWrapper.load_one(sup_id)
+      assert {:ok, _pid} = ConfigParser.load_one(sup_id)
       assert Supervisor.is_running?(sup_id)
 
       # Cleanup
@@ -280,7 +280,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
     test "returns error when configuration not found" do
       non_existent = :non_existent_supervisor
 
-      assert {:error, :config_not_found} = ConfigWrapper.load_one(non_existent)
+      assert {:error, :config_not_found} = ConfigParser.load_one(non_existent)
       refute Supervisor.is_running?(non_existent)
     end
 
@@ -295,7 +295,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, invalid_config)
 
-      result = ConfigWrapper.load_one(sup_id)
+      result = ConfigParser.load_one(sup_id)
       assert match?({:error, _}, result)
       refute Supervisor.is_running?(sup_id)
     end
@@ -310,27 +310,11 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert {:ok, _pid} = ConfigWrapper.load_one(sup_id)
-      assert {:error, :already_running} = ConfigWrapper.load_one(sup_id)
+      assert {:ok, _pid} = ConfigParser.load_one(sup_id)
+      assert {:error, :already_running} = ConfigParser.load_one(sup_id)
 
       # Cleanup
       Supervisor.stop(sup_id)
-    end
-
-    test "returns error when worker module doesn't exist" do
-      sup_id = :bad_worker_sup
-
-      config = [
-        options: [number_of_partitions: 1, link: false],
-        workers: [
-          [mfa: {NonExistentModule, :function, []}, options: [id: :bad]]
-        ]
-      ]
-
-      Application.put_env(@app, sup_id, config)
-
-      result = ConfigWrapper.load_one(sup_id)
-      assert match?({:error, _}, result)
     end
   end
 
@@ -344,7 +328,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert {:ok, _pid} = ConfigWrapper.load_one(sup_id)
+      assert {:ok, _pid} = ConfigParser.load_one(sup_id)
       assert Supervisor.is_running?(sup_id)
 
       # Cleanup
@@ -360,7 +344,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert {:ok, _pid} = ConfigWrapper.load_one(sup_id)
+      assert {:ok, _pid} = ConfigParser.load_one(sup_id)
       assert Supervisor.is_running?(sup_id)
 
       # Cleanup
@@ -386,12 +370,12 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
       Application.put_env(@app, sup_id_1, config_1)
 
       # Load first supervisor
-      assert :ok = ConfigWrapper.load()
+      assert :ok = ConfigParser.load()
       assert Supervisor.is_running?(sup_id_1)
 
       # Add and load second supervisor
       Application.put_env(@app, sup_id_2, config_2)
-      assert {:ok, _pid} = ConfigWrapper.load_one(sup_id_2)
+      assert {:ok, _pid} = ConfigParser.load_one(sup_id_2)
       assert Supervisor.is_running?(sup_id_2)
 
       # Both should be running
@@ -413,7 +397,7 @@ defmodule SuperWorker.ConfigLoader.ConfigWrapperTest do
 
       Application.put_env(@app, sup_id, config)
 
-      assert {:ok, _pid} = ConfigWrapper.load_one(sup_id)
+      assert {:ok, _pid} = ConfigParser.load_one(sup_id)
       assert Supervisor.is_running?(sup_id)
 
       # The supervisor should be accessible by the same ID

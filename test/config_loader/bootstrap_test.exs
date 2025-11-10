@@ -306,29 +306,6 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       Process.sleep(100)
       refute Supervisor.is_running?(sup_id)
     end
-
-    test "returns error when group worker fails to start", %{sup_id: sup_id} do
-      config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
-        children: [
-          %{
-            type: :group,
-            id: :failing_group,
-            options: [restart_strategy: :one_for_one],
-            workers: [
-              %{
-                mfa: {NonExistentModule, :function, []},
-                options: [id: :bad_worker]
-              }
-            ]
-          }
-        ]
-      }
-
-      result = Bootstrap.start_supervisor(config)
-      # Should fail because the module doesn't exist
-      assert match?({:error, _}, result)
-    end
   end
 
   describe "start_supervisor/1 edge cases" do

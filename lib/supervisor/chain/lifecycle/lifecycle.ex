@@ -4,18 +4,14 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
 
   This module handles creating, retrieving, updating, and terminating
   workers associated with a specific chain. It interacts closely
-  with the `Registry` for state management.
+  with the `Db` for state management.
   """
 
   require Logger
 
-  alias SuperWorker.Supervisor.Chain
-  alias SuperWorker.Supervisor.Chain.Messaging
-  alias SuperWorker.Supervisor.Worker
-  alias SuperWorker.Supervisor.Message
-  alias SuperWorker.Supervisor.MapQueue
-  alias SuperWorker.Supervisor.ErrorHandler
   alias SuperWorker.Supervisor, as: Sup
+  alias Sup.{Chain, Db, Worker, Message, MapQueue, ErrorHandler}
+  alias Chain.Messaging
 
   # ============================================================================
   # Public API
@@ -28,9 +24,9 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
       "Chain.Lifecycle: Getting worker #{inspect(worker_id)} in chain #{inspect(chain_id)}"
     )
 
-    case Registry.meta(sup_id, {:worker, {:chain, chain_id}, worker_id}) do
-      {:ok, worker} -> {:ok, worker}
-      :error -> ErrorHandler.not_found(:worker)
+    case Db.get_worker_info(sup_id, worker_id, {:chain, chain_id}) do
+      {:ok, _worker} = result -> result
+      {:error, _} -> ErrorHandler.not_found(:worker)
     end
   end
 
@@ -44,8 +40,7 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
   @spec get_all_workers(Chain.t()) :: {:ok, list(Worker.t())}
   def get_all_workers(%Chain{id: chain_id, supervisor: sup_id}) do
     Logger.debug("Chain.Lifecycle: Getting all workers for chain #{inspect(chain_id)}")
-    workers = Registry.lookup(sup_id, {:chain, chain_id})
-    {:ok, workers}
+    Db.get_worker_infos_by_parent(sup_id, {:chain, chain_id})
   end
 
   @doc "Adds a new worker to the chain."
@@ -110,9 +105,8 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
 
       kill_worker(chain, worker_id)
 
-      # Unregister all references to the worker
-      Registry.unregister(chain.supervisor, {:worker, {:chain, chain.id}, worker.id})
-      Registry.unregister(chain.supervisor, {:worker, :ref, worker.ref})
+      table = chain.supervisor
+      Db.delete_chain_order(table, chain.id, worker.order)
 
       {:ok, chain}
     else
@@ -187,19 +181,7 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
     {pid, ref} = spawn_monitor(__MODULE__, :worker_process_loop, [%MapQueue{}, worker_with_sup])
     Process.link(pid)
 
-    final_worker = %{worker_with_sup | pid: pid, ref: ref}
-
-    Registry.put_meta(
-      chain.supervisor,
-      {:worker, {:chain, chain.id}, final_worker.id},
-      final_worker
-    )
-
-    Registry.register(
-      chain.supervisor,
-      {:worker, :ref, ref},
-      {{:chain, chain.id}, final_worker.id}
-    )
+    Db.put_worker(chain.supervisor, ref, worker.id, {worker.type, worker.parent}, pid)
 
     {:ok, chain}
   end
@@ -208,17 +190,7 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
     Process.put({:supervisor, :sup_id}, worker.supervisor)
     Process.put({:supervisor, :chain}, worker.parent)
     Process.put({:supervisor, :worker_id}, worker.id)
-
-    Registry.register(worker.supervisor, {:chain, worker.parent}, :worker)
-    Registry.register(worker.supervisor, {:chain_order, worker.parent, worker.order}, worker.id)
-
-    case worker.id do
-      {:multi_workers, root_id, index} ->
-        Registry.register(worker.supervisor, {:worker, {:chain, worker.parent}, root_id}, index)
-
-      _ ->
-        Registry.register(worker.supervisor, {:worker, {:chain, worker.parent}, worker.id}, 0)
-    end
+    Db.put_chain_order(worker.supervisor, worker.id, worker.parent, worker.order, self())
 
     main_receive_loop(queue, worker)
   end
@@ -307,6 +279,11 @@ defmodule SuperWorker.Supervisor.Chain.Lifecycle do
   end
 
   defp get_chain_order(chain) do
-    length(Registry.lookup(chain.supervisor, {:chain, chain.id})) + 1
+    with {:ok, workers} <- Db.get_worker_infos_by_parent(chain.supervisor, {:chain, chain.id}) do
+      length(workers) + 1
+    else
+      _ ->
+        raise "cannot get workers from chain #{inspect(chain)}"
+    end
   end
 end

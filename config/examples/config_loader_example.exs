@@ -278,12 +278,12 @@ config :super_worker, :example_dev_supervisor,
 #
 # 3. You can also load supervisors individually at runtime:
 #    ```elixir
-#    SuperWorker.ConfigLoader.ConfigWrapper.load_one(:example_simple_supervisor)
+#    SuperWorker.ConfigLoader.ConfigParser.load_one(:example_simple_supervisor)
 #    ```
 #
 # 4. To reload all supervisors from config:
 #    ```elixir
-#    SuperWorker.ConfigLoader.ConfigWrapper.load()
+#    SuperWorker.ConfigLoader.ConfigParser.load()
 #    ```
 #
 # 5. Worker modules should implement a start_link function that returns

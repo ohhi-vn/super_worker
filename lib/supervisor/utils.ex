@@ -52,7 +52,7 @@ defmodule SuperWorker.Supervisor.Utils do
   """
   @spec generic_default_sup_opts(map()) :: map()
   def generic_default_sup_opts(opts) when is_map(opts) do
-    Map.put_new(opts, :owner, self())
+    {:ok, Map.put_new(opts, :owner, self())}
   end
 
   @doc """

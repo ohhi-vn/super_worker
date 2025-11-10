@@ -33,7 +33,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
     :auto_restart_time
   ]
   @chain_option_keys [:id, :restart_strategy, :finished_callback, :queue_length, :send_type]
-  @worker_option_keys [:id, :restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
+  #  @worker_option_keys [:id, :restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
 
   @valid_group_strategies [:one_for_one, :one_for_all]
   @valid_chain_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
@@ -179,10 +179,16 @@ defmodule SuperWorker.ConfigLoader.Parser do
           parse_group(group_config, index)
         end)
 
-      errors = Enum.filter(parsed_groups, fn result -> match?({:error, _}, result) end)
+      {success, errors} =
+        Enum.reduce(parsed_groups, {[], []}, fn result, {ok, errors} ->
+          case result do
+            {:ok, data} -> {ok ++ [data], errors}
+            {:error, _} -> {ok, errors ++ [result]}
+          end
+        end)
 
       if Enum.empty?(errors) do
-        {:ok, Enum.map(parsed_groups, fn {:ok, group} -> group end)}
+        {:ok, success}
       else
         {:error, {:group_parsing_errors, errors}}
       end
@@ -191,9 +197,8 @@ defmodule SuperWorker.ConfigLoader.Parser do
     end
   end
 
-  defp parse_group(group_config, index) when is_list(group_config) do
-    with {:ok, id} <- extract_id(group_config, :group, index),
-         {:ok, options} <- extract_group_options(group_config),
+  defp parse_group({id, group_config}, index) when is_list(group_config) do
+    with {:ok, options} <- extract_group_options(group_config),
          {:ok, workers} <- extract_workers(group_config) do
       {:ok,
        %{
@@ -202,37 +207,52 @@ defmodule SuperWorker.ConfigLoader.Parser do
          options: options,
          workers: workers
        }}
+    else
+      other ->
+        Logger.error(
+          "SuperWorker, Parser, invalid group config at index #{index}, config: #{inspect(group_config)}, error: #{inspect(other)}"
+        )
+
+        {:error, {:invalid_group_config, "Group at index #{index} must be a keyword list"}}
     end
   end
 
-  defp parse_group(_group_config, index) do
+  defp parse_group(group_config, index) do
+    Logger.warning(
+      "SuperWorker, Parser, invalid group config at index #{index}, config: #{inspect(group_config)}"
+    )
+
     {:error, {:invalid_group_config, "Group at index #{index} must be a keyword list"}}
   end
 
   defp extract_group_options(config) do
-    options =
-      config
-      |> Enum.filter(fn {key, _value} -> key in @group_option_keys end)
-      |> validate_group_options()
-
-    {:ok, options}
+    Keyword.get(config, :options, [])
+    |> Enum.filter(fn {key, _value} -> key in @group_option_keys end)
+    |> validate_group_options()
   end
 
   defp validate_group_options(options) do
-    Enum.map(options, fn
-      {:restart_strategy, value} when value in @valid_group_strategies ->
-        {:restart_strategy, value}
+    result =
+      Enum.map(options, fn
+        {:restart_strategy, value} when value in @valid_group_strategies ->
+          {:restart_strategy, value}
 
-      {:restart_strategy, value} ->
-        Logger.warning(
-          "SuperWorker, Parser, invalid group restart_strategy: #{inspect(value)}, using :one_for_one"
-        )
+        {:restart_strategy, value} ->
+          Logger.error("SuperWorker, Parser, invalid group restart_strategy: #{inspect(value)}")
+          {:error, :invalid_restart_strategy}
 
-        {:restart_strategy, :one_for_one}
+        other ->
+          other
+      end)
 
-      other ->
-        other
-    end)
+    if Enum.any?(result, fn
+         {:error, _} -> true
+         _ -> false
+       end) do
+      {:error, "invalid options for group"}
+    else
+      {:ok, result}
+    end
   end
 
   # Parses chain configurations
@@ -247,10 +267,16 @@ defmodule SuperWorker.ConfigLoader.Parser do
           parse_chain(chain_config, index)
         end)
 
-      errors = Enum.filter(parsed_chains, fn result -> match?({:error, _}, result) end)
+      {results, errors} =
+        Enum.reduce(parsed_chains, {[], []}, fn result, {ok, errors} ->
+          case result do
+            {:ok, data} -> {ok ++ [data], errors}
+            {:error, _} -> {ok, errors ++ [result]}
+          end
+        end)
 
       if Enum.empty?(errors) do
-        {:ok, Enum.map(parsed_chains, fn {:ok, chain} -> chain end)}
+        {:ok, results}
       else
         {:error, {:chain_parsing_errors, errors}}
       end
@@ -259,9 +285,8 @@ defmodule SuperWorker.ConfigLoader.Parser do
     end
   end
 
-  defp parse_chain(chain_config, index) when is_list(chain_config) do
-    with {:ok, id} <- extract_id(chain_config, :chain, index),
-         {:ok, options} <- extract_chain_options(chain_config),
+  defp parse_chain({id, chain_config}, _index) when is_list(chain_config) do
+    with {:ok, options} <- extract_chain_options(chain_config),
          {:ok, workers} <- extract_workers(chain_config) do
       {:ok,
        %{
@@ -349,6 +374,18 @@ defmodule SuperWorker.ConfigLoader.Parser do
     end
   end
 
+  defp parse_standalone_worker({module, _} = worker_config, index) when is_atom(module) do
+    with {:ok, specs} <- parse_worker_spec(worker_config, index) do
+      {:ok, Map.put_new(specs, :type, :standalone)}
+    end
+  end
+
+  defp parse_standalone_worker(worker_config, index) when is_atom(worker_config) do
+    with {:ok, specs} <- parse_worker_spec(worker_config, index) do
+      {:ok, Map.put_new(specs, :type, :standalone)}
+    end
+  end
+
   defp parse_standalone_worker(_worker_config, index) do
     {:error, {:invalid_worker_config, "Worker at index #{index} must be a keyword list"}}
   end
@@ -361,8 +398,13 @@ defmodule SuperWorker.ConfigLoader.Parser do
       parsed_workers =
         workers
         |> Enum.with_index()
-        |> Enum.map(fn {worker_config, index} ->
-          parse_worker_spec(worker_config, index)
+        |> Enum.map(fn
+          {{worker_id, worker_config}, index} ->
+            Keyword.put(worker_config, :id, worker_id)
+            parse_worker_spec(worker_config, index)
+
+          {worker_config, index} ->
+            parse_worker_spec(worker_config, index)
         end)
 
       errors = Enum.filter(parsed_workers, fn result -> match?({:error, _}, result) end)
@@ -386,6 +428,14 @@ defmodule SuperWorker.ConfigLoader.Parser do
          options: options
        }}
     end
+  end
+
+  defp parse_worker_spec(worker, _index) when is_atom(worker) do
+    convert_regular_child_spec(worker)
+  end
+
+  defp parse_worker_spec(worker = {module, _opts}, _index) when is_atom(module) do
+    convert_regular_child_spec(worker)
   end
 
   defp parse_worker_spec(_worker_config, index) do
@@ -417,7 +467,22 @@ defmodule SuperWorker.ConfigLoader.Parser do
               "Worker at index #{index} has invalid function: #{inspect(invalid)}. Expected 0-arity function"}}
         end
 
+      Keyword.has_key?(config, :task) ->
+        case Keyword.get(config, :task) do
+          {m, f, a} when is_atom(m) and is_atom(f) and is_list(a) ->
+            {:ok, {m, f, a}}
+
+          invalid ->
+            {:error,
+             {:invalid_task,
+              "Worker at index #{index} has invalid task: #{inspect(invalid)}. Expected {Module, :function, [args]}"}}
+        end
+
       true ->
+        Logger.error(
+          "Worker at index #{index} must have :mfa or :fun, config: #{inspect(config)}"
+        )
+
         {:error, {:missing_worker_function, "Worker at index #{index} must have :mfa or :fun"}}
     end
   end
@@ -450,5 +515,25 @@ defmodule SuperWorker.ConfigLoader.Parser do
          {:invalid_id,
           "#{type} at index #{index} has invalid ID: #{inspect(invalid)}. Must be an atom"}}
     end
+  end
+
+  def convert_regular_child_spec({module, keywords}) do
+    result =
+      module.child_spec(keywords)
+      |> regular_child_spec_to_spec()
+
+    {:ok, result}
+  end
+
+  def convert_regular_child_spec(module) do
+    convert_regular_child_spec({module, []})
+  end
+
+  defp regular_child_spec_to_spec(specs = %{}) do
+    %{
+      mfa: {:gen_server, specs.start},
+      options: [],
+      id: specs.id
+    }
   end
 end

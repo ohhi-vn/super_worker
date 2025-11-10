@@ -112,9 +112,8 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
     results =
       children
-      |> Enum.with_index()
-      |> Enum.map(fn {child, index} ->
-        add_child(sup_id, child, index)
+      |> Enum.map(fn child ->
+        add_child(sup_id, child)
       end)
 
     errors = Enum.filter(results, fn result -> match?({:error, _}, result) end)
@@ -128,8 +127,10 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   end
 
   # Adds a single child (group, chain, or standalone worker)
-  defp add_child(sup_id, %{type: :group} = group, index) do
-    Logger.debug("SuperWorker, Bootstrap, adding group #{inspect(group.id)} at index #{index}")
+  defp add_child(sup_id, %{type: :group} = group) do
+    Logger.debug(
+      "SuperWorker, Bootstrap, adding group #{inspect(group.id)}, options: #{inspect(group.options)}"
+    )
 
     group_options = Keyword.put(group.options, :id, group.id)
 
@@ -147,8 +148,8 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
     end
   end
 
-  defp add_child(sup_id, %{type: :chain} = chain, index) do
-    Logger.debug("SuperWorker, Bootstrap, adding chain #{inspect(chain.id)} at index #{index}")
+  defp add_child(sup_id, %{type: :chain} = chain) do
+    Logger.debug("SuperWorker, Bootstrap, adding chain #{inspect(chain.id)}")
 
     chain_options = Keyword.put(chain.options, :id, chain.id)
 
@@ -166,8 +167,8 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
     end
   end
 
-  defp add_child(sup_id, %{type: :standalone, mfa: mfa, options: options}, index) do
-    Logger.debug("SuperWorker, Bootstrap, adding standalone worker at index #{index}")
+  defp add_child(sup_id, %{type: :standalone, mfa: mfa, options: options}) do
+    Logger.debug("SuperWorker, Bootstrap, adding standalone worker")
 
     # Ensure restart_strategy is set for standalone workers (default: :permanent)
     options_with_defaults =
@@ -187,16 +188,16 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
       {:error, reason} = error ->
         Logger.error(
-          "SuperWorker, Bootstrap, failed to add standalone worker at index #{index}: #{inspect(reason)}"
+          "SuperWorker, Bootstrap, failed to add standalone worker: #{inspect(reason)}"
         )
 
         error
     end
   end
 
-  defp add_child(_sup_id, invalid, index) do
-    Logger.error("SuperWorker, Bootstrap, invalid child at index #{index}: #{inspect(invalid)}")
-    {:error, {:invalid_child, index}}
+  defp add_child(_sup_id, invalid) do
+    Logger.error("SuperWorker, Bootstrap, invalid child: #{inspect(invalid)}")
+    {:error, :invalid_child}
   end
 
   # Adds workers to a group
@@ -232,7 +233,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
   defp add_group_worker(sup_id, group_id, %{mfa: mfa, options: options}, index) do
     Logger.debug(
-      "SuperWorker, Bootstrap, adding worker at index #{index} to group #{inspect(group_id)}"
+      "SuperWorker, Bootstrap, adding worker at index #{index} to group #{inspect(group_id)}, mfa: #{inspect(mfa)}, options: #{inspect(options)}"
     )
 
     case Supervisor.add_group_worker(sup_id, group_id, mfa, options) do
