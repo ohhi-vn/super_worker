@@ -166,6 +166,7 @@ defmodule SuperWorker.Supervisor.Looper do
               end
 
             :standalone ->
+              Db.put_worker_info(state.master, worker)
               sup_start_child(state, worker)
               {:ok, worker.id}
           end
@@ -344,6 +345,31 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
+  # remove worker from group.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :remove_standalone_worker, data: worker_id}
+       ) do
+    result =
+      with {:ok, {ref, pid}} <- Db.get_worker_by_id(state.master, worker_id, {:standalone, nil}) do
+        Process.exit(pid, :kill)
+        Db.delete_worker(state.master, ref)
+        Db.delete_worker_info(state.master, worker_id, {:standalone, nil})
+        {:ok, worker_id}
+      else
+        error ->
+          Logger.error(
+            "SuperWorker, Supervisor, #{state.id} standalone worker not found: #{inspect(worker_id)}"
+          )
+
+          error
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
   # add group from api.
   defp process_public_api_message(state, message = %Message{type: :add_group, data: group}) do
     case Db.get_group(state.master, group.id) do
@@ -371,6 +397,17 @@ defmodule SuperWorker.Supervisor.Looper do
   # get group info from api.
   defp process_public_api_message(state, message = %Message{type: :get_group, data: group_id}) do
     result = Db.get_group(state.master, group_id)
+
+    ApiHelper.api_response(message, result)
+    main_loop(state)
+  end
+
+  # get group info from api.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :get_all_standalone_workers, data: group_id}
+       ) do
+    result = Db.get_all_standalone_worker_infos(state.master)
 
     ApiHelper.api_response(message, result)
     main_loop(state)
@@ -590,19 +627,22 @@ defmodule SuperWorker.Supervisor.Looper do
           end
 
         _ ->
-          spawn_monitor(fn ->
-            # Store for user can directly access to the worker.
-            Process.put({:supervisor, :sup_id}, state.id)
-            Process.put({:supervisor, :worker_id}, id)
+          result =
+            spawn_monitor(fn ->
+              # Store for user can directly access to the worker.
+              Process.put({:supervisor, :sup_id}, state.id)
+              Process.put({:supervisor, :worker_id}, id)
 
-            case worker.fun do
-              {:fun, fun} ->
-                fun.()
+              case worker.fun do
+                {:fun, fun} ->
+                  fun.()
 
-              {m, f, a} ->
-                apply(m, f, a)
-            end
-          end)
+                {m, f, a} ->
+                  apply(m, f, a)
+              end
+            end)
+
+          {:ok, result}
       end
 
     case result do
@@ -613,7 +653,8 @@ defmodule SuperWorker.Supervisor.Looper do
         Db.put_worker(state.master, ref, worker.id, {:standalone, nil}, pid)
 
       # ignore failed worker
-      _ ->
+      failed ->
+        Logger.error("SuperWorker, Looper, cannot start standalone worker, #{inspect(failed)}")
         :ok
     end
 

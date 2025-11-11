@@ -2,7 +2,6 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
   use ExUnit.Case, async: true
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Worker}
 
   @sup_id :sup_group_test
 
@@ -19,12 +18,21 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     end
   end
 
-  @tag :add_workers
-  test "add workers to group" do
+  @tag :standalone_add_workers
+  test "add standalone workers to supervisor" do
+    {:ok, workers} = Sup.get_all_standalone_workers(@sup_id)
+
+    Enum.each(workers, fn worker ->
+      Sup.remove_standalone_worker(@sup_id, worker.id)
+    end)
+
     list =
       for index <- 1..5 do
         {:ok, _} =
-          Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [index]}, id: index)
+          Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [index]},
+            id: {:test1, index},
+            restart_strategy: :permanent
+          )
       end
 
     {:ok, workers} = Sup.get_all_standalone_workers(@sup_id)
@@ -32,15 +40,18 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     assert(length(list) == length(workers))
   end
 
-  @tag :group_send_data
-  test "send data to worker in group" do
-    group_id = :group_loop_send
+  @tag :standalone_send_data
+  test "send data to worker in supervisor" do
+    worker_id = {:test2, 1}
 
-    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: 1)
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+        id: worker_id,
+        restart_strategy: :permanent
+      )
 
     Process.sleep(100)
-    Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
 
     result =
       receive do
@@ -52,40 +63,75 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     assert(true == result)
   end
 
-  @tag :group_remove_worker
-  test "remove worker from group" do
-    group_id = :group_test_remove_worker
+  @tag :standalone_remove_worker
+  test "remove standalone worker from supervisor" do
+    worker_id = {:test3, 1}
 
-    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: 1)
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+        id: worker_id,
+        restart_strategy: :permanent
+      )
 
-    :ok = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
-
-    result =
-      receive do
-        {:pong, _sender} -> true
-      after
-        1_000 -> false
-      end
-
-    assert(true == result)
-
-    {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, 1)
-    result = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
+    {:ok, _} = Sup.remove_standalone_worker(@sup_id, worker_id)
+    result = Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
 
     assert result == {:error, :not_found}
   end
 
-  @tag :group_restart_one_worker
-  test "restart one for on  in a group" do
-    group_id = :group_restart_one
+  @tag :standalone_reuse_id_worker
+  test "reuse standalone worker id from supervisor" do
+    worker_id = {:test4, 1}
 
-    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: 1)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [2]}, id: 2)
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+        id: worker_id,
+        restart_strategy: :permanent
+      )
+
+    {:ok, _} = Sup.remove_standalone_worker(@sup_id, worker_id)
+    result = Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    assert result == {:error, :not_found}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+        id: worker_id,
+        restart_strategy: :permanent
+      )
 
     Process.sleep(100)
-    Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    result =
+      receive do
+        {:pong, _sender} -> true
+      after
+        1_000 -> false
+      end
+
+    assert(true == result)
+  end
+
+  @tag :standalone_restart_worker
+  test "restart a worker not affect to others" do
+    worker1_id = {:test5, 1}
+    worker2_id = {:test5, 2}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+        id: worker1_id,
+        restart_strategy: :permanent
+      )
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+        id: worker2_id,
+        restart_strategy: :permanent
+      )
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:ping, self()})
 
     result =
       receive do
@@ -97,9 +143,8 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
     assert(true == result)
 
-    Sup.send_to_group(@sup_id, group_id, 2, {:store, :test, :hello})
-
-    Sup.send_to_group(@sup_id, group_id, 2, {:get, :test, self()})
+    Sup.send_to_standalone_worker(@sup_id, worker2_id, {:store, :test, :hello})
+    Sup.send_to_standalone_worker(@sup_id, worker2_id, {:get, :test, self()})
 
     result =
       receive do
@@ -114,10 +159,10 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
     assert(true == result)
 
-    Sup.send_to_group(@sup_id, group_id, 1, {:raise, "Restart all workers"})
+    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:raise, "Restart all workers"})
 
     Process.sleep(100)
-    Sup.send_to_group(@sup_id, group_id, 2, {:get, :test, self()})
+    Sup.send_to_standalone_worker(@sup_id, worker2_id, {:get, :test, self()})
 
     result =
       receive do
@@ -133,49 +178,59 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     assert(true == result)
   end
 
-  @tag :group_restart_all_workers
-  test "restart all workers in a group" do
-    group_id = :group_restart_all
+  @tag :standalone_restart_worker2
+  test "restart a worker " do
+    worker1_id = {:test6, 1}
 
-    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_all)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: "w_1")
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [2]}, id: "w_2")
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+        id: worker1_id,
+        restart_strategy: :permanent
+      )
 
     Process.sleep(100)
-    Sup.send_to_group(@sup_id, group_id, "w_1", {:ping, self()})
+    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:ping, self()})
 
     result =
       receive do
         {:pong, _sender} -> true
-      after
-        1_000 -> :check_1_failed
-      end
-
-    assert(true == result)
-
-    Sup.send_to_group(@sup_id, group_id, "w_2", {:store, :test, :hello})
-    Process.sleep(100)
-    Sup.send_to_group(@sup_id, group_id, "w_2", {:get, :test, self()})
-
-    result =
-      receive do
-        {:result, :hello} -> true
-      after
-        1_000 -> :check_2_failed
-      end
-
-    assert(true == result)
-
-    Sup.send_to_group(@sup_id, group_id, "w_1", {:raise, "Test restart all strategy"})
-    Process.sleep(100)
-    Sup.send_to_group(@sup_id, group_id, "w_2", {:get, :test, self()})
-
-    result =
-      receive do
-        {:result, nil} -> true
         other -> other
       after
-        1_000 -> :verify_after_restart
+        1_000 -> "verify the worker is started"
+      end
+
+    assert(true == result)
+
+    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:store, :test, :hello})
+    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker"
+      end
+
+    assert(true == result)
+
+    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:raise, "Restart all workers"})
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, nil} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "get data failed, timeout"
       end
 
     assert(true == result)

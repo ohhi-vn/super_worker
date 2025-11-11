@@ -297,7 +297,7 @@ defmodule SuperWorker.Supervisor do
   """
   def send_to_standalone_worker(sup_id, worker_id, data, timeout \\ @default_time) do
     with true <- is_running?(sup_id),
-         {:ok, {_, pid}} <- Db.get_worker_by_id(sup_id, worker_id, {:standalone, nil}) do
+         {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
       ApiHelper.call_api(pid, :send_to_worker, {worker_id, data}, timeout)
     end
   end
@@ -408,6 +408,12 @@ defmodule SuperWorker.Supervisor do
   def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
     with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
       ApiHelper.call_api(pid, :remove_group_worker, {worker_id, group_id}, timeout)
+    end
+  end
+
+  def remove_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
+      ApiHelper.call_api(pid, :remove_standalone_worker, worker_id, timeout)
     end
   end
 
