@@ -4,27 +4,32 @@ defmodule SuperWorker.Supervisor.Message do
   alias __MODULE__
 
   defstruct [
-    :id, # Message id. Randomly generated.
-    :from, # Pid/alias of sender.
-    :to, # Pid/alias of receiver.
-    :data, # Message to send.
+    # Message id.
+    :id,
+    # Pid/alias of sender.
+    :from,
+    # Pid/alias of receiver.
+    :to,
+    # internal or api message
+    :type,
+    # Message to send.
+    :data
   ]
 
   @type t :: %Message{
-    id: binary,
-    from: pid | atom | nil,
-    to: pid | atom | nil,
-    data: any
-  }
+          id: reference,
+          from: pid | atom | nil,
+          to: pid | atom | nil,
+          type: :internal | :api,
+          data: any
+        }
 
-  import SuperWorker.Supervisor.Utils
-
-  @spec new(atom | pid, atom | pid, any) :: t
-  def new(from, to, data, id \\ nil) do
-    id = id || random_id()
+  @spec new(atom, atom | pid, any) :: t
+  def new(type, to, data) do
     %Message{
-      id: id,
-      from: from,
+      id: make_ref(),
+      from: self(),
+      type: type,
       to: to,
       data: data
     }

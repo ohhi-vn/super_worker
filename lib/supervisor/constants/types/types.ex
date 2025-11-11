@@ -16,7 +16,6 @@ defmodule SuperWorker.Supervisor.Constants.Types do
     :add_group,
     :add_chain,
     :remove_group_worker,
-    :restart_group_worker,
     :send_to_group,
     :send_to_group_random,
     :send_to_worker,

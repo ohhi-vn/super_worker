@@ -3,7 +3,7 @@ defmodule SuperWorker.Supervisor.Worker do
   Documentation for `SuperWorker.Supervisor.Worker`.
   """
 
-  @worker_params [:id, :type, :name, :fun]
+  @worker_params [:id, :type, :name, :fun, :parent]
 
   @standalone_params [:restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
 
@@ -13,11 +13,11 @@ defmodule SuperWorker.Supervisor.Worker do
 
   @group_params [:group_id]
 
-  @chain_params [:chain_id, :num_workers]
+  @chain_params [:chain_id]
 
   alias __MODULE__
 
-  alias SuperWorker.Supervisor.Db
+  alias SuperWorker.Supervisor.{Db, Validator}
 
   @enforce_keys [:id, :fun]
   defstruct [
@@ -55,10 +55,8 @@ defmodule SuperWorker.Supervisor.Worker do
           order: non_neg_integer | nil
         }
 
-  import SuperWorker.Supervisor.Utils
-
   def check_group_options(opts) do
-    with {:ok, opts} <- normalize_opts(opts, @worker_params ++ @group_params),
+    with {:ok, opts} <- Validator.normalize_options(opts, @worker_params ++ @group_params),
          {:ok, opts} <- validate_opts(opts),
          {:ok, opts} <- default_opts(opts),
          {:ok, opts} <- map_to_struct(opts) do
@@ -67,7 +65,7 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   def check_chain_options(opts) do
-    with {:ok, opts} <- normalize_opts(opts, @worker_params ++ @chain_params),
+    with {:ok, opts} <- Validator.normalize_options(opts, @worker_params ++ @chain_params),
          {:ok, opts} <- validate_opts(opts),
          {:ok, opts} <- default_opts(opts),
          {:ok, opts} <- map_to_struct(opts) do
@@ -76,7 +74,7 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   def check_standalone_options(opts) do
-    with {:ok, opts} <- normalize_opts(opts, @worker_params ++ @standalone_params),
+    with {:ok, opts} <- Validator.normalize_options(opts, @worker_params ++ @standalone_params),
          {:ok, opts} <- validate_restart_strategy(opts),
          {:ok, opts} <- validate_opts(opts),
          {:ok, opts} <- default_opts(opts),

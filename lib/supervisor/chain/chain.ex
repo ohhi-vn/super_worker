@@ -12,8 +12,6 @@ defmodule SuperWorker.Supervisor.Chain do
   defstruct [
     # chain id, unique in supervior.
     :id,
-    # first worker id in the chain. where the data is sent.
-    :first_worker_id,
     restart_strategy: :one_for_one,
     supervisor: nil,
     partition: nil,
@@ -25,7 +23,6 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @type t :: %__MODULE__{
           id: any,
-          first_worker_id: any,
           restart_strategy: atom,
           supervisor: atom,
           partition: atom,
@@ -35,11 +32,9 @@ defmodule SuperWorker.Supervisor.Chain do
         }
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Worker, Db, Message, MapQueue}
+  alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue}
 
   alias __MODULE__
-
-  import SuperWorker.Supervisor.Utils
 
   require Logger
 
@@ -47,7 +42,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec check_options([atom() | keyword()]) :: {:error, atom | {atom, any}} | {:ok, Chain.t()}
   def check_options(opts) do
-    with {:ok, opts} <- normalize_opts(opts, @chain_params),
+    with {:ok, opts} <- Validator.normalize_options(opts, @chain_params),
          {:ok, chain} <- map_to_struct(opts),
          {:ok, chain} <- validate_opts(chain) do
       {:ok, chain}
@@ -118,7 +113,6 @@ defmodule SuperWorker.Supervisor.Chain do
       {:error, :already_exists}
     else
       chain
-      |> update_chain_first(worker)
       |> spawn_worker(worker)
     end
   end
@@ -158,14 +152,14 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec kill_worker(Chain.t(), any()) :: {:error, any} | {:ok, Chain.t()}
   def kill_worker(chain, worker_id) do
-    case get_worker(chain, worker_id) do
-      {:ok, worker} ->
-        Process.exit(worker.pid, :kill)
-        {:ok, chain}
-
-      {:error, reason} = error ->
+    with {:ok, {_, _, pid}} <-
+           Db.get_worker_by_id(chain.supervisor, worker_id, {:chain, chain.id}) do
+      Process.exit(pid, :kill)
+      {:ok, chain}
+    else
+      error ->
         Logger.error(
-          "SuperWorker, Chain, failed to kill worker #{inspect(worker_id)} in chain #{inspect(chain.id)}, error: #{inspect(reason)}"
+          "SuperWorker, Chain, failed to kill worker #{inspect(worker_id)} in chain #{inspect(chain.id)}, error: #{inspect(error)}"
         )
 
         error
@@ -233,14 +227,6 @@ defmodule SuperWorker.Supervisor.Chain do
     )
   end
 
-  defp update_chain_first(chain, worker) do
-    if chain.first_worker_id do
-      chain
-    else
-      Map.put(chain, :first_worker_id, worker.id)
-    end
-  end
-
   defp spawn_worker(chain = %Chain{}, worker = %Worker{}) do
     Logger.debug(
       "SuperWorker, Chain, spawning worker #{inspect(worker.id)} in chain #{inspect(chain.id)}"
@@ -250,7 +236,6 @@ defmodule SuperWorker.Supervisor.Chain do
 
     worker
     |> Map.put(:supervisor, chain.supervisor)
-    |> Map.put(:first_worker_id, chain.first_worker_id)
     |> do_spawn_worker()
 
     {:ok, chain}
@@ -264,18 +249,17 @@ defmodule SuperWorker.Supervisor.Chain do
         Process.put({:supervisor, :chain}, worker.parent)
         Process.put({:supervisor, :worker_id}, worker.id)
 
-        Db.put_worker(worker.supervisor, worker.id, {worker.type, worker.parent}, self())
-
         loop_chain(%MapQueue{}, worker)
       end)
+
+    Db.put_worker(worker.supervisor, ref, worker.id, {worker.type, worker.parent}, pid)
+    Db.put_chain_order(worker.supervisor, worker.id, worker.parent, worker.order, pid)
 
     # Link to child for case supervisor is down.
     # TO-DO: Improve case worker crash immediately.
     Process.link(pid)
 
     worker
-    |> Map.put(:pid, pid)
-    |> Map.put(:ref, ref)
   end
 
   # Support receive data from the previous process in the chain and pass it to the next process.

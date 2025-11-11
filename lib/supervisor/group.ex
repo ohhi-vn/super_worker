@@ -9,7 +9,7 @@ defmodule SuperWorker.Supervisor.Group do
   # Restart strategies for group.
   @group_restart_strategies [:one_for_one, :one_for_all]
 
-  alias SuperWorker.Supervisor.{Worker, Db}
+  alias SuperWorker.Supervisor.{Worker, Db, Validator}
 
   alias __MODULE__
 
@@ -32,8 +32,6 @@ defmodule SuperWorker.Supervisor.Group do
           partition: atom
         }
 
-  import SuperWorker.Supervisor.Utils
-
   require Logger
 
   ## Public functions
@@ -41,12 +39,12 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Check, validate and convert key-value pairs to struct.
   """
-  @spec check_options([keyword]) :: {:ok, term} | {:error, atom | {atom, any}}
+  @spec check_options([keyword]) :: {:ok, %Group{}} | {:error, atom | {atom, any}}
   def check_options(opts) do
-    with {:ok, opts} <- normalize_opts(opts, @group_params),
+    with {:ok, opts} <- Validator.normalize_options(opts, @group_params),
          {:ok, opts} <- validate_restart_strategy(opts),
          {:ok, opts} <- validate_opts(opts),
-         {:ok, group} <- map_to_struct(opts) do
+         {:ok, group} <- to_struct(opts) do
       {:ok, group}
     else
       {:error, reason} = error ->
@@ -69,7 +67,7 @@ defmodule SuperWorker.Supervisor.Group do
         _ -> worker_id
       end
 
-    Db.get_worker_info(group.supervisor, worker_id, group.id)
+    Db.get_worker_info(group.supervisor, worker_id, {:group, group.id})
   end
 
   @doc """
@@ -139,7 +137,11 @@ defmodule SuperWorker.Supervisor.Group do
       {:ok, worker} ->
         restart_worker(group, worker)
 
-      {:error, _} ->
+      {:error, _} = error ->
+        Logger.error(
+          "SuperWorker, Group, cannot get worker #{inspect(worker_id)}, #{inspect(error)}"
+        )
+
         {:error, :worker_not_found}
     end
   end
@@ -198,8 +200,7 @@ defmodule SuperWorker.Supervisor.Group do
   def kill_all_workers(group = %Group{}, reason \\ :kill) do
     {:ok, list_worker} = get_all_workers(group)
 
-    Enum.each(list_worker, fn {_pid, id} ->
-      {:ok, worker} = get_worker(group, id)
+    Enum.each(list_worker, fn worker ->
       kill_worker(group, worker, reason)
     end)
   end
@@ -272,6 +273,10 @@ defmodule SuperWorker.Supervisor.Group do
 
     Db.put_worker(group.supervisor, ref, worker.id, {:group, group.id}, pid)
 
+    Logger.debug(
+      "SuperWorker, Group, spawned worker #{inspect(worker.id)}, pid: #{inspect(pid)}, ref: #{inspect(ref)}"
+    )
+
     # Link to child for case supervisor is down.
     # TO-DO: Improve case worker crash immediately.
     Process.link(pid)
@@ -294,7 +299,22 @@ defmodule SuperWorker.Supervisor.Group do
     {:ok, opts}
   end
 
-  defp map_to_struct(opts) when is_map(opts) do
-    {:ok, struct(__MODULE__, opts)}
+  defp to_struct(opts) when is_map(opts) do
+    fields =
+      %Group{id: nil}
+      |> Map.from_struct()
+      |> Map.keys()
+
+    result =
+      %Group{} =
+      Enum.reduce(fields, %Group{id: nil}, fn field, acc ->
+        if Map.has_key?(opts, field) do
+          %{acc | field => Map.get(opts, field)}
+        else
+          acc
+        end
+      end)
+
+    {:ok, result}
   end
 end

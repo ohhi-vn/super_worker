@@ -6,6 +6,8 @@ defmodule SuperWorker.Supervisor.Db do
   require Logger
 
   def init(sup_name) when is_atom(sup_name) do
+    # TO-DO: move to protect/private for secure
+
     ^sup_name =
       Ets.new(sup_name, [
         :set,
@@ -26,7 +28,10 @@ defmodule SuperWorker.Supervisor.Db do
 
   def get_worker(table, ref) do
     with {:ok, {_, worker_id, parent, pid}} <- lookup(table, {:ref, ref}) do
-      {worker_id, parent, pid}
+      {:ok, {worker_id, parent, pid}}
+    else
+      _ ->
+        {:error, :not_found}
     end
   end
 
@@ -58,7 +63,7 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def get_chain_order(table, chain_id, order) do
-    with {:ok, {_, data}} <- lookup(table, {:chain, chain_id, order}) do
+    with {:ok, {_, data}} <- lookup(table, {:chain_order, chain_id, order}) do
       {:ok, data}
     else
       _ ->
@@ -101,6 +106,14 @@ defmodule SuperWorker.Supervisor.Db do
     {:ok, result}
   end
 
+  def get_all_standalone_worker_infos(table) do
+    result =
+      Ets.match_object(table, {{:worker, :_, {:standalone, nil}}, :_})
+      |> Enum.map(fn {_, worker} -> worker end)
+
+    {:ok, result}
+  end
+
   def get_all_workers(table) do
     result =
       Ets.match_object(table, {{:worker, :_, :_}, :_})
@@ -123,6 +136,14 @@ defmodule SuperWorker.Supervisor.Db do
     end
   end
 
+  def get_all_groups(table) do
+    groups =
+      Ets.match_object(table, {{:group, :_}, :_})
+      |> Enum.map(fn {_, group} -> group end)
+
+    {:ok, groups}
+  end
+
   def put_chain(table, %Chain{} = chain) do
     Ets.insert_new(table, {{:chain, chain.id}, chain})
   end
@@ -131,6 +152,14 @@ defmodule SuperWorker.Supervisor.Db do
     with {:ok, {_, chain}} <- lookup(table, {:chain, chain_id}) do
       {:ok, chain}
     end
+  end
+
+  def get_all_chains(table) do
+    chains =
+      Ets.match_object(table, {{:chain, :_}, :_})
+      |> Enum.map(fn {_, chain} -> chain end)
+
+    {:ok, chains}
   end
 
   def delete_chain(table, chain_id) do

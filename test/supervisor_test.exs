@@ -30,7 +30,19 @@ defmodule SuperWorker.SupervisorTest do
     {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
 
     assert true == Sup.is_running?(@sup_id)
-    Sup.stop(@sup_id)
+    {:ok, _} = Sup.stop(@sup_id)
+    Process.sleep(1)
+
+    assert false == Sup.is_running?(@sup_id)
+  end
+
+  @tag :supervisor_start2
+  test "start/stop supervisor, no linked process - 2" do
+    {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 10)
+
+    assert true == Sup.is_running?(@sup_id)
+    {:ok, _} = Sup.stop(@sup_id)
+    Process.sleep(1)
 
     assert false == Sup.is_running?(@sup_id)
   end
@@ -42,6 +54,13 @@ defmodule SuperWorker.SupervisorTest do
     assert true == Sup.is_running?(@sup_id)
   end
 
+  @tag :supervisor_check_duplicate_id2
+  test "check duplicated supervisor's id - 2" do
+    {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 10)
+    {:error, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 10)
+    assert true == Sup.is_running?(@sup_id)
+  end
+
   @tag :supervisor_start_link_1
   test "start supervisor with link" do
     {:ok, _} = Sup.start(link: true, id: @sup_id, number_of_partitions: 1)
@@ -49,11 +68,23 @@ defmodule SuperWorker.SupervisorTest do
 
     assert true == result
     Sup.stop(@sup_id)
+    Process.sleep(1)
+    assert false == Sup.is_running?(@sup_id)
+  end
+
+  @tag :supervisor_start_link_1a
+  test "start supervisor with link - a" do
+    {:ok, _} = Sup.start(link: true, id: @sup_id, number_of_partitions: 10)
+    result = Sup.is_running?(@sup_id)
+
+    assert true == result
+    Sup.stop(@sup_id)
+    Process.sleep(1)
     assert false == Sup.is_running?(@sup_id)
   end
 
   @tag :supervisor_start_link_2
-  test "start supervisor with link, process still alive if linked process exit :normal" do
+  test "start supervisor with link, process still alive if linked process exit :normal - a" do
     pid =
       spawn(fn ->
         {:ok, _} = Sup.start(link: true, id: @sup_id, number_of_partitions: 1)
@@ -78,6 +109,37 @@ defmodule SuperWorker.SupervisorTest do
     assert send_result == :ok
     assert true == Sup.is_running?(@sup_id)
     Sup.stop(@sup_id)
+    Process.sleep(1)
+    assert false == Sup.is_running?(@sup_id)
+  end
+
+  @tag :supervisor_start_link_2a
+  test "start supervisor with link, process still alive if linked process exit :normal - 2a" do
+    pid =
+      spawn(fn ->
+        {:ok, _} = Sup.start(link: true, id: @sup_id, number_of_partitions: 3)
+
+        receive do
+          {from, :exit, reason} ->
+            send(from, {:ok, from})
+            exit(reason)
+        end
+      end)
+
+    me = self()
+    send(pid, {me, :exit, :normal})
+
+    send_result =
+      receive do
+        {:ok, ^me} -> :ok
+      after
+        1_000 -> :timed_out
+      end
+
+    assert send_result == :ok
+    assert true == Sup.is_running?(@sup_id)
+    Sup.stop(@sup_id)
+    Process.sleep(1)
     assert false == Sup.is_running?(@sup_id)
   end
 
@@ -86,6 +148,42 @@ defmodule SuperWorker.SupervisorTest do
     pid =
       spawn(fn ->
         {:ok, _} = Sup.start(link: true, id: @sup_id, number_of_partitions: 1)
+
+        receive do
+          {from, :crash} ->
+            IO.puts("#{inspect(self())}, receive crash command from #{inspect(from)}")
+            send(from, {:ok, from})
+            raise "#{inspect(self())}, receive crash command from #{inspect(from)}"
+        end
+      end)
+
+    Process.sleep(100)
+
+    send(pid, {self(), :crash})
+
+    send_result =
+      receive do
+        {:ok, _} ->
+          :ok
+
+        msg ->
+          IO.inspect(msg)
+          msg
+      after
+        1_000 -> :timed_out
+      end
+
+    assert send_result == :ok
+    Process.sleep(100)
+
+    assert false == Sup.is_running?(@sup_id)
+  end
+
+  @tag :supervisor_start_link_3a
+  test "start supervisor with linked process, expected the supervisor is crashed follow crashed process - 3a" do
+    pid =
+      spawn(fn ->
+        {:ok, _} = Sup.start(link: true, id: @sup_id, number_of_partitions: 10)
 
         receive do
           {from, :crash} ->
@@ -148,26 +246,85 @@ defmodule SuperWorker.SupervisorTest do
     assert false == Sup.is_running?(@sup_id)
   end
 
-  @tag :supervisor_reuse_id_after_stop
-  test "reuse id after stop" do
-    {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
+  @tag :supervisor_children_crash_follow_supervisor2
+  test "children crash follow supervisor - 2" do
+    pid =
+      spawn(fn ->
+        {:ok, _} = Sup.start(link: true, id: @sup_id, number_of_partitions: 10)
+        {:ok, _} = Sup.add_group(@sup_id, id: :group1, restart_strategy: :one_for_one)
+        {:ok, _} = Sup.add_group_worker(@sup_id, :group1, {__MODULE__, :loop, [:w1]}, id: :w1)
+
+        receive do
+          {from, :crash} ->
+            send(from, {:ok, from})
+            Process.sleep(100)
+            raise "receive crash command from #{inspect(from)}"
+        end
+      end)
+
+    # wait for spawned process to start supervisor and add group.
+    Process.sleep(100)
+
     assert true == Sup.is_running?(@sup_id)
 
-    result = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
+    me = self()
+    send(pid, {me, :crash})
+    send_result = loop_receiver()
+    assert send_result == false
+
+    # Wait for supervisor to fully crash and clean up
+    wait_until_stopped(@sup_id, 2000)
+    assert false == Sup.is_running?(@sup_id)
+  end
+
+  @tag :supervisor_reuse_id_after_stop
+  test "re-use id after stop" do
+    sup_id = :test_reuse
+    {:ok, _} = Sup.start(link: false, id: sup_id, number_of_partitions: 1)
+    assert true == Sup.is_running?(sup_id)
+
+    result = Sup.start(link: false, id: sup_id, number_of_partitions: 1)
 
     assert(match?({:error, _}, result))
 
-    Sup.stop(@sup_id)
-    assert false == Sup.is_running?(@sup_id)
+    Sup.stop(sup_id)
+    Process.sleep(1)
+    assert false == Sup.is_running?(sup_id)
 
-    {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
-    assert true == Sup.is_running?(@sup_id)
-    Sup.stop(@sup_id)
+    {:ok, _} = Sup.start(link: false, id: sup_id, number_of_partitions: 1)
+    assert true == Sup.is_running?(sup_id)
+    Sup.stop(sup_id)
+    Process.sleep(1)
+    {:ok, _} = Sup.start(link: false, id: sup_id, number_of_partitions: 1)
+    assert true == Sup.is_running?(sup_id)
+    Sup.stop(sup_id)
+    Process.sleep(1)
+    assert false == Sup.is_running?(sup_id)
+  end
 
-    {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 1)
-    assert true == Sup.is_running?(@sup_id)
-    Sup.stop(@sup_id)
-    assert false == Sup.is_running?(@sup_id)
+  @tag :supervisor_reuse_id_after_stop2
+  test "re-use id after stop - 2" do
+    sup_id = :test_reuse
+    {:ok, _} = Sup.start(link: false, id: sup_id, number_of_partitions: 10)
+    assert true == Sup.is_running?(sup_id)
+
+    result = Sup.start(link: false, id: sup_id, number_of_partitions: 10)
+
+    assert(match?({:error, _}, result))
+
+    Sup.stop(sup_id)
+    Process.sleep(1)
+    assert false == Sup.is_running?(sup_id)
+
+    {:ok, _} = Sup.start(link: false, id: sup_id, number_of_partitions: 10)
+    assert true == Sup.is_running?(sup_id)
+    Sup.stop(sup_id)
+    Process.sleep(1)
+    {:ok, _} = Sup.start(link: false, id: sup_id, number_of_partitions: 10)
+    assert true == Sup.is_running?(sup_id)
+    Sup.stop(sup_id)
+    Process.sleep(1)
+    assert false == Sup.is_running?(sup_id)
   end
 
   # Basic loop, receive messages and print them.

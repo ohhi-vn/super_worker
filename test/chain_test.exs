@@ -10,7 +10,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
   @sup_id :sup_test_chain
 
   setup_all do
-    {:ok, _} = Sup.start([link: false, id: @sup_id])
+    {:ok, _} = Sup.start(link: false, id: @sup_id)
     :ok
   end
 
@@ -20,8 +20,8 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_verify_strategy
   test "add chain & verify strategy" do
-    {:ok, _} = Sup.add_chain(@sup_id, [id: :chain2, restart_strategy: :one_for_one])
-    {:ok, _} = Sup.add_chain(@sup_id, [id: :chain3, restart_strategy: :one_for_all])
+    {:ok, _} = Sup.add_chain(@sup_id, id: :chain2, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_chain(@sup_id, id: :chain3, restart_strategy: :one_for_all)
     {:ok, chain2} = Sup.get_chain(@sup_id, :chain2)
     {:ok, chain3} = Sup.get_chain(@sup_id, :chain3)
     assert :one_for_one == chain2.restart_strategy
@@ -30,11 +30,12 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_add_workers
   test "add workers to chain" do
-    {:ok,_} = Sup.add_chain(@sup_id, [id: :chain1, restart_strategy: :one_for_one])
+    {:ok, _} = Sup.add_chain(@sup_id, id: :chain1, restart_strategy: :one_for_one)
+
     list =
-    for index <- 1..3 do
-      {:ok, _} = Sup.add_chain_worker(@sup_id, :chain1, {__MODULE__, :loop, [index]}, [id: index])
-    end
+      for index <- 1..3 do
+        {:ok, _} = Sup.add_chain_worker(@sup_id, :chain1, {__MODULE__, :loop, [index]}, id: index)
+      end
 
     {:ok, chain} = Sup.get_chain(@sup_id, :chain1)
     # wait for workers to be added, need to adjust for slow machines.
@@ -49,12 +50,15 @@ defmodule SuperWorker.Supervisor.ChainTest do
   @tag :chain_add_workers_2
   test "add workers to chain 2" do
     for index <- 1..10 do
-      chain_id =  {:chain_test, index}
-      {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
+      chain_id = {:chain_test, index}
+      {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
 
       list =
         for worker_index <- 1..10 do
-          {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]}, [id: worker_index])
+          {:ok, _} =
+            Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]},
+              id: worker_index
+            )
         end
 
       {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
@@ -72,15 +76,18 @@ defmodule SuperWorker.Supervisor.ChainTest do
     me = self()
 
     f = fn index ->
-      chain_id =  {:chain_para, index}
-      {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
+      chain_id = {:chain_para, index}
+      {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
 
       list =
         for worker_index <- 1..num_workers do
-          {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]}, [id: worker_index])
+          {:ok, _} =
+            Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]},
+              id: worker_index
+            )
         end
 
-        send me, {:ok, index}
+      send(me, {:ok, index})
     end
 
     for index <- 1..num_chains do
@@ -90,87 +97,100 @@ defmodule SuperWorker.Supervisor.ChainTest do
     for index <- 1..num_chains do
       receive do
         {:ok, index} -> true
-      after 5_000 -> raise "timeout for adding chains and workers"
+      after
+        5_000 -> raise "timeout for adding chains and workers"
       end
     end
 
     for index <- 1..num_chains do
-      chain_id =  {:chain_para, index}
+      chain_id = {:chain_para, index}
       {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
       {:ok, workers} = Chain.get_all_workers(chain)
       assert(num_workers == length(workers))
     end
-
   end
 
   @tag :chain_send_data
   test "send data to chain" do
     chain_id = :chain_send_test
-    {:ok,_} = Sup.add_chain(@sup_id, [id: chain_id, restart_strategy: :one_for_one])
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :ping_pong, []}, [id: 1])
+    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :ping_pong, []}, id: 1)
 
-    Logger.debug("send data to chain: #{inspect chain_id}")
-    result = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 1_000)
-    Logger.debug("send result to chain: #{inspect result}")
+    Logger.debug("send data to chain: #{inspect(chain_id)}")
+    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 1_000)
 
     result =
       receive do
-        {:pong, _} -> true
+        {:pong, _} ->
+          true
+
         other ->
-          IO.inspect other
+          IO.inspect(other)
           false
-      after 1500 -> :timeout
+      after
+        1500 -> :timeout
       end
 
-    assert(true == result )
+    assert(true == result)
   end
 
   ## Helper functions
 
   # TO-DO: Support for loop function in chain?
   def loop(id) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+
     receive do
       {:ping, sender} ->
-        IO.puts prefix <> " Pong to #{inspect sender}"
+        IO.puts(prefix <> " Pong to #{inspect(sender)}")
         send(sender, {:pong, self()})
 
-      msg -> IO.puts prefix <> " task received: #{inspect msg}"
+      msg ->
+        IO.puts(prefix <> " task received: #{inspect(msg)}")
     end
 
     loop(id)
   end
 
   def ping_pong({:ping, sender}) do
-    IO.puts "ping_pong(#{inspect self()}), new task"
+    IO.puts("ping_pong(#{inspect(self())}), new task")
 
-    IO.puts  " Pong to #{inspect sender}"
+    IO.puts(" Pong to #{inspect(sender)}")
     send(sender, {:pong, self()})
   end
 
   def task(n, sleep \\ 100) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-    IO.puts prefix <> " Task is started, param: #{n}"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+    IO.puts(prefix <> " Task is started, param: #{n}")
 
-    sum = Enum.reduce(1..n, 0, fn i, acc ->
-      :timer.sleep(sleep)
-      acc + i
-    end)
-    IO.puts  IO.puts prefix <> " Task done, #{sum}"
+    sum =
+      Enum.reduce(1..n, 0, fn i, acc ->
+        :timer.sleep(sleep)
+        acc + i
+      end)
+
+    IO.puts(IO.puts(prefix <> " Task done, #{sum}"))
 
     {:next, n + 1}
   end
 
   def task_crash(n, at, sleep \\ 100) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-    IO.puts prefix <> " Task is started, param: #{n}"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+    IO.puts(prefix <> " Task is started, param: #{n}")
 
-    sum = Enum.reduce(1..n, 0, fn i, acc ->
-      if i == at, do: raise "Task #{inspect Process.get({:supervisor, :worker_id})} raised an error at #{i}"
-      :timer.sleep(sleep)
-      acc + i
-    end)
-    IO.puts prefix <> " Task done, #{sum}"
+    sum =
+      Enum.reduce(1..n, 0, fn i, acc ->
+        if i == at,
+          do:
+            raise(
+              "Task #{inspect(Process.get({:supervisor, :worker_id}))} raised an error at #{i}"
+            )
+
+        :timer.sleep(sleep)
+        acc + i
+      end)
+
+    IO.puts(prefix <> " Task done, #{sum}")
 
     {:next, n + 1}
   end
@@ -178,13 +198,13 @@ defmodule SuperWorker.Supervisor.ChainTest do
   # return a anonymous function.
   def anonymous do
     fn ->
-      prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-      IO.puts prefix <> " Anonymous function"
+      prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+      IO.puts(prefix <> " Anonymous function")
+
       for i <- 1..5 do
-        IO.puts prefix <> " Task #{i}"
+        IO.puts(prefix <> " Task #{i}")
         :timer.sleep(100)
       end
     end
   end
-
 end
