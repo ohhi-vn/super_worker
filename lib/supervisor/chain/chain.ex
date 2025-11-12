@@ -5,7 +5,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @chain_params [:id, :restart_strategy, :finished_callback, :queue_length, :send_type]
 
-  @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
+  @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one]
 
   @send_types [:broadcast, :random, :partition, :round_robin]
 
@@ -192,13 +192,13 @@ defmodule SuperWorker.Supervisor.Chain do
       # TO-DO: Verify order is valid/process is killed
       {:error, :not_found} ->
         Logger.debug(
-          "SuperWorker, Chain, not found next worker for order #{order}, chain: #{chain.id}, go to finished callback."
+          "SuperWorker, Chain, not found next worker for order #{order}, chain: #{inspect(chain.id)}, go to finished callback."
         )
 
         # TO-DO: catch throw, error from outside.
         case chain.finished_callback do
           nil ->
-            Logger.debug("SuperWorker, Chain, not found callback for chain #{chain.id}")
+            Logger.debug("SuperWorker, Chain, not found callback for chain #{inspect(chain.id)}")
             {:error, :no_worker_or_callback}
 
           {:fun, fun} ->
@@ -348,7 +348,9 @@ defmodule SuperWorker.Supervisor.Chain do
             {:ok, queue, msg_id} = MapQueue.add(queue, data)
             {:ok, chain} = Sup.get_chain(get_my_supervisor(), chain_id)
 
-            msg = Message.new(self(), nil, data, msg_id)
+            msg =
+              Message.new(:chain_message, nil, {msg_id, data})
+
             send_next(chain, worker.order + 1, msg)
             loop_chain(queue, worker)
         end

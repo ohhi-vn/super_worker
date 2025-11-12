@@ -53,6 +53,28 @@ defmodule SuperWorker.Supervisor.GroupTest do
     assert(length(list) == length(workers))
   end
 
+  @tag :group_add_mixed_workers
+  test "add mixed workers to group" do
+    group_id = :test_add_mixed_workers
+    num_workers = 5
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    list =
+      for index <- 1..num_workers do
+        {:ok, _} =
+          Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [index]}, id: index)
+      end
+
+    Sup.add_group_worker(@sup_id, group_id, MyGenServer, [])
+    Process.sleep(10)
+
+    {:ok, group} = Sup.get_group(@sup_id, group_id)
+
+    {:ok, workers} = Group.get_all_workers(group)
+
+    assert(num_workers + 1 == length(workers))
+  end
+
   @tag :group_add_workers_2
   test "add workers to group 2" do
     Enum.each(1..10, fn index ->

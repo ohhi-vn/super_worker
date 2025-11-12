@@ -1,4 +1,6 @@
 defmodule SuperWorker.Supervisor.Db do
+  @moduledoc false
+
   alias :ets, as: Ets
 
   alias SuperWorker.Supervisor.{Worker, Group, Chain}
@@ -29,9 +31,6 @@ defmodule SuperWorker.Supervisor.Db do
   def get_worker(table, ref) do
     with {:ok, {_, worker_id, parent, pid}} <- lookup(table, {:ref, ref}) do
       {:ok, {worker_id, parent, pid}}
-    else
-      _ ->
-        {:error, :not_found}
     end
   end
 
@@ -53,27 +52,9 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def get_worker_info_by_ref(table, ref) do
-    with {:ok, {{:ref, _ref}, worker_id, parent, _pid}} <- get_worker(table, ref) do
+    with {:ok, {worker_id, parent, _pid}} <- get_worker(table, ref) do
       get_worker_info(table, worker_id, parent)
     end
-  end
-
-  def put_chain_order(table, worker_id, chain_id, order, pid) do
-    Ets.insert_new(table, {{:chain_order, chain_id, order}, {worker_id, pid}})
-  end
-
-  def get_chain_order(table, chain_id, order) do
-    with {:ok, {_, data}} <- lookup(table, {:chain_order, chain_id, order}) do
-      {:ok, data}
-    else
-      _ ->
-        Logger.info("SuperWorker, Db, chain order not found")
-        {:error, :not_found}
-    end
-  end
-
-  def delete_chain_order(table, chain_id, order) do
-    Ets.delete(table, {:chain_order, chain_id, order})
   end
 
   def get_workers_by_parent(table, parent) do
@@ -142,6 +123,20 @@ defmodule SuperWorker.Supervisor.Db do
       |> Enum.map(fn {_, group} -> group end)
 
     {:ok, groups}
+  end
+
+  def put_chain_order(table, worker_id, chain_id, order, pid) do
+    Ets.insert_new(table, {{:chain_order, chain_id, order}, {worker_id, pid}})
+  end
+
+  def get_chain_order(table, chain_id, order) do
+    with {:ok, {_, data}} <- lookup(table, {:chain_order, chain_id, order}) do
+      {:ok, data}
+    end
+  end
+
+  def delete_chain_order(table, chain_id, order) do
+    Ets.delete(table, {:chain_order, chain_id, order})
   end
 
   def put_chain(table, %Chain{} = chain) do

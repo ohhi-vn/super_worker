@@ -405,7 +405,7 @@ defmodule SuperWorker.Supervisor.Looper do
   # get group info from api.
   defp process_public_api_message(
          state,
-         message = %Message{type: :get_all_standalone_workers, data: group_id}
+         message = %Message{type: :get_all_standalone_workers}
        ) do
     result = Db.get_all_standalone_worker_infos(state.master)
 
@@ -420,7 +420,7 @@ defmodule SuperWorker.Supervisor.Looper do
         {:error, :not_found} ->
           Logger.debug("SuperWorker, Supervisor, #{state.id} Adding chain: #{inspect(chain.id)}")
 
-          state = add_new_chain(state, chain)
+          add_new_chain(state, chain)
           # Send the response to the caller.
           {:ok, chain.id}
 

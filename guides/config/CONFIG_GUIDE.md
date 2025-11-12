@@ -94,7 +94,7 @@ Chains enable sequential data processing where output flows from one worker to t
 chains: [
   [
     id: :processing_chain,              # Required: Unique atom identifier
-    restart_strategy: :rest_for_one,    # :one_for_one, :one_for_all, :rest_for_one, :before_for_one
+    restart_strategy: :rest_for_one,    # :one_for_one, :one_for_all, :rest_for_one
     send_type: :round_robin,            # :broadcast, :random, :partition, :round_robin
     queue_length: 100,                  # Optional: max queue size
     finished_callback: {M, :f, [a]},    # Optional: callback when chain completes
@@ -258,7 +258,6 @@ Starts supervisors from parsed configurations.
 - **`:one_for_one`** - Only restart the failed worker
 - **`:one_for_all`** - Restart all workers in the chain
 - **`:rest_for_one`** - Restart the failed worker and all workers after it
-- **`:before_for_one`** - Restart the failed worker and all workers before it
 
 ### Standalone Restart Strategies
 

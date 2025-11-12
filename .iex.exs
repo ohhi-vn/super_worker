@@ -8,12 +8,60 @@ IO.puts "SuperWorker.Supervisor has alias is Sup"
 
 IEx.configure(inspect: [limit: :infinity])
 
+
+defmodule MyGenServer do
+  use GenServer, restart: :permanent
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, :ok, opts)
+  end
+
+  def get(pid, key) do
+    GenServer.call(pid, {:get, key})
+  end
+
+  def put(pid, key, value) do
+    GenServer.cast(pid, {:put, key, value})
+  end
+
+  def delete(pid, key) do
+    GenServer.cast(pid, {:delete, key})
+  end
+
+  def init(:ok) do
+    {:ok, %{}}
+  end
+
+  def handle_call({:get, key}, _from, state) do
+    {:reply, Map.get(state, key), state}
+  end
+
+  def handle_cast({:put, key, value}, state) do
+    {:noreply, Map.put(state, key, value)}
+  end
+
+  def handle_cast({:delete, key}, state) do
+    {:noreply, Map.delete(state, key)}
+  end
+
+  def handle_info({:ping, from}, state) do
+    IO.puts("Received ping from #{inspect(from)}")
+    send(from, :pong)
+    {:noreply, state}
+  end
+
+  def handle_info(msg, state) do
+    IO.puts("Received message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+end
+
 defmodule Dev do
   @doc false
 
   # Start the supervisor, add a group and a chain.
   def start(sup_id \\ :sup1) do
-    result = Sup.start([link: false, id: sup_id])
+    result = Sup.start([link: false, id: sup_id, number_of_partitions: 2])
     IO.inspect result
 
     # Group & workers for group.
@@ -206,4 +254,6 @@ defmodule SupConfig do
       ]
     ]
   end
+
+
 end

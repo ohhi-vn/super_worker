@@ -25,7 +25,7 @@ defmodule SuperWorker.Supervisor.Message do
         }
 
   @spec new(atom, atom | pid, any) :: t
-  def new(type, to, data) do
+  def new(type, to, data) when is_pid(to) or to == nil do
     %Message{
       id: make_ref(),
       from: self(),

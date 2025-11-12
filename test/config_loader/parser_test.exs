@@ -149,7 +149,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
         chains: [
           [
             id: :chain_with_workers,
-            restart_strategy: :before_for_one,
+            restart_strategy: :rest_for_one,
             send_type: :broadcast,
             workers: [
               [
@@ -171,7 +171,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       assert [chain] = parsed.children
       assert length(chain.workers) == 4
       assert chain.options[:send_type] == :broadcast
-      assert chain.options[:restart_strategy] == :before_for_one
+      assert chain.options[:restart_strategy] == :rest_for_one
     end
 
     test "parses complex configuration with multiple children types" do
@@ -407,7 +407,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     end
 
     test "handles valid chain restart strategies" do
-      for strategy <- [:one_for_one, :one_for_all, :rest_for_one, :before_for_one] do
+      for strategy <- [:one_for_one, :one_for_all, :rest_for_one] do
         config = [
           chains: [
             [id: :chain, restart_strategy: strategy, workers: []]

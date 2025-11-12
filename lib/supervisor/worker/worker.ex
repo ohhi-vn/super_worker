@@ -3,7 +3,7 @@ defmodule SuperWorker.Supervisor.Worker do
   Documentation for `SuperWorker.Supervisor.Worker`.
   """
 
-  @worker_params [:id, :type, :name, :fun, :parent]
+  @worker_params [:id, :type, :name, :fun, :parent, :restart_strategy]
 
   @standalone_params [:restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
 

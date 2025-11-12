@@ -64,7 +64,7 @@ config :super_worker, :example_chain_supervisor,
   chains: [
     [
       id: :data_processing_chain,
-      # Chain restart strategies: :one_for_one, :one_for_all, :rest_for_one, :before_for_one
+      # Chain restart strategies: :one_for_one, :one_for_all, :rest_for_one
       restart_strategy: :rest_for_one,
       # How to send data to workers: :broadcast, :random, :partition, :round_robin
       send_type: :round_robin,
@@ -299,7 +299,6 @@ config :super_worker, :example_dev_supervisor,
 #      * :one_for_one - restart only the failed worker
 #      * :one_for_all - restart all workers in the chain
 #      * :rest_for_one - restart failed worker and all after it
-#      * :before_for_one - restart failed worker and all before it
 #    - Standalone:
 #      * :permanent - always restart
 #      * :transient - restart only on abnormal exit

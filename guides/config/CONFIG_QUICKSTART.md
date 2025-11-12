@@ -158,7 +158,7 @@ SuperWorker.Supervisor.stop(:my_app_supervisor)
 ### Chain Options
 
 - `id` - **Required**. Unique atom identifier
-- `restart_strategy` - `:one_for_one`, `:one_for_all`, `:rest_for_one`, `:before_for_one`
+- `restart_strategy` - `:one_for_one`, `:one_for_all`, `:rest_for_one`
 - `send_type` - `:broadcast`, `:random`, `:partition`, `:round_robin`
 - `queue_length` - Max queue size
 

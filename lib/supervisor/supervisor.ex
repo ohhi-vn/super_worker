@@ -147,76 +147,13 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Add a standalone worker process to the supervisor.
-  function for start worker can be a function or a {module, function, arguments}.
-  Standalone worker is run independently from other workers follow :one_to_one strategy.
-  If worker crashes, it will check the restart strategy of worker then act accordingly.
+  Get supervisor id in current process (except GenServer worker).
   """
-  @spec add_standalone_worker(atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
-          {:ok, atom()} | {:error, any()}
-  def add_standalone_worker(sup_id, mfa_or_fun, opts \\ [], timeout \\ @default_time)
-
-  def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
-      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_add_standalone_worker(sup_id, [{:fun, mfa} | opts], timeout)
+  def get_my_supervisor() do
+    Process.get({:supervisor, :sup_id})
   end
 
-  def add_standalone_worker(sup_id, fun, opts, timeout)
-      when is_list(opts) and is_function(fun, 0) do
-    do_add_standalone_worker(sup_id, [{:fun, {:fun, fun}} | opts], timeout)
-  end
-
-  def add_standalone_worker(sup_id, {:fun, fun} = f, opts, timeout)
-      when is_list(opts) and is_function(fun, 0) do
-    do_add_standalone_worker(sup_id, [{:fun, f} | opts], timeout)
-  end
-
-  def add_standalone_worker(sup_id, {genserver_module, _} = f, opts, timeout)
-      when is_list(opts) and is_atom(genserver_module) do
-    {:ok, %{mfa: mfa}} = SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(f)
-
-    do_add_standalone_worker(sup_id, [{:fun, mfa} | opts], timeout)
-  end
-
-  def add_standalone_worker(sup_id, genserver_module, opts, timeout)
-      when is_list(opts) and is_atom(genserver_module) do
-    add_standalone_worker(sup_id, {genserver_module, []}, opts, timeout)
-  end
-
-  @doc """
-  Add a  worker to a group in the supervisor.
-  Function's options follow `Worker` module.
-  """
-  @spec add_group_worker(atom(), atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
-          {:ok, atom()} | {:error, any()}
-  def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ @default_time)
-
-  def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
-      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) and group_id != nil do
-    do_add_group_worker(sup_id, group_id, [{:fun, mfa} | opts], timeout)
-  end
-
-  def add_group_worker(sup_id, group_id, {:gen_server, {m, f, a}} = mfa, opts, timeout)
-      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) and group_id != nil do
-    do_add_group_worker(sup_id, group_id, [{:fun, mfa} | opts], timeout)
-  end
-
-  def add_group_worker(sup_id, group_id, fun, opts, timeout)
-      when is_list(opts) and is_function(fun, 0) do
-    do_add_group_worker(sup_id, group_id, [{:fun, {:fun, fun}} | opts], timeout)
-  end
-
-  def add_group_worker(sup_id, group_id, module, opts, timeout)
-      when is_atom(module) and group_id != nil do
-    specs = SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(module)
-    do_add_group_worker(sup_id, {:group_id, group_id}, [{:fun, specs.mfa} | opts], timeout)
-  end
-
-  def add_group_worker(sup_id, group_id, {module, _} = worker, opts, timeout)
-      when is_atom(module) and group_id != nil do
-    specs = SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(worker)
-    do_add_group_worker(sup_id, group_id, [{:fun, specs.mfa} | opts], timeout)
-  end
+  ## Chan APIs ##
 
   @doc """
   Add a worker to the chain in supervisor.
@@ -233,33 +170,6 @@ defmodule SuperWorker.Supervisor do
   def add_chain_worker(sup_id, chain_id, fun, opts, timeout)
       when is_list(opts) and is_function(fun, 0) do
     do_add_chain_worker(sup_id, chain_id, [{:fun, {:fun, fun}} | opts], timeout)
-  end
-
-  @doc """
-  Add a group to the supervisor.
-  Group's options follow docs in `Group` module.
-  """
-  @spec add_group(atom(), list(), integer()) :: {:ok, atom()} | {:error, any()}
-  def add_group(sup_id, opts, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, group = %Group{}} <- Group.check_options(opts),
-         {:error, _} <- get_group(sup_id, group.id),
-         {:ok, parititon_id, pid} <- Partition.get_host_partition(sup_id, group.id) do
-      group = %Group{group | supervisor: sup_id, partition: parititon_id}
-      ApiHelper.call_api(pid, :add_group, group, timeout)
-    else
-      wrong ->
-        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect(wrong)}")
-        {:error, :supervisor_not_found_or_group_exists}
-    end
-  end
-
-  @doc """
-  get group structure from supervisor.
-  """
-  @spec get_group(atom(), atom()) :: {:ok, Group.t()} | {:error, any()}
-  def get_group(sup_id, group_id) do
-    Db.get_group(sup_id, group_id)
   end
 
   @doc """
@@ -293,12 +203,85 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Send data directly to the worker standalone in the supervisor.
+  get chain structure from supervisor.
   """
-  def send_to_standalone_worker(sup_id, worker_id, data, timeout \\ @default_time) do
+  @spec get_chain(atom(), any()) :: {:ok, Group.t()} | {:error, any()}
+  def get_chain(sup_id, chain_id, timeout \\ @default_time) do
     with true <- is_running?(sup_id),
-         {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
-      ApiHelper.call_api(pid, :send_to_worker, {worker_id, data}, timeout)
+         {:ok, _partition_id, pid} <- Partition.get_host_partition(sup_id, chain_id) do
+      ApiHelper.call_api(pid, :get_chain, chain_id, timeout)
+    else
+      wrong ->
+        Logger.error("SuperWorker, Supervisor, error when get chain: #{inspect(wrong)}")
+        {:error, :supervisor_not_found_or_chain_exists}
+    end
+  end
+
+  ## Group APIs ##
+
+  @doc """
+  Add a  worker to a group in the supervisor.
+  Function's options follow `Worker` module.
+  """
+  @spec add_group_worker(atom(), atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
+          {:ok, atom()} | {:error, any()}
+  def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ @default_time)
+
+  def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
+      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) and group_id != nil do
+    do_add_group_worker(sup_id, group_id, [{:fun, mfa} | opts], timeout)
+  end
+
+  def add_group_worker(sup_id, group_id, fun, opts, timeout)
+      when is_list(opts) and is_function(fun, 0) do
+    do_add_group_worker(sup_id, group_id, [{:fun, {:fun, fun}} | opts], timeout)
+  end
+
+  def add_group_worker(sup_id, group_id, module, options, timeout)
+      when is_atom(module) and group_id != nil do
+    add_group_worker(sup_id, group_id, {module, []}, options, timeout)
+  end
+
+  def add_group_worker(sup_id, group_id, {module, init_options} = worker, options, timeout)
+      when is_atom(module) and is_list(init_options) and group_id != nil do
+    options = convert_gen_server_specs(worker, options)
+
+    do_add_group_worker(sup_id, group_id, options, timeout)
+  end
+
+  @doc """
+  Add a group to the supervisor.
+  Group's options follow docs in `Group` module.
+  """
+  @spec add_group(atom(), list(), integer()) :: {:ok, atom()} | {:error, any()}
+  def add_group(sup_id, opts, timeout \\ @default_time) do
+    with true <- is_running?(sup_id),
+         {:ok, group = %Group{}} <- Group.check_options(opts),
+         {:error, _} <- get_group(sup_id, group.id),
+         {:ok, parititon_id, pid} <- Partition.get_host_partition(sup_id, group.id) do
+      group = %Group{group | supervisor: sup_id, partition: parititon_id}
+      ApiHelper.call_api(pid, :add_group, group, timeout)
+    else
+      wrong ->
+        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect(wrong)}")
+        {:error, :supervisor_not_found_or_group_exists}
+    end
+  end
+
+  @doc """
+  get group structure from supervisor.
+  """
+  @spec get_group(atom(), atom()) :: {:ok, Group.t()} | {:error, any()}
+  def get_group(sup_id, group_id, timeout \\ @default_time) do
+    Db.get_group(sup_id, group_id)
+
+    with true <- is_running?(sup_id),
+         {:ok, _partition_id, pid} <- Partition.get_host_partition(sup_id, group_id) do
+      ApiHelper.call_api(pid, :get_group, group_id, timeout)
+    else
+      wrong ->
+        Logger.error("SuperWorker, Supervisor, error when get group: #{inspect(wrong)}")
+        {:error, :supervisor_not_found_or_chain_exists}
     end
   end
 
@@ -393,21 +376,62 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
+      ApiHelper.call_api(pid, :remove_group_worker, {worker_id, group_id}, timeout)
+    end
+  end
+
   def get_my_group() do
     Process.get({:supervisor, :group_id})
   end
 
-  def get_my_supervisor() do
-    Process.get({:supervisor, :sup_id})
+  ## Standalone worker api ##
+
+  @doc """
+  Add a standalone worker process to the supervisor.
+  function for start worker can be a function or a {module, function, arguments}.
+  Standalone worker is run independently from other workers follow :one_to_one strategy.
+  If worker crashes, it will check the restart strategy of worker then act accordingly.
+  """
+  @spec add_standalone_worker(atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
+          {:ok, atom()} | {:error, any()}
+  def add_standalone_worker(sup_id, mfa_or_fun, opts \\ [], timeout \\ @default_time)
+
+  def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
+      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
+    do_add_standalone_worker(sup_id, [{:fun, mfa} | opts], timeout)
   end
 
-  def get_chain(sup_id, chain_id) do
-    Db.get_chain(sup_id, chain_id)
+  def add_standalone_worker(sup_id, fun, opts, timeout)
+      when is_list(opts) and is_function(fun, 0) do
+    do_add_standalone_worker(sup_id, [{:fun, {:fun, fun}} | opts], timeout)
   end
 
-  def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
-      ApiHelper.call_api(pid, :remove_group_worker, {worker_id, group_id}, timeout)
+  def add_standalone_worker(sup_id, {:fun, fun} = f, opts, timeout)
+      when is_list(opts) and is_function(fun, 0) do
+    do_add_standalone_worker(sup_id, [{:fun, f} | opts], timeout)
+  end
+
+  def add_standalone_worker(sup_id, {genserver_module, _} = f, options, timeout)
+      when is_list(options) and is_atom(genserver_module) do
+    options = convert_gen_server_specs(f, options)
+
+    do_add_standalone_worker(sup_id, options, timeout)
+  end
+
+  def add_standalone_worker(sup_id, genserver_module, opts, timeout)
+      when is_list(opts) and is_atom(genserver_module) do
+    add_standalone_worker(sup_id, {genserver_module, []}, opts, timeout)
+  end
+
+  @doc """
+  Send data directly to the worker standalone in the supervisor.
+  """
+  def send_to_standalone_worker(sup_id, worker_id, data, timeout \\ @default_time) do
+    with true <- is_running?(sup_id),
+         {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
+      ApiHelper.call_api(pid, :send_to_worker, {worker_id, data}, timeout)
     end
   end
 
@@ -705,5 +729,18 @@ defmodule SuperWorker.Supervisor do
 
         error
     end
+  end
+
+  defp convert_gen_server_specs(f, opts) do
+    {:ok, gen_sever_options = %{mfa: mfa}} =
+      SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(f)
+
+    default_options =
+      gen_sever_options
+      |> Map.delete(:mfa)
+      |> Map.delete(:options)
+      |> Map.to_list()
+
+    Keyword.merge([{:fun, mfa} | default_options], opts)
   end
 end

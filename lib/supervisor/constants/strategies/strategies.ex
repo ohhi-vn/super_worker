@@ -4,7 +4,7 @@ defmodule SuperWorker.Supervisor.Constants.Strategies do
   """
 
   @group_restart_strategies [:one_for_one, :one_for_all]
-  @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
+  @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one]
   @standalone_restart_strategies [:permanent, :transient, :temporary]
 
   @doc "Returns the list of valid restart strategies for groups."

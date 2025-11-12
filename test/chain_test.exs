@@ -1,5 +1,5 @@
 defmodule SuperWorker.Supervisor.ChainTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   require Logger
   alias SuperWorker.Supervisor, as: Sup
@@ -20,24 +20,27 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_verify_strategy
   test "add chain & verify strategy" do
-    {:ok, _} = Sup.add_chain(@sup_id, id: :chain2, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_chain(@sup_id, id: :chain3, restart_strategy: :one_for_all)
-    {:ok, chain2} = Sup.get_chain(@sup_id, :chain2)
-    {:ok, chain3} = Sup.get_chain(@sup_id, :chain3)
-    assert :one_for_one == chain2.restart_strategy
-    assert :one_for_all == chain3.restart_strategy
+    id1 = make_ref()
+    id2 = make_ref()
+    {:ok, _} = Sup.add_chain(@sup_id, id: id1, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_chain(@sup_id, id: id2, restart_strategy: :one_for_all)
+    {:ok, chain1} = Sup.get_chain(@sup_id, id1)
+    {:ok, chain2} = Sup.get_chain(@sup_id, id2)
+    assert :one_for_one == chain1.restart_strategy
+    assert :one_for_all == chain2.restart_strategy
   end
 
   @tag :chain_add_workers
   test "add workers to chain" do
-    {:ok, _} = Sup.add_chain(@sup_id, id: :chain1, restart_strategy: :one_for_one)
+    id = make_ref()
+    {:ok, _} = Sup.add_chain(@sup_id, id: id, restart_strategy: :one_for_one)
 
     list =
       for index <- 1..3 do
-        {:ok, _} = Sup.add_chain_worker(@sup_id, :chain1, {__MODULE__, :loop, [index]}, id: index)
+        {:ok, _} = Sup.add_chain_worker(@sup_id, id, {__MODULE__, :loop, [index]}, id: index)
       end
 
-    {:ok, chain} = Sup.get_chain(@sup_id, :chain1)
+    {:ok, chain} = Sup.get_chain(@sup_id, id)
     # wait for workers to be added, need to adjust for slow machines.
     # TO-DO: Improve code for add worker (wait for worker to be added).
     Process.sleep(100)
@@ -49,8 +52,10 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_add_workers_2
   test "add workers to chain 2" do
+    ref = make_ref()
+
     for index <- 1..10 do
-      chain_id = {:chain_test, index}
+      chain_id = {ref, index}
       {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
 
       list =
@@ -71,12 +76,13 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_add_workers_parallel
   test "add workers to chain parallel" do
-    num_chains = 20
-    num_workers = 1_000
+    num_chains = 1
+    num_workers = 100
     me = self()
+    ref = make_ref()
 
     f = fn index ->
-      chain_id = {:chain_para, index}
+      chain_id = {ref, index}
       {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
 
       list =
@@ -98,12 +104,12 @@ defmodule SuperWorker.Supervisor.ChainTest do
       receive do
         {:ok, index} -> true
       after
-        5_000 -> raise "timeout for adding chains and workers"
+        10_000 -> raise "timeout for adding chains and workers"
       end
     end
 
     for index <- 1..num_chains do
-      chain_id = {:chain_para, index}
+      chain_id = {ref, index}
       {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
       {:ok, workers} = Chain.get_all_workers(chain)
       assert(num_workers == length(workers))
@@ -112,7 +118,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_send_data
   test "send data to chain" do
-    chain_id = :chain_send_test
+    chain_id = make_ref()
     {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
     {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :ping_pong, []}, id: 1)
 

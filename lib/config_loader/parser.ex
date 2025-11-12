@@ -36,7 +36,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
   #  @worker_option_keys [:id, :restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
 
   @valid_group_strategies [:one_for_one, :one_for_all]
-  @valid_chain_strategies [:one_for_one, :one_for_all, :rest_for_one, :before_for_one]
+  @valid_chain_strategies [:one_for_one, :one_for_all, :rest_for_one]
   @valid_chain_send_types [:broadcast, :random, :partition, :round_robin]
 
   @doc """
@@ -533,7 +533,8 @@ defmodule SuperWorker.ConfigLoader.Parser do
     %{
       mfa: {:gen_server, specs.start},
       options: [],
-      id: specs.id
+      id: specs.id,
+      restart_strategy: specs.restart
     }
   end
 end

@@ -63,6 +63,122 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     assert(true == result)
   end
 
+  @tag :standalone_send_data_gen_server
+  test "send data to genserver worker in supervisor" do
+    worker_id = {:test22, 1}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id)
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    result =
+      receive do
+        {:pong, _sender} -> true
+      after
+        1_000 -> false
+      end
+
+    assert(true == result)
+  end
+
+  @tag :standalone_restart_gen_server_worker
+  test "restart genserver worker in supervisor" do
+    worker_id = {:test22, 2}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :permanent)
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    pid1 =
+      receive do
+        {:pong, sender} -> sender
+      after
+        1_000 -> raise "no data return from worker"
+      end
+
+    Sup.send_to_standalone_worker(@sup_id, worker_id, :crash)
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    result =
+      receive do
+        {:pong, pid2} -> pid1 != pid2
+      after
+        1_000 -> false
+      end
+
+    assert(true == result)
+  end
+
+  @tag :standalone_restart_gen_server_worker_2
+  test "restart genserver worker in supervisor 2" do
+    worker_id = {:test22, 3}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :transient)
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    pid1 =
+      receive do
+        {:pong, sender} -> sender
+      after
+        1_000 -> raise "no data return from worker"
+      end
+
+    Sup.send_to_standalone_worker(@sup_id, worker_id, :crash)
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    result =
+      receive do
+        {:pong, pid2} -> pid1 != pid2
+      after
+        1_000 -> false
+      end
+
+    assert(true == result)
+  end
+
+  @tag :standalone_doesnt_restart_gen_server_worker
+  test "doesnt restart genserver worker in supervisor 2" do
+    worker_id = {:test22, 4}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :temporary)
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    pid1 =
+      receive do
+        {:pong, sender} -> sender
+      after
+        1_000 -> raise "no data return from worker"
+      end
+
+    Sup.send_to_standalone_worker(@sup_id, worker_id, :crash)
+
+    Process.sleep(100)
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+
+    result =
+      receive do
+        {:pong, pid2} -> false
+      after
+        1_000 -> true
+      end
+
+    assert(true == result)
+  end
+
   @tag :standalone_remove_worker
   test "remove standalone worker from supervisor" do
     worker_id = {:test3, 1}
