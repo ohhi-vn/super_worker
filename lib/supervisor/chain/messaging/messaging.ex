@@ -23,7 +23,6 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   def new_data(chain = %Chain{}, msg = %Message{}) do
     Logger.debug("Chain.Messaging: Injecting new data into chain #{inspect(chain.id)}")
     send_next(chain, 1, msg)
-    :ok
   end
 
   @doc """

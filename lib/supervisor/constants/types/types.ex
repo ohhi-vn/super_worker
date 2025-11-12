@@ -27,7 +27,7 @@ defmodule SuperWorker.Supervisor.Constants.Types do
 
   # Parameter Keys for configuration validation
   @supervisor_params [:id, :number_of_partitions, :link, :report_to, :children]
-  @worker_params [:id, :type, :name, :fun]
+  @worker_params [:id, :type, :name, :fun, :parent, :restart_strategy]
   @standalone_params [:restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
   @group_params [:id, :restart_strategy, :type, :max_restarts, :max_seconds, :auto_restart_time]
   @chain_params [:id, :restart_strategy, :finished_callback, :queue_length, :send_type]
@@ -71,4 +71,8 @@ defmodule SuperWorker.Supervisor.Constants.Types do
   @doc "Returns the list of valid chain parameters."
   @spec chain_params() :: list(atom())
   def chain_params, do: @chain_params
+
+  def chain_worker_params, do: @worker_params
+  def group_worker_params, do: @worker_params
+  def standalone_worker_params, do: @standalone_params ++ @worker_params
 end

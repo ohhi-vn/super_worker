@@ -204,7 +204,7 @@ defmodule SuperWorker.Supervisor.Looper do
       with {:ok, group} <- Db.get_group(state.master, group_id) do
         Group.broadcast(group, data)
 
-        :ok
+        {:ok, :sent}
       else
         {:error, _} = error ->
           Logger.error(
@@ -282,7 +282,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
         message = %{message | data: data}
 
-        Chain.new_data(chain, message)
+        Chain.Messaging.new_data(chain, message)
       else
         error ->
           Logger.error(

@@ -20,7 +20,7 @@ defmodule SuperWorker.Supervisor.Chain.Config do
   """
   @spec new(list()) :: {:ok, Chain.t()} | {:error, term()}
   def new(opts) do
-    with {:ok, normalized_opts} <- Utils.normalize_opts(opts, @chain_params),
+    with {:ok, normalized_opts} <- Validator.normalize_options(opts, @chain_params),
          chain_struct = struct(Chain, normalized_opts),
          :ok <- validate_opts(chain_struct) do
       {:ok, chain_struct}

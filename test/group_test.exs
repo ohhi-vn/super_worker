@@ -120,6 +120,33 @@ defmodule SuperWorker.Supervisor.GroupTest do
     assert(true == result)
   end
 
+  @tag :group_broadcast_data
+  test "broadcadts data to all workers in group" do
+    group_id = make_ref()
+
+    num_workers = 5
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    for index <- 1..num_workers do
+      {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [index]}, id: index)
+    end
+
+    Process.sleep(100)
+    Sup.broadcast_to_group(@sup_id, group_id, {:ping, self()})
+
+    results =
+      for _ <- 1..num_workers do
+        receive do
+          {:pong, _sender} -> true
+        after
+          1_000 -> false
+        end
+      end
+
+    assert Enum.all?(results)
+  end
+
   @tag :group_remove_worker
   test "remove worker from group" do
     group_id = :group_test_remove_worker

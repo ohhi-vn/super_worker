@@ -205,7 +205,7 @@ defmodule SuperWorker.Supervisor do
   @doc """
   get chain structure from supervisor.
   """
-  @spec get_chain(atom(), any()) :: {:ok, Group.t()} | {:error, any()}
+  @spec get_chain(atom(), any()) :: {:ok, Chain.t()} | {:error, any()}
   def get_chain(sup_id, chain_id, timeout \\ @default_time) do
     with true <- is_running?(sup_id),
          {:ok, _partition_id, pid} <- Partition.get_host_partition(sup_id, chain_id) do

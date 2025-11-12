@@ -3,21 +3,9 @@ defmodule SuperWorker.Supervisor.Worker do
   Documentation for `SuperWorker.Supervisor.Worker`.
   """
 
-  @worker_params [:id, :type, :name, :fun, :parent, :restart_strategy]
-
-  @standalone_params [:restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
-
-  @standalone_restart_strategies [:permanent, :transient, :temporary]
-
-  # @worker_restart_strategies [:permanent, :transient, :temporary]
-
-  @group_params [:group_id]
-
-  @chain_params [:chain_id]
-
   alias __MODULE__
 
-  alias SuperWorker.Supervisor.{Db, Validator}
+  alias SuperWorker.Supervisor.{Db, Validator, Constants}
 
   @enforce_keys [:id, :fun]
   defstruct [
@@ -56,7 +44,7 @@ defmodule SuperWorker.Supervisor.Worker do
         }
 
   def check_group_options(opts) do
-    with {:ok, opts} <- Validator.normalize_options(opts, @worker_params ++ @group_params),
+    with {:ok, opts} <- Validator.normalize_options(opts, Constants.Types.group_worker_params()),
          {:ok, opts} <- validate_opts(opts),
          {:ok, opts} <- default_opts(opts),
          {:ok, opts} <- map_to_struct(opts) do
@@ -65,7 +53,7 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   def check_chain_options(opts) do
-    with {:ok, opts} <- Validator.normalize_options(opts, @worker_params ++ @chain_params),
+    with {:ok, opts} <- Validator.normalize_options(opts, Constants.Types.chain_worker_params()),
          {:ok, opts} <- validate_opts(opts),
          {:ok, opts} <- default_opts(opts),
          {:ok, opts} <- map_to_struct(opts) do
@@ -74,7 +62,8 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   def check_standalone_options(opts) do
-    with {:ok, opts} <- Validator.normalize_options(opts, @worker_params ++ @standalone_params),
+    with {:ok, opts} <-
+           Validator.normalize_options(opts, Constants.Types.standalone_worker_params()),
          {:ok, opts} <- validate_restart_strategy(opts),
          {:ok, opts} <- validate_opts(opts),
          {:ok, opts} <- default_opts(opts),
@@ -84,7 +73,7 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   defp validate_restart_strategy(opts) do
-    if opts.restart_strategy in @standalone_restart_strategies do
+    if opts.restart_strategy in Constants.Strategies.standalone_restart_strategies() do
       {:ok, opts}
     else
       {:error, "Invalid group restart strategy, #{inspect(opts.restart_strategy)}"}

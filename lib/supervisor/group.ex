@@ -6,10 +6,7 @@ defmodule SuperWorker.Supervisor.Group do
   # Parameters for group.
   @group_params [:id, :restart_strategy, :type, :max_restarts, :max_seconds, :auto_restart_time]
 
-  # Restart strategies for group.
-  @group_restart_strategies [:one_for_one, :one_for_all]
-
-  alias SuperWorker.Supervisor.{Worker, Db, Validator}
+  alias SuperWorker.Supervisor.{Worker, Db, Validator, Constants}
 
   alias __MODULE__
 
@@ -40,11 +37,11 @@ defmodule SuperWorker.Supervisor.Group do
   Check, validate and convert key-value pairs to struct.
   """
   @spec check_options([keyword]) :: {:ok, %Group{}} | {:error, atom | {atom, any}}
-  def check_options(opts) do
-    with {:ok, opts} <- Validator.normalize_options(opts, @group_params),
-         {:ok, opts} <- validate_restart_strategy(opts),
-         {:ok, opts} <- validate_opts(opts),
-         {:ok, group} <- to_struct(opts) do
+  def check_options(options) do
+    with {:ok, options} <- Validator.normalize_options(options, @group_params),
+         {:ok, options} <- validate_restart_strategy(options),
+         {:ok, options} <- validate_options(options),
+         {:ok, group} <- to_struct(options) do
       {:ok, group}
     else
       {:error, reason} = error ->
@@ -213,11 +210,24 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   def broadcast(group = %Group{}, message) do
-    Group.get_all_workers(group)
-    |> Enum.each(fn %Worker{id: worker_id} ->
-      {:ok, worker} = get_worker(group, worker_id)
-      send(worker.pid, message)
-    end)
+    with {:ok, workers} <- Group.get_all_workers(group) do
+      Enum.each(
+        workers,
+        fn %Worker{id: worker_id} ->
+          with {:ok, {_ref, pid}} <-
+                 Db.get_worker_by_id(group.supervisor, worker_id, {:group, group.id}) do
+            send(pid, message)
+          else
+            other ->
+              Logger.error(
+                "SuperWorker, Group, cannot get worker pid for #{inspect(worker_id)} in group #{inspect(group.id)}, reason: #{inspect(other)}"
+              )
+
+              other
+          end
+        end
+      )
+    end
   end
 
   def send_message(group = %Group{}, worker_id, message) do
@@ -286,20 +296,20 @@ defmodule SuperWorker.Supervisor.Group do
     |> Map.put(:ref, ref)
   end
 
-  defp validate_restart_strategy(opts) do
-    if opts.restart_strategy in @group_restart_strategies do
-      {:ok, opts}
+  defp validate_restart_strategy(options) do
+    if options.restart_strategy in Constants.Strategies.group_restart_strategies() do
+      {:ok, options}
     else
-      {:error, "Invalid group restart strategy, #{inspect(opts.restart_strategy)}"}
+      {:error, "Invalid group restart strategy, #{inspect(options.restart_strategy)}"}
     end
   end
 
-  defp validate_opts(opts) do
+  defp validate_options(options) do
     # TO-DO: Implement the validation
-    {:ok, opts}
+    {:ok, options}
   end
 
-  defp to_struct(opts) when is_map(opts) do
+  defp to_struct(options) when is_map(options) do
     fields =
       %Group{id: nil}
       |> Map.from_struct()
@@ -308,8 +318,8 @@ defmodule SuperWorker.Supervisor.Group do
     result =
       %Group{} =
       Enum.reduce(fields, %Group{id: nil}, fn field, acc ->
-        if Map.has_key?(opts, field) do
-          %{acc | field => Map.get(opts, field)}
+        if Map.has_key?(options, field) do
+          %{acc | field => Map.get(options, field)}
         else
           acc
         end

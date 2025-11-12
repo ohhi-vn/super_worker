@@ -20,29 +20,34 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_add_workers
   test "add standalone workers to supervisor" do
-    {:ok, workers} = Sup.get_all_standalone_workers(@sup_id)
+    ref = make_ref()
 
-    Enum.each(workers, fn worker ->
-      Sup.remove_standalone_worker(@sup_id, worker.id)
-    end)
-
-    list =
+    ids =
       for index <- 1..5 do
+        id = {ref, index}
+
         {:ok, _} =
           Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [index]},
-            id: {:test1, index},
+            id: id,
             restart_strategy: :permanent
           )
+
+        id
       end
 
-    {:ok, workers} = Sup.get_all_standalone_workers(@sup_id)
+    running_list =
+      with {:ok, workers} <- Sup.get_all_standalone_workers(@sup_id) do
+        Enum.map(workers, fn worker -> worker.id end)
+      else
+        _ -> raise "unexpected result"
+      end
 
-    assert(length(list) == length(workers))
+    Enum.all?(ids, fn id -> Enum.member?(running_list, id) end)
   end
 
   @tag :standalone_send_data
   test "send data to worker in supervisor" do
-    worker_id = {:test2, 1}
+    worker_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
@@ -65,7 +70,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_send_data_gen_server
   test "send data to genserver worker in supervisor" do
-    worker_id = {:test22, 1}
+    worker_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id)
@@ -85,7 +90,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_restart_gen_server_worker
   test "restart genserver worker in supervisor" do
-    worker_id = {:test22, 2}
+    worker_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :permanent)
@@ -117,7 +122,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_restart_gen_server_worker_2
   test "restart genserver worker in supervisor 2" do
-    worker_id = {:test22, 3}
+    worker_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :transient)
@@ -149,7 +154,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_doesnt_restart_gen_server_worker
   test "doesnt restart genserver worker in supervisor 2" do
-    worker_id = {:test22, 4}
+    worker_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :temporary)
@@ -181,7 +186,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_remove_worker
   test "remove standalone worker from supervisor" do
-    worker_id = {:test3, 1}
+    worker_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
@@ -197,7 +202,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_reuse_id_worker
   test "reuse standalone worker id from supervisor" do
-    worker_id = {:test4, 1}
+    worker_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
@@ -231,8 +236,8 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_restart_worker
   test "restart a worker not affect to others" do
-    worker1_id = {:test5, 1}
-    worker2_id = {:test5, 2}
+    worker1_id = make_ref()
+    worker2_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
@@ -296,7 +301,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
   @tag :standalone_restart_worker2
   test "restart a worker " do
-    worker1_id = {:test6, 1}
+    worker1_id = make_ref()
 
     {:ok, _} =
       Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},

@@ -3,12 +3,7 @@ defmodule SuperWorker.Supervisor.Chain do
   Documentation for `SuperWorker.Supervisor.Chain`.
   """
 
-  @chain_params [:id, :restart_strategy, :finished_callback, :queue_length, :send_type]
-
-  @chain_restart_strategies [:one_for_one, :one_for_all, :rest_for_one]
-
-  @send_types [:broadcast, :random, :partition, :round_robin]
-
+  @enforce_keys [:id]
   defstruct [
     # chain id, unique in supervior.
     :id,
@@ -32,19 +27,20 @@ defmodule SuperWorker.Supervisor.Chain do
         }
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue}
+  alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue, Constants}
 
   alias __MODULE__
+  alias Chain.Messaging
 
   require Logger
 
   ## Public functions
 
   @spec check_options([atom() | keyword()]) :: {:error, atom | {atom, any}} | {:ok, Chain.t()}
-  def check_options(opts) do
-    with {:ok, opts} <- Validator.normalize_options(opts, @chain_params),
-         {:ok, chain} <- map_to_struct(opts),
-         {:ok, chain} <- validate_opts(chain) do
+  def check_options(options) do
+    with {:ok, options} <- Validator.normalize_options(options, Constants.Types.chain_params()),
+         {:ok, chain} <- to_struct(options),
+         {:ok, chain} <- validate_options(chain) do
       {:ok, chain}
     end
   end
@@ -179,53 +175,7 @@ defmodule SuperWorker.Supervisor.Chain do
     {:ok, chain}
   end
 
-  @spec new_data(Chain.t(), Message.t()) :: any
-  def new_data(chain = %Chain{}, msg = %Message{}) do
-    send_next(chain, 1, msg)
-  end
-
   ## Private functions
-
-  @spec send_next(Chain.t(), non_neg_integer, Message.t()) :: any
-  defp send_next(chain = %Chain{}, order, msg = %Message{}) do
-    case Db.get_chain_order(chain.supervisor, chain.id, order) do
-      # TO-DO: Verify order is valid/process is killed
-      {:error, :not_found} ->
-        Logger.debug(
-          "SuperWorker, Chain, not found next worker for order #{order}, chain: #{inspect(chain.id)}, go to finished callback."
-        )
-
-        # TO-DO: catch throw, error from outside.
-        case chain.finished_callback do
-          nil ->
-            Logger.debug("SuperWorker, Chain, not found callback for chain #{inspect(chain.id)}")
-            {:error, :no_worker_or_callback}
-
-          {:fun, fun} ->
-            fun.(msg.data)
-            {:ok, :call_back}
-
-          {m, f, a} ->
-            apply(m, f, [msg.data | a])
-            {:ok, :call_back}
-        end
-
-      # just one worker doesn't check type.
-      {:ok, {worker_id, pid}} ->
-        Logger.debug(
-          "SuperWorker, Chain, chain #{inspect(chain.id)}, order: #{order}, found a next worker: #{inspect(worker_id)}, send msg #{inspect(msg.id)}"
-        )
-
-        send(pid, {:new_data, msg})
-        {:ok, :send_one}
-    end
-  end
-
-  defp get_next_round_robin_order(chain, worker_id, max_order) do
-    Logger.debug(
-      "SuperWorker, Chain, getting next round robin order for worker #{inspect(worker_id)}, max_order: #{max_order}"
-    )
-  end
 
   defp spawn_worker(chain = %Chain{}, worker = %Worker{}) do
     Logger.debug(
@@ -307,8 +257,9 @@ defmodule SuperWorker.Supervisor.Chain do
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
             {:ok, chain} = Sup.get_chain(get_my_supervisor(), chain_id)
 
-            msg = Message.new(self(), nil, new_data, msg_id)
-            send_next(chain, worker.order + 1, msg)
+            msg = Message.new(:new_data, nil, {msg_id, new_data})
+
+            Messaging.send_next(chain, worker.order + 1, msg)
 
             loop_chain(queue, worker)
 
@@ -351,7 +302,8 @@ defmodule SuperWorker.Supervisor.Chain do
             msg =
               Message.new(:chain_message, nil, {msg_id, data})
 
-            send_next(chain, worker.order + 1, msg)
+            Messaging.send_next(chain, worker.order + 1, msg)
+
             loop_chain(queue, worker)
         end
 
@@ -395,7 +347,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   defp validate_restart_strategy(opts) do
-    if opts.restart_strategy in @chain_restart_strategies do
+    if opts.restart_strategy in Constants.Strategies.chain_restart_strategies() do
       {:ok, opts}
     else
       {:error, "Invalid group restart strategy, #{inspect(opts.restart_strategy)}"}
@@ -403,7 +355,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   defp validate_send_type(opts) do
-    if opts.send_type in @send_types do
+    if opts.send_type in Constants.Types.chain_send_types() do
       {:ok, opts}
     else
       {:error, "Invalid send type, #{inspect(opts.send_type)}"}
@@ -419,14 +371,14 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  defp validate_queue_length(opts) do
-    case opts.queue_length do
-      n when is_integer(n) and n > 0 -> {:ok, opts}
+  defp validate_queue_length(options) do
+    case options.queue_length do
+      n when is_integer(n) and n > 0 -> {:ok, options}
       _ -> {:error, "Invalid queue length"}
     end
   end
 
-  defp validate_opts(chain) do
+  defp validate_options(chain) do
     with {:ok, chain} <- validate_restart_strategy(chain),
          {:ok, chain} <- validate_send_type(chain),
          {:ok, chain} <- validate_callback(chain),
@@ -435,15 +387,30 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  defp map_to_struct(opts) when is_map(opts) do
-    {:ok, struct(__MODULE__, opts)}
-  end
-
   defp get_my_supervisor() do
     Process.get({:supervisor, :sup_id})
   end
 
   defp get_chain_order(chain) do
     length(Db.get_workers_by_parent(chain.supervisor, {:chain, chain.id})) + 1
+  end
+
+  defp to_struct(options) when is_map(options) do
+    fields =
+      %Chain{id: nil}
+      |> Map.from_struct()
+      |> Map.keys()
+
+    result =
+      %Chain{} =
+      Enum.reduce(fields, %Chain{id: nil}, fn field, acc ->
+        if Map.has_key?(options, field) do
+          %{acc | field => Map.get(options, field)}
+        else
+          acc
+        end
+      end)
+
+    {:ok, result}
   end
 end
