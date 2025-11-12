@@ -386,6 +386,38 @@ defmodule SuperWorker.Supervisor do
     Process.get({:supervisor, :group_id})
   end
 
+  @doc """
+  Restart a worker in group
+  """
+  @spec restart_group_worker(atom(), any, any, integer()) :: {:ok, atom()} | {:error, any()}
+  def restart_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
+    data = {group_id, worker_id}
+
+    with true <- is_running?(sup_id),
+         {:ok, _parititon_id, pid} <- Partition.get_host_partition(sup_id, data) do
+      ApiHelper.call_api(pid, :restart_group_worker, data, timeout)
+    else
+      wrong ->
+        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect(wrong)}")
+        {:error, :supervisor_not_found_or_group_exists}
+    end
+  end
+
+  @doc """
+  Restart all workers in group
+  """
+  @spec restart_group(atom(), any, integer()) :: {:ok, atom()} | {:error, any()}
+  def restart_group(sup_id, group_id, timeout \\ @default_time) do
+    with true <- is_running?(sup_id),
+         {:ok, _parititon_id, pid} <- Partition.get_host_partition(sup_id, group_id) do
+      ApiHelper.call_api(pid, :restart_group, group_id, timeout)
+    else
+      wrong ->
+        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect(wrong)}")
+        {:error, :supervisor_not_found_or_group_exists}
+    end
+  end
+
   ## Standalone worker api ##
 
   @doc """

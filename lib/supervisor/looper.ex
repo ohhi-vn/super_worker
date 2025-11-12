@@ -224,14 +224,59 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          message = %Message{type: :send_to_group, data: {group_id, worker_id, data}}
        ) do
-    with {:ok, group} <- Db.get_group(state.master, group_id),
-         {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.master, worker_id, {:group, group_id}) do
+    with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.master, worker_id, {:group, group_id}) do
       send(pid, data)
       ApiHelper.api_response(message, :ok)
     else
       failed ->
         Logger.error(
           "SuperWorker, Supervisor, supervisor #{state.id}, send to worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: #{inspect(failed)}"
+        )
+
+        ApiHelper.api_response(message, failed)
+    end
+
+    main_loop(state)
+  end
+
+  # restart group worker from api.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :restart_group_worker, data: {group_id, worker_id}}
+       ) do
+    with {:ok, group} <- Db.get_group(state.master, group_id) do
+      Group.restart_worker(group, worker_id)
+
+      ApiHelper.api_response(message, :ok)
+    else
+      failed ->
+        Logger.error(
+          "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: #{inspect(failed)}"
+        )
+
+        ApiHelper.api_response(message, failed)
+    end
+
+    main_loop(state)
+  end
+
+  # restart all group workers from api.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :restart_group, data: group_id}
+       ) do
+    with {:ok, group} <- Db.get_group(state.master, group_id) do
+      with {:ok, workers} <- Group.get_all_workers(group) do
+        Enum.each(workers, fn worker ->
+          Group.restart_worker(group, worker)
+        end)
+      end
+
+      ApiHelper.api_response(message, :ok)
+    else
+      failed ->
+        Logger.error(
+          "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart group #{inspect(group_id)}, error: #{inspect(failed)}"
         )
 
         ApiHelper.api_response(message, failed)

@@ -36,14 +36,14 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_add_workers
   test "add workers to group" do
-    group_id = :test_add_workers
+    group_id = make_ref()
 
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
     list =
       for index <- 1..5 do
         {:ok, _} =
-          Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [index]}, id: index)
+          Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [index]}, id: index)
       end
 
     {:ok, group} = Sup.get_group(@sup_id, group_id)
@@ -55,14 +55,14 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_add_mixed_workers
   test "add mixed workers to group" do
-    group_id = :test_add_mixed_workers
+    group_id = make_ref()
     num_workers = 5
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
     list =
       for index <- 1..num_workers do
         {:ok, _} =
-          Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [index]}, id: index)
+          Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [index]}, id: index)
       end
 
     Sup.add_group_worker(@sup_id, group_id, MyGenServer, [])
@@ -78,14 +78,14 @@ defmodule SuperWorker.Supervisor.GroupTest do
   @tag :group_add_workers_2
   test "add workers to group 2" do
     Enum.each(1..10, fn index ->
-      group_id = {:test_add_workers_parallel, index}
+      group_id = {make_ref(), index}
 
       {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
       list =
         for worker_index <- 1..10 do
           {:ok, _} =
-            Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [worker_index]},
+            Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [worker_index]},
               id: {index, worker_index}
             )
         end
@@ -102,10 +102,10 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_send_data
   test "send data to worker in group" do
-    group_id = :group_loop_send
+    group_id = make_ref()
 
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: 1)
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: 1)
 
     Process.sleep(100)
     Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
@@ -129,7 +129,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
     for index <- 1..num_workers do
-      {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [index]}, id: index)
+      {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [index]}, id: index)
     end
 
     Process.sleep(100)
@@ -149,10 +149,10 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_remove_worker
   test "remove worker from group" do
-    group_id = :group_test_remove_worker
+    group_id = make_ref()
 
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: 1)
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: 1)
 
     :ok = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
 
@@ -163,21 +163,21 @@ defmodule SuperWorker.Supervisor.GroupTest do
         1_000 -> false
       end
 
-    assert(true == result)
+    assert result
 
     {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, 1)
     result = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
 
-    assert result == {:error, :not_found}
+    assert match?(result, {:error, :not_found})
   end
 
   @tag :group_restart_one_worker
   test "restart one for on  in a group" do
-    group_id = :group_restart_one
+    group_id = make_ref()
 
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: 1)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [2]}, id: 2)
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: 1)
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [2]}, id: 2)
 
     Process.sleep(100)
     Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
@@ -230,11 +230,11 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_restart_all_workers
   test "restart all workers in a group" do
-    group_id = :group_restart_all
+    group_id = make_ref()
 
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_all)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [1]}, id: "w_1")
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {__MODULE__, :loop, [2]}, id: "w_2")
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: "w_1")
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [2]}, id: "w_2")
 
     Process.sleep(100)
     Sup.send_to_group(@sup_id, group_id, "w_1", {:ping, self()})
@@ -279,20 +279,20 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
   @tag :group_restart_all_workers2
   test "restart all workers in a group 2" do
-    group_id = :group_restart_all
+    group_id = make_ref()
 
     {:ok, _} = Sup.add_group(@sup_id, id: {group_id, 1}, restart_strategy: :one_for_all)
     {:ok, _} = Sup.add_group(@sup_id, id: {group_id, 2}, restart_strategy: :one_for_all)
     {:ok, _} = Sup.add_group(@sup_id, id: {group_id, 3}, restart_strategy: :one_for_all)
 
-    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 1}, {__MODULE__, :loop, [1]}, id: 1)
-    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 1}, {__MODULE__, :loop, [2]}, id: 2)
+    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 1}, {MyTest, :loop, [1]}, id: 1)
+    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 1}, {MyTest, :loop, [2]}, id: 2)
 
-    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 2}, {__MODULE__, :loop, [1]}, id: 1)
-    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 2}, {__MODULE__, :loop, [2]}, id: 2)
+    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 2}, {MyTest, :loop, [1]}, id: 1)
+    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 2}, {MyTest, :loop, [2]}, id: 2)
 
-    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 3}, {__MODULE__, :loop, [1]}, id: 1)
-    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 3}, {__MODULE__, :loop, [2]}, id: 2)
+    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 3}, {MyTest, :loop, [1]}, id: 1)
+    {:ok, _} = Sup.add_group_worker(@sup_id, {group_id, 3}, {MyTest, :loop, [2]}, id: 2)
 
     fun = fn group_id, parent ->
       Process.sleep(100)
@@ -346,86 +346,119 @@ defmodule SuperWorker.Supervisor.GroupTest do
     end
   end
 
-  ## Helper functions
+  @tag :group_restart_worker_by_api
+  test "restart group worker by api" do
+    group_id = make_ref()
 
-  # Basic loop, receive messages and print them.
-  def loop(id) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [2]}, id: 2)
 
-    receive do
-      {:ping, sender} ->
-        IO.puts(prefix <> " Pong to #{inspect(sender)}")
-        send(sender, {:pong, self()})
+    Sup.send_to_group(@sup_id, group_id, 2, {:store, :test, :hello})
+    Sup.send_to_group(@sup_id, group_id, 2, {:get, :test, self()})
 
-      {:store, key, data} ->
-        IO.puts(prefix <> " Store data: #{inspect(data)}")
-        Process.put(key, data)
+    result =
+      receive do
+        {:result, :hello} ->
+          true
 
-      {:get, key, from} ->
-        IO.puts(prefix <> " Get data: #{inspect(Process.get(key))}")
-        send(from, {:result, Process.get(key)})
-
-      {:raise, reason} ->
-        IO.puts(prefix <> " Raise an error: #{inspect(reason)}")
-        raise reason
-
-      msg ->
-        IO.puts(prefix <> " task received: #{inspect(msg)}")
-    end
-
-    loop(id)
-  end
-
-  def task(n, sleep \\ 100) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
-
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        :timer.sleep(sleep)
-        acc + i
-      end)
-
-    IO.puts(IO.puts(prefix <> " Task done, #{sum}"))
-
-    {:next, n + 1}
-  end
-
-  def task_crash(n, at, sleep \\ 100) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
-
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        if i == at,
-          do:
-            raise(
-              "Task #{inspect(Process.get({:supervisor, :worker_id}))} raised an error at #{i}"
-            )
-
-        :timer.sleep(sleep)
-        acc + i
-      end)
-
-    IO.puts(prefix <> " Task done, #{sum}")
-
-    {:next, n + 1}
-  end
-
-  def send_to_chain(sup_id, chain_id, data \\ 10) do
-    Sup.send_to_chain(sup_id, chain_id, data)
-  end
-
-  # return a anonymous function.
-  def anonymous do
-    fn ->
-      prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-      IO.puts(prefix <> " Anonymous function")
-
-      for i <- 1..5 do
-        IO.puts(prefix <> " Task #{i}")
-        :timer.sleep(100)
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker 2"
       end
-    end
+
+    assert(true == result)
+
+    Sup.restart_group_worker(@sup_id, group_id, 2)
+
+    Process.sleep(100)
+    Sup.send_to_group(@sup_id, group_id, 2, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, nil} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "get data failed, timeout"
+      end
+
+    assert(true == result)
+  end
+
+  @tag :group_restart_all_workers_by_api
+  test "restart all group worker by api" do
+    group_id = make_ref()
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: 1)
+    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [2]}, id: 2)
+
+    Sup.send_to_group(@sup_id, group_id, 1, {:store, :test, :hello})
+    Sup.send_to_group(@sup_id, group_id, 1, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker 2"
+      end
+
+    assert(true == result)
+
+    Sup.send_to_group(@sup_id, group_id, 2, {:store, :test, :hello})
+    Sup.send_to_group(@sup_id, group_id, 2, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker 2"
+      end
+
+    assert(true == result)
+
+    Sup.restart_group(@sup_id, group_id)
+
+    Process.sleep(100)
+    Sup.send_to_group(@sup_id, group_id, 1, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, nil} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "get data failed, timeout"
+      end
+
+    assert(true == result)
+
+    Sup.send_to_group(@sup_id, group_id, 2, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, nil} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "get data failed, timeout"
+      end
+
+    assert(true == result)
   end
 end

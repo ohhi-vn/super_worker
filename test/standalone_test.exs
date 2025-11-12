@@ -27,7 +27,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
         id = {ref, index}
 
         {:ok, _} =
-          Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [index]},
+          Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [index]},
             id: id,
             restart_strategy: :permanent
           )
@@ -50,7 +50,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
@@ -189,7 +189,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
@@ -205,7 +205,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
@@ -216,7 +216,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     assert result == {:error, :not_found}
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
@@ -240,13 +240,13 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     worker2_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
         id: worker1_id,
         restart_strategy: :permanent
       )
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
         id: worker2_id,
         restart_strategy: :permanent
       )
@@ -304,7 +304,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     worker1_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {__MODULE__, :loop, [1]},
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
         id: worker1_id,
         restart_strategy: :permanent
       )
@@ -355,88 +355,5 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
       end
 
     assert(true == result)
-  end
-
-  ## Helper functions
-
-  # Basic loop, receive messages and print them.
-  def loop(id) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-
-    receive do
-      {:ping, sender} ->
-        IO.puts(prefix <> " Pong to #{inspect(sender)}")
-        send(sender, {:pong, self()})
-
-      {:store, key, data} ->
-        IO.puts(prefix <> " Store data: #{inspect(data)}")
-        Process.put(key, data)
-
-      {:get, key, from} ->
-        IO.puts(prefix <> " Get data: #{inspect(Process.get(key))}")
-        send(from, {:result, Process.get(key)})
-
-      {:raise, reason} ->
-        IO.puts(prefix <> " Raise an error: #{inspect(reason)}")
-        raise reason
-
-      msg ->
-        IO.puts(prefix <> " task received: #{inspect(msg)}")
-    end
-
-    loop(id)
-  end
-
-  def task(n, sleep \\ 100) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
-
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        :timer.sleep(sleep)
-        acc + i
-      end)
-
-    IO.puts(IO.puts(prefix <> " Task done, #{sum}"))
-
-    {:next, n + 1}
-  end
-
-  def task_crash(n, at, sleep \\ 100) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
-
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        if i == at,
-          do:
-            raise(
-              "Task #{inspect(Process.get({:supervisor, :worker_id}))} raised an error at #{i}"
-            )
-
-        :timer.sleep(sleep)
-        acc + i
-      end)
-
-    IO.puts(prefix <> " Task done, #{sum}")
-
-    {:next, n + 1}
-  end
-
-  def send_to_chain(sup_id, chain_id, data \\ 10) do
-    Sup.send_to_chain(sup_id, chain_id, data)
-  end
-
-  # return a anonymous function.
-  def anonymous do
-    fn ->
-      prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-      IO.puts(prefix <> " Anonymous function")
-
-      for i <- 1..5 do
-        IO.puts(prefix <> " Task #{i}")
-        :timer.sleep(100)
-      end
-    end
   end
 end

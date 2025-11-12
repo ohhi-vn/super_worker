@@ -37,7 +37,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
     list =
       for index <- 1..3 do
-        {:ok, _} = Sup.add_chain_worker(@sup_id, id, {__MODULE__, :loop, [index]}, id: index)
+        {:ok, _} = Sup.add_chain_worker(@sup_id, id, {MyTest, :loop, [index]}, id: index)
       end
 
     {:ok, chain} = Sup.get_chain(@sup_id, id)
@@ -61,7 +61,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
       list =
         for worker_index <- 1..10 do
           {:ok, _} =
-            Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]},
+            Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [worker_index]},
               id: worker_index
             )
         end
@@ -88,7 +88,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
       list =
         for worker_index <- 1..num_workers do
           {:ok, _} =
-            Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :loop, [worker_index]},
+            Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [worker_index]},
               id: worker_index
             )
         end
@@ -120,7 +120,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
   test "send data to chain" do
     chain_id = make_ref()
     {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {__MODULE__, :ping_pong, []}, id: 1)
+    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: 1)
 
     Logger.debug("send data to chain: #{inspect(chain_id)}")
     {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 1_000)
@@ -138,79 +138,5 @@ defmodule SuperWorker.Supervisor.ChainTest do
       end
 
     assert(true == result)
-  end
-
-  ## Helper functions
-
-  # TO-DO: Support for loop function in chain?
-  def loop(id) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-
-    receive do
-      {:ping, sender} ->
-        IO.puts(prefix <> " Pong to #{inspect(sender)}")
-        send(sender, {:pong, self()})
-
-      msg ->
-        IO.puts(prefix <> " task received: #{inspect(msg)}")
-    end
-
-    loop(id)
-  end
-
-  def ping_pong({:ping, sender}) do
-    IO.puts("ping_pong(#{inspect(self())}), new task")
-
-    IO.puts(" Pong to #{inspect(sender)}")
-    send(sender, {:pong, self()})
-  end
-
-  def task(n, sleep \\ 100) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
-
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        :timer.sleep(sleep)
-        acc + i
-      end)
-
-    IO.puts(IO.puts(prefix <> " Task done, #{sum}"))
-
-    {:next, n + 1}
-  end
-
-  def task_crash(n, at, sleep \\ 100) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
-
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        if i == at,
-          do:
-            raise(
-              "Task #{inspect(Process.get({:supervisor, :worker_id}))} raised an error at #{i}"
-            )
-
-        :timer.sleep(sleep)
-        acc + i
-      end)
-
-    IO.puts(prefix <> " Task done, #{sum}")
-
-    {:next, n + 1}
-  end
-
-  # return a anonymous function.
-  def anonymous do
-    fn ->
-      prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-      IO.puts(prefix <> " Anonymous function")
-
-      for i <- 1..5 do
-        IO.puts(prefix <> " Task #{i}")
-        :timer.sleep(100)
-      end
-    end
   end
 end
