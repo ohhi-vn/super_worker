@@ -292,7 +292,7 @@ defmodule SuperWorker.Supervisor.Looper do
        ) do
     result =
       with {:ok, group} <- Db.get_group(state.master, group_id),
-           workers <- Db.get_workers_by_parent(state.master, {:group, group_id}) do
+           {:ok, workers} <- Db.get_workers_by_parent(state.master, {:group, group_id}) do
         if length(workers) > 0 do
           {worker_id, _} = Enum.random(workers)
 
@@ -368,6 +368,63 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
+  # remove chain.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :remove_chain, data: chain_id}
+       ) do
+    result =
+      with {:ok, chain} <- Db.get_chain(state.master, chain_id) do
+        with {:ok, workers} <- Chain.get_all_workers(chain) do
+          Enum.map(workers, fn worker ->
+            Chain.remove_worker(chain, worker.id)
+          end)
+
+          Db.delete_chain(state.master, chain_id)
+        end
+      else
+        error ->
+          Logger.error(
+            "SuperWorker, Supervisor, #{state.id} chain #{inspect(chain_id)}, something is wrong, #{inspect(error)}"
+          )
+
+          error
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
+  # remove group.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :remove_group, data: group_id}
+       ) do
+    result =
+      with {:ok, group} <- Db.get_group(state.master, group_id) do
+        with {:ok, workers} <- Group.get_all_workers(group) do
+          Enum.map(workers, fn worker ->
+            Group.remove_worker(group, worker.id)
+          end)
+
+          Db.delete_group(state.master, group_id)
+          {:ok, :deleted}
+        end
+      else
+        error ->
+          Logger.error(
+            "SuperWorker, Supervisor, #{state.id} group: #{inspect(group_id)}, something is wrong, #{inspect(error)}"
+          )
+
+          error
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
   # remove worker from group.
   defp process_public_api_message(
          state,
@@ -380,6 +437,50 @@ defmodule SuperWorker.Supervisor.Looper do
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} Group not found: #{inspect(group_id)}"
+          )
+
+          error
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
+  # get worker's pid.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :get_worker_pid, data: {worker_id, parent}}
+       ) do
+    result =
+      with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.master, worker_id, parent) do
+        {:ok, pid}
+      else
+        error ->
+          Logger.error(
+            "SuperWorker, Supervisor, #{state.id} worker not found, worker: #{inspect(worker_id)}, group/chain/standalone: #{inspect(parent)}"
+          )
+
+          error
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
+  # remove worker from chain.
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :remove_chain_worker, data: {worker_id, chain_id}}
+       ) do
+    result =
+      with {:ok, chain} <- Db.get_chain(state.master, chain_id) do
+        Chain.remove_worker(chain, worker_id)
+      else
+        error ->
+          Logger.error(
+            "SuperWorker, Supervisor, #{state.id} chain not found: #{inspect(chain_id)}"
           )
 
           error

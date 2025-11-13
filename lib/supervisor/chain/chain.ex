@@ -143,14 +143,16 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec remove_worker(Chain.t(), any()) :: true
   def remove_worker(chain, worker_id) do
+    kill_worker(chain, worker_id)
     Db.delete_worker_info(chain.supervisor, worker_id, {:chain, chain.id})
   end
 
   @spec kill_worker(Chain.t(), any()) :: {:error, any} | {:ok, Chain.t()}
   def kill_worker(chain, worker_id) do
-    with {:ok, {_, _, pid}} <-
+    with {:ok, {ref, pid}} <-
            Db.get_worker_by_id(chain.supervisor, worker_id, {:chain, chain.id}) do
       Process.exit(pid, :kill)
+      Db.delete_worker(chain.supervisor, ref)
       {:ok, chain}
     else
       error ->
@@ -165,7 +167,7 @@ defmodule SuperWorker.Supervisor.Chain do
   @spec kill_all_workers(Chain.t()) :: {:ok, Chain.t()}
   # TO-DO: refactor this function, remove ref & pid from worker
   def kill_all_workers(chain = %Chain{}) do
-    workers = Db.get_workers_by_parent(chain.supervisor, {:chain, chain.id})
+    {:ok, workers} = Db.get_workers_by_parent(chain.supervisor, {:chain, chain.id})
 
     Enum.each(workers, fn {worker_id, _, pid} ->
       Logger.debug("SuperWorker, Chain, kill #{inspect(worker_id)}, pid: #{inspect(pid)}")
@@ -392,7 +394,8 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   defp get_chain_order(chain) do
-    length(Db.get_workers_by_parent(chain.supervisor, {:chain, chain.id})) + 1
+    {:ok, workers} = Db.get_workers_by_parent(chain.supervisor, {:chain, chain.id})
+    length(workers) + 1
   end
 
   defp to_struct(options) when is_map(options) do

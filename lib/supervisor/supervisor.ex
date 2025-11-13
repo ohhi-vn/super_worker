@@ -217,6 +217,33 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  @doc """
+  remove a worker from chain.
+  """
+  def remove_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, chain_id) do
+      ApiHelper.call_api(pid, :remove_chain_worker, {worker_id, chain_id}, timeout)
+    end
+  end
+
+  @doc """
+  remove chain.
+  """
+  def remove_chain(sup_id, chain_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, chain_id) do
+      ApiHelper.call_api(pid, :remove_chain, chain_id, timeout)
+    end
+  end
+
+  @doc """
+  get pid of chain worker
+  """
+  def get_pid_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, worker_id) do
+      ApiHelper.call_api(pid, :get_worker_pid, {worker_id, {:chain, chain_id}}, timeout)
+    end
+  end
+
   ## Group APIs ##
 
   @doc """
@@ -376,9 +403,30 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  @doc """
+  remove a worker out of group
+  """
   def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
     with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
       ApiHelper.call_api(pid, :remove_group_worker, {worker_id, group_id}, timeout)
+    end
+  end
+
+  @doc """
+  remove group
+  """
+  def remove_group(sup_id, group_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
+      ApiHelper.call_api(pid, :remove_group, group_id, timeout)
+    end
+  end
+
+  @doc """
+  get pid of group worker.
+  """
+  def get_pid_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, worker_id) do
+      ApiHelper.call_api(pid, :get_worker_pid, {worker_id, {:group, group_id}}, timeout)
     end
   end
 
@@ -476,6 +524,15 @@ defmodule SuperWorker.Supervisor do
   def get_all_standalone_workers(sup_id, timeout \\ @default_time) do
     with {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
       ApiHelper.call_api(pid, :get_all_standalone_workers, :standalone, timeout)
+    end
+  end
+
+  @doc """
+  get pid of standalone worker
+  """
+  def get_pid_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
+    with {:ok, pid} <- verify_and_get_pid(sup_id, worker_id) do
+      ApiHelper.call_api(pid, :get_worker_pid, {worker_id, {:standalone, nil}}, timeout)
     end
   end
 

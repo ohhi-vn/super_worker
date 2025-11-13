@@ -55,7 +55,7 @@ defmodule SuperWorker.Supervisor.DbTest do
     parent = {:group, make_ref()}
 
     Db.put_worker(@table, ref, worker_id, parent, self())
-    [{id, pid}] = Db.get_workers_by_parent(@table, parent)
+    {:ok, [{id, pid}]} = Db.get_workers_by_parent(@table, parent)
 
     assert self() == pid and ref == id
   end

@@ -2,7 +2,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
   use ExUnit.Case, async: true
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Group}
+  alias SuperWorker.Supervisor.{Group, Db}
 
   doctest Group
 
@@ -51,6 +51,59 @@ defmodule SuperWorker.Supervisor.GroupTest do
     {:ok, workers} = Group.get_all_workers(group)
 
     assert(length(list) == length(workers))
+  end
+
+  @tag :worker_get_pid
+  test "get pid from worker in supervisor" do
+    group_id = make_ref()
+    worker_id = 1
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    {:ok, _} =
+      Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [worker_id]}, id: worker_id)
+
+    Process.sleep(100)
+
+    Sup.send_to_group(@sup_id, group_id, worker_id, {:store, :test, :hello})
+    Sup.send_to_group(@sup_id, group_id, worker_id, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker"
+      end
+
+    assert(true == result)
+
+    Sup.send_to_group(@sup_id, group_id, worker_id, {:get_pid, self()})
+
+    pid =
+      receive do
+        {:pid, pid} -> pid
+      after
+        1_000 -> raise "cannot get pid of worker"
+      end
+
+    send(pid, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker"
+      end
+
+    assert(true == result)
   end
 
   @tag :group_add_mixed_workers
@@ -150,11 +203,14 @@ defmodule SuperWorker.Supervisor.GroupTest do
   @tag :group_remove_worker
   test "remove worker from group" do
     group_id = make_ref()
+    worker_id = 1
 
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: 1)
 
-    :ok = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
+    {:ok, _} =
+      Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [worker_id]}, id: worker_id)
+
+    :ok = Sup.send_to_group(@sup_id, group_id, worker_id, {:ping, self()})
 
     result =
       receive do
@@ -165,10 +221,48 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
     assert result
 
-    {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, 1)
-    result = Sup.send_to_group(@sup_id, group_id, 1, {:ping, self()})
+    {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, worker_id)
+    result = Sup.send_to_group(@sup_id, group_id, worker_id, {:ping, self()})
 
     assert match?(result, {:error, :not_found})
+
+    # make sure data is cleaned
+    result = Db.get_worker_info(@sup_id, worker_id, {:group, group_id})
+    assert match?({:error, _}, result)
+
+    result = Db.get_worker_by_id(@sup_id, worker_id, {:group, group_id})
+    assert match?({:error, _}, result)
+  end
+
+  @tag :remove_group
+  test "remove group" do
+    group_id = make_ref()
+    worker_id = 1
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    {:ok, _} =
+      Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [worker_id]}, id: worker_id)
+
+    :ok = Sup.send_to_group(@sup_id, group_id, worker_id, {:ping, self()})
+
+    result =
+      receive do
+        {:pong, _sender} -> true
+      after
+        1_000 -> false
+      end
+
+    assert result
+
+    {:ok, _} = Sup.remove_group(@sup_id, group_id)
+
+    # make sure data is cleaned
+    result = Db.get_worker_infos_by_parent(@sup_id, {:group, group_id})
+    assert result == {:ok, []}
+
+    result = Db.get_workers_by_parent(@sup_id, {:group, group_id})
+    assert result == {:ok, []}
   end
 
   @tag :group_restart_one_worker

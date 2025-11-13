@@ -3,7 +3,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   require Logger
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Chain, Worker}
+  alias SuperWorker.Supervisor.{Chain, Worker, Db}
 
   doctest Chain
 
@@ -48,6 +48,57 @@ defmodule SuperWorker.Supervisor.ChainTest do
     {:ok, workers} = Chain.get_all_workers(chain)
 
     assert(length(list) == length(workers))
+  end
+
+  @tag :chain_remove_worker
+  test "remove worker in chain" do
+    chain_id = make_ref()
+    worker_id = 1
+    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+
+    {:ok, _} =
+      Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [worker_id]}, id: worker_id)
+
+    {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
+    {:ok, workers} = Chain.get_all_workers(chain)
+
+    assert(1 == length(workers))
+
+    Sup.remove_chain_worker(@sup_id, chain_id, worker_id)
+    {:ok, workers} = Chain.get_all_workers(chain)
+
+    assert(0 == length(workers))
+
+    # make sure data is cleaned
+    result = Db.get_worker_info(@sup_id, worker_id, {:chain, chain_id})
+    assert match?({:error, _}, result)
+
+    result = Db.get_worker_by_id(@sup_id, worker_id, {:chain, chain_id})
+    assert match?({:error, _}, result)
+  end
+
+  @tag :remove_chain
+  test "remove chain" do
+    chain_id = make_ref()
+    worker_id = 1
+    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+
+    {:ok, _} =
+      Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [worker_id]}, id: worker_id)
+
+    {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
+    {:ok, workers} = Chain.get_all_workers(chain)
+
+    assert(1 == length(workers))
+
+    Sup.remove_chain(@sup_id, chain_id)
+
+    # make sure data is cleaned
+    result = Db.get_worker_infos_by_parent(@sup_id, {:chain, chain_id})
+    assert result == {:ok, []}
+
+    result = Db.get_workers_by_parent(@sup_id, {:chain, chain_id})
+    assert result == {:ok, []}
   end
 
   @tag :chain_add_workers_2

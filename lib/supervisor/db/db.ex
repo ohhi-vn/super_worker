@@ -51,15 +51,18 @@ defmodule SuperWorker.Supervisor.Db do
     end
   end
 
+  def get_workers_by_parent(table, parent) do
+    result =
+      Ets.match_object(table, {{:ref, :_}, :_, parent, :_})
+      |> Enum.map(fn {_, worker_id, _, pid} -> {worker_id, pid} end)
+
+    {:ok, result}
+  end
+
   def get_worker_info_by_ref(table, ref) do
     with {:ok, {worker_id, parent, _pid}} <- get_worker(table, ref) do
       get_worker_info(table, worker_id, parent)
     end
-  end
-
-  def get_workers_by_parent(table, parent) do
-    Ets.match_object(table, {:_, :_, parent, :_})
-    |> Enum.map(fn {_, worker_id, _, pid} -> {worker_id, pid} end)
   end
 
   def put_worker_info(table, %Worker{} = worker_info) do

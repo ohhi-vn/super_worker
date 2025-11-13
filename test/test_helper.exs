@@ -75,6 +75,10 @@ defmodule MyTest do
         IO.puts(prefix <> " Raise an error: #{inspect(reason)}")
         raise reason
 
+      {:get_pid, from} ->
+        IO.puts(prefix <> " Get pid from: #{inspect(from)}")
+        send(from, {:pid, self()})
+
       msg ->
         IO.puts(prefix <> " task received: #{inspect(msg)}")
     end

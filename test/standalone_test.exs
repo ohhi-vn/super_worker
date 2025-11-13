@@ -2,6 +2,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
   use ExUnit.Case, async: true
 
   alias SuperWorker.Supervisor, as: Sup
+  alias Sup.Db
 
   @sup_id :sup_group_test
 
@@ -63,6 +64,59 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
         {:pong, _sender} -> true
       after
         1_000 -> false
+      end
+
+    assert(true == result)
+  end
+
+  @tag :standalone_get_pid
+  test "get pid from worker in supervisor" do
+    worker_id = make_ref()
+
+    {:ok, _} =
+      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+        id: worker_id,
+        restart_strategy: :permanent
+      )
+
+    Process.sleep(100)
+
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:store, :test, :hello})
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker 2"
+      end
+
+    assert(true == result)
+
+    Sup.send_to_standalone_worker(@sup_id, worker_id, {:get_pid, self()})
+
+    pid =
+      receive do
+        {:pid, pid} -> pid
+      after
+        1_000 -> raise "cannot get pid of worker"
+      end
+
+    send(pid, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker"
       end
 
     assert(true == result)
@@ -198,6 +252,12 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     result = Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
 
     assert result == {:error, :not_found}
+
+    result = Db.get_worker_info(@sup_id, worker_id, {:standalone, nil})
+    assert match?({:error, _}, result)
+
+    result = Db.get_worker_by_id(@sup_id, worker_id, {:standalone, nil})
+    assert match?({:error, _}, result)
   end
 
   @tag :standalone_reuse_id_worker
