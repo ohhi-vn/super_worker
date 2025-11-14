@@ -269,8 +269,8 @@ defmodule SuperWorker.Supervisor do
     add_group_worker(sup_id, group_id, {module, []}, options, timeout)
   end
 
-  def add_group_worker(sup_id, group_id, {module, init_options} = worker, options, timeout)
-      when is_atom(module) and is_list(init_options) and group_id != nil do
+  def add_group_worker(sup_id, group_id, {module, _init_arg} = worker, options, timeout)
+      when is_atom(module) and group_id != nil do
     options = convert_gen_server_specs(worker, options)
 
     do_add_group_worker(sup_id, group_id, options, timeout)
