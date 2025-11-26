@@ -8,20 +8,20 @@ defmodule SuperWorker.Supervisor.Db do
   require Logger
 
   def init(sup_name) when is_atom(sup_name) do
-    # TO-DO: move to protect/private for secure
+    Logger.debug("SuperWorker, Db, creating table for supervisor #{inspect(sup_name)}")
 
-    ^sup_name =
+    table =
       Ets.new(sup_name, [
         :set,
         :public,
-        :named_table,
+        #   :named_table,
         {:write_concurrency, true},
         {:read_concurrency, true}
       ])
 
     Logger.debug("SuperWorker, Db, created table for supervisor #{inspect(sup_name)}")
 
-    sup_name
+    table
   end
 
   def put_worker(table, ref, worker_id, parent, pid) do

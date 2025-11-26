@@ -9,21 +9,22 @@ defmodule SuperWorker.Supervisor.Chain do
     :id,
     restart_strategy: :one_for_one,
     supervisor: nil,
-    partition: nil,
+    partition_pid: nil,
     finished_callback: nil,
     queue_length: 50,
     # :broadcast, :random, :partition, :round_robin
-    send_type: :random
+    send_type: :random,
+    table: nil
   ]
 
   @type t :: %__MODULE__{
           id: any,
           restart_strategy: atom,
           supervisor: atom,
-          partition: atom,
           finished_callback: nil | {:fun, fun} | {module, atom, [any]},
           queue_length: non_neg_integer,
-          send_type: :broadcast | :random | :partition | :round_robin
+          send_type: :broadcast | :random | :partition | :round_robin,
+          table: atom
         }
 
   alias SuperWorker.Supervisor, as: Sup
@@ -51,7 +52,7 @@ defmodule SuperWorker.Supervisor.Chain do
       "SuperWorker, Chain, get_worker: #{inspect(chain.supervisor)}, #{inspect(worker_id)}"
     )
 
-    Db.get_worker_info(chain.supervisor, worker_id, {:chain, chain.id})
+    Db.get_worker_info(chain.table, worker_id, {:chain, chain.id})
   end
 
   @spec worker_exists?(Chain.t(), any()) :: boolean()
@@ -66,7 +67,7 @@ defmodule SuperWorker.Supervisor.Chain do
   def get_all_workers(chain = %Chain{}) do
     Logger.debug("SuperWorker, Chain, get_all_workers: #{inspect(chain.supervisor)}")
 
-    Db.get_worker_infos_by_parent(chain.supervisor, {:chain, chain.id})
+    Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id})
   end
 
   @spec add_worker(Chain.t(), Worker.t()) :: {:error, :already_exists} | {:ok, Chain.t()}
@@ -126,17 +127,13 @@ defmodule SuperWorker.Supervisor.Chain do
   @spec restart_all_workers(Chain.t()) :: {:ok, Chain.t()}
   # TO-DO: support restart workers depend on host partition.
   def restart_all_workers(chain = %Chain{}) do
-    {:ok, workers} = Db.get_all_workers(chain)
-
-    Enum.map(
-      workers,
-      fn worker ->
-        Logger.info("SuperWorker, Chain, restarting worker #{worker.id}, pid: #{worker.pid}")
-        Process.exit(worker.pid, :kill)
-        worker = do_spawn_worker(worker)
-        worker.id
-      end
-    )
+    Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id})
+    |> Enum.map(fn worker ->
+      Logger.info("SuperWorker, Chain, restarting worker #{worker.id}, pid: #{worker.pid}")
+      Process.exit(worker.pid, :kill)
+      worker = do_spawn_worker(worker)
+      worker.id
+    end)
 
     {:ok, chain}
   end
@@ -144,15 +141,15 @@ defmodule SuperWorker.Supervisor.Chain do
   @spec remove_worker(Chain.t(), any()) :: true
   def remove_worker(chain, worker_id) do
     kill_worker(chain, worker_id)
-    Db.delete_worker_info(chain.supervisor, worker_id, {:chain, chain.id})
+    Db.delete_worker_info(chain.table, worker_id, {:chain, chain.id})
   end
 
   @spec kill_worker(Chain.t(), any()) :: {:error, any} | {:ok, Chain.t()}
   def kill_worker(chain, worker_id) do
     with {:ok, {ref, pid}} <-
-           Db.get_worker_by_id(chain.supervisor, worker_id, {:chain, chain.id}) do
+           Db.get_worker_by_id(chain.table, worker_id, {:chain, chain.id}) do
       Process.exit(pid, :kill)
-      Db.delete_worker(chain.supervisor, ref)
+      Db.delete_worker(chain.table, ref)
       {:ok, chain}
     else
       error ->
@@ -167,7 +164,7 @@ defmodule SuperWorker.Supervisor.Chain do
   @spec kill_all_workers(Chain.t()) :: {:ok, Chain.t()}
   # TO-DO: refactor this function, remove ref & pid from worker
   def kill_all_workers(chain = %Chain{}) do
-    {:ok, workers} = Db.get_workers_by_parent(chain.supervisor, {:chain, chain.id})
+    {:ok, workers} = Db.get_workers_by_parent(chain.table, {:chain, chain.id})
 
     Enum.each(workers, fn {worker_id, _, pid} ->
       Logger.debug("SuperWorker, Chain, kill #{inspect(worker_id)}, pid: #{inspect(pid)}")
@@ -184,11 +181,13 @@ defmodule SuperWorker.Supervisor.Chain do
       "SuperWorker, Chain, spawning worker #{inspect(worker.id)} in chain #{inspect(chain.id)}"
     )
 
-    Db.put_worker_info(chain.supervisor, worker)
+    worker =
+      worker
+      |> Map.put(:supervisor, chain.supervisor)
 
-    worker
-    |> Map.put(:supervisor, chain.supervisor)
-    |> do_spawn_worker()
+    Db.put_worker_info(chain.table, worker)
+
+    do_spawn_worker(worker)
 
     {:ok, chain}
   end
@@ -204,8 +203,8 @@ defmodule SuperWorker.Supervisor.Chain do
         loop_chain(%MapQueue{}, worker)
       end)
 
-    Db.put_worker(worker.supervisor, ref, worker.id, {worker.type, worker.parent}, pid)
-    Db.put_chain_order(worker.supervisor, worker.id, worker.parent, worker.order, pid)
+    Db.put_worker(worker.table, ref, worker.id, {worker.type, worker.parent}, pid)
+    Db.put_chain_order(worker.table, worker.id, worker.parent, worker.order, pid)
 
     # Link to child for case supervisor is down.
     # TO-DO: Improve case worker crash immediately.
@@ -236,7 +235,7 @@ defmodule SuperWorker.Supervisor.Chain do
               apply(m, f, [msg.data | a])
           end
 
-        with {:ok, {first_id, _}} <- Db.get_chain_order(worker.supervisor, chain_id, 1) do
+        with {:ok, {first_id, _}} <- Db.get_chain_order(worker.table, chain_id, 1) do
           if first_id != id do
             send(msg.from, {:processed, msg.id, id})
           end
@@ -394,7 +393,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   defp get_chain_order(chain) do
-    {:ok, workers} = Db.get_workers_by_parent(chain.supervisor, {:chain, chain.id})
+    {:ok, workers} = Db.get_workers_by_parent(chain.table, {:chain, chain.id})
     length(workers) + 1
   end
 

@@ -501,22 +501,6 @@ defmodule SuperWorker.ConfigLoader.Parser do
     {:ok, options}
   end
 
-  # Extracts ID from configuration
-  defp extract_id(config, type, index) do
-    case Keyword.get(config, :id) do
-      nil ->
-        {:error, {:missing_id, "#{type} at index #{index} must have an :id"}}
-
-      id when is_atom(id) ->
-        {:ok, id}
-
-      invalid ->
-        {:error,
-         {:invalid_id,
-          "#{type} at index #{index} has invalid ID: #{inspect(invalid)}. Must be an atom"}}
-    end
-  end
-
   def convert_regular_child_spec({module, keywords}) do
     result =
       module.child_spec(keywords)

@@ -61,7 +61,7 @@ defmodule Dev do
 
   # Start the supervisor, add a group and a chain.
   def start(sup_id \\ :sup1) do
-    result = Sup.start([link: false, id: sup_id, number_of_partitions: 2])
+    result = Sup.start_with_config([ link: false, id: sup_id, number_of_partitions: 2])
     IO.inspect result
 
     # Group & workers for group.
@@ -88,7 +88,7 @@ defmodule Dev do
     end
   end
 
-  def add_chain_data(sup_id \\ :sup1, chain_id \\ :chain_1, restart_strategy \\ :one_for_one, num_workers \\ 3, process_of_worker \\ 3) do
+  def add_chain_data(sup_id \\ :sup1, chain_id \\ :chain_1, restart_strategy \\ :one_for_one, num_workers \\ 3) do
     {:ok, _} = Sup.add_chain(sup_id, [id: chain_id, restart_strategy: restart_strategy, finished_callback: {__MODULE__, :print,[chain_id]}, send_type: :partition])
     for i <- 1..num_workers do
       {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, [15]}, [id: :"c_#{i}"])
@@ -170,7 +170,7 @@ defmodule Dev do
     loop(id)
   end
 
-  def ping_pong(id) do
+  def ping_pong(_id) do
     prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
     receive do
       {:ping, sender} ->
@@ -254,6 +254,4 @@ defmodule SupConfig do
       ]
     ]
   end
-
-
 end

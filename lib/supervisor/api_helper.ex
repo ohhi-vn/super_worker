@@ -47,7 +47,7 @@ defmodule SuperWorker.Supervisor.ApiHelper do
       api_receiver(ref, 5000)
 
   """
-  @spec api_receiver({pid(), reference()}, timeout_ms()) :: any()
+  @spec api_receiver(reference(), timeout_ms()) :: any()
   def api_receiver(ref, timeout) when is_reference(ref) do
     receive do
       {^ref, result} -> result
@@ -120,7 +120,19 @@ defmodule SuperWorker.Supervisor.ApiHelper do
       Message.new(api, target, params)
       |> Map.put(:from, nil)
 
-    send(message.to, message)
+    send(message.to, {:public_api, message})
+
+    message.id
+  end
+
+  @spec internal_call_api_no_reply(atom() | pid(), atom(), any()) :: reference()
+  def internal_call_api_no_reply(target, api, params)
+      when (is_atom(target) or is_pid(target)) and is_atom(api) do
+    message =
+      Message.new(api, target, params)
+      |> Map.put(:from, nil)
+
+    send(message.to, {:internal_api, message})
 
     message.id
   end

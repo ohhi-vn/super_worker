@@ -6,10 +6,6 @@ defmodule SuperWorker.Supervisor.Group do
   # Parameters for group.
   @group_params [:id, :restart_strategy, :type, :max_restarts, :max_seconds, :auto_restart_time]
 
-  alias SuperWorker.Supervisor.{Worker, Db, Validator, Constants}
-
-  alias __MODULE__
-
   @enforce_keys [:id]
   defstruct [
     # group id, unique in supervior.
@@ -18,16 +14,20 @@ defmodule SuperWorker.Supervisor.Group do
     restart_strategy: :one_for_all,
     # supervisor id (atom)
     supervisor: nil,
-    # partition id holding the group.
-    partition: nil
+
+    # table data of supervisors.
+    table: nil
   ]
 
   @type t :: %__MODULE__{
           id: any,
           restart_strategy: atom,
           supervisor: atom,
-          partition: atom
+          table: atom
         }
+
+  alias __MODULE__
+  alias SuperWorker.Supervisor.{Worker, Db, Validator, Constants}
 
   require Logger
 
@@ -64,7 +64,7 @@ defmodule SuperWorker.Supervisor.Group do
         _ -> worker_id
       end
 
-    Db.get_worker_info(group.supervisor, worker_id, {:group, group.id})
+    Db.get_worker_info(group.table, worker_id, {:group, group.id})
   end
 
   @doc """
@@ -75,7 +75,7 @@ defmodule SuperWorker.Supervisor.Group do
       "SuperWorker, Group, get_all_workers for supervisor #{inspect(group.supervisor)}"
     )
 
-    Db.get_worker_infos_by_parent(group.supervisor, {:group, group.id})
+    Db.get_worker_infos_by_parent(group.table, {:group, group.id})
   end
 
   def count_workers(%Group{} = group) do
@@ -112,7 +112,7 @@ defmodule SuperWorker.Supervisor.Group do
             worker
           end
 
-        Db.put_worker_info(group.supervisor, worker)
+        Db.put_worker_info(group.table, worker)
 
         spawn_worker(group, worker)
     end
@@ -147,7 +147,7 @@ defmodule SuperWorker.Supervisor.Group do
     if worker_exists?(group, worker_id) do
       with {:ok, worker} <- get_worker(group, worker_id),
            {:ok, _} <- kill_worker(group, worker, :removed) do
-        table = group.supervisor
+        table = group.table
         parent = {:group, group.id}
         Db.delete_worker_by_id(table, worker_id, parent)
         Db.delete_worker_info(table, worker_id, parent)
@@ -167,7 +167,7 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   def kill_worker(group = %Group{}, worker = %Worker{}, reason) do
-    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.supervisor, worker.id, {:group, group.id}) do
+    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.table, worker.id, {:group, group.id}) do
       if Process.alive?(pid) do
         Logger.debug(
           "SuperWorker, Group, group: #{inspect(group.id)}, kill_worker: #{inspect(worker)}, reason: #{inspect(reason)}"
@@ -215,7 +215,7 @@ defmodule SuperWorker.Supervisor.Group do
         workers,
         fn %Worker{id: worker_id} ->
           with {:ok, {_ref, pid}} <-
-                 Db.get_worker_by_id(group.supervisor, worker_id, {:group, group.id}) do
+                 Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
             send(pid, message)
           else
             other ->
@@ -231,7 +231,7 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   def send_message(group = %Group{}, worker_id, message) do
-    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.supervisor, worker_id, {:group, group.id}) do
+    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
       send(pid, message)
     else
       error ->
@@ -281,7 +281,7 @@ defmodule SuperWorker.Supervisor.Group do
           end)
       end
 
-    Db.put_worker(group.supervisor, ref, worker.id, {:group, group.id}, pid)
+    Db.put_worker(group.table, ref, worker.id, {:group, group.id}, pid)
 
     Logger.debug(
       "SuperWorker, Group, spawned worker #{inspect(worker.id)}, pid: #{inspect(pid)}, ref: #{inspect(ref)}"

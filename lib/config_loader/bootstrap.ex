@@ -62,14 +62,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
             "SuperWorker, Bootstrap, failed to start supervisor #{inspect(sup_id)}: #{inspect(reason)}"
           )
 
-          # Attempt cleanup if supervisor was started but children failed
-          if Supervisor.is_running?(sup_id) do
-            Logger.debug(
-              "SuperWorker, Bootstrap, cleaning up failed supervisor: #{inspect(sup_id)}"
-            )
-
-            Supervisor.stop(sup_id)
-          end
+          Supervisor.stop(sup_id)
 
           error
       end

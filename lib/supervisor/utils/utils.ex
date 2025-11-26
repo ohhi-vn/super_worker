@@ -30,7 +30,7 @@ defmodule SuperWorker.Supervisor.Utils do
   @spec get_hash_order(term(), pos_integer()) :: non_neg_integer()
   def get_hash_order(term, num_partitions)
       when is_integer(num_partitions) and num_partitions > 0 do
-    :erlang.phash2(term, num_partitions)
+    :erlang.phash2(term, num_partitions) + 1
   end
 
   # ============================================================================

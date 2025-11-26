@@ -2,29 +2,32 @@ defmodule SuperWorker.Supervisor do
   @moduledoc """
   Documentation for `SuperWorker.Supervisor`.
   This module is new model supervisor.
-  That fix some issues in the old model.
+  Better support for modern applications.
   That is an all-in-one supervisor for Elixir application.
+  Easy to identify the worker for directly communicating with it.
 
   New supervisor supports the following features:
   - Group processes
   - Chain processes
-  - Freedom processes
+  - Standalone processes
 
   ## Group processes
   Group processes are a set of processes that are started together.
-  If one of the processes dies, all the processes in the group will be stopped.
-  Each group has a seperated restart strategy that determines how to restart the group when a process dies.
+  If one of the processes is crashed, depending on the restart strategy of group only that process or all the processes will be restarted.
+  Each group has a separated restart strategy.
 
   ## Chain processes
-  Chain processes are a set of processes that support for chain prcessing.
+  Chain processes are a set of processes that support for chain processing.
   Each process in a chain has order to process data.
   The output of the previous process is passed to the next process.
 
-  ## Freedom processes
-  Freedom processes are independent processes that are started separately.
+  ## Standalone processes
+  Standalone processes are independent processes that are started separately.
   Each process has its own restart strategy.
 
   All type of processes can be started in parallel & can be stopped individually or in a group.
+
+  The restart strategy only works when the process is crashed, for normal exit, shutdown, or terminated it will be ignored.
 
   ## Examples
   ```elixir
@@ -43,72 +46,126 @@ defmodule SuperWorker.Supervisor do
 
   Sup.add_group(:sup1, [id: :group2, restart_strategy: :one_for_one])
   Sup.add_group_worker(:sup1, :group2, fn ->
-    receice do
-    msg ->
-      :ok
+    receive do
+      {:ping, ref, from} ->
+        send(from, {:pong, ref})
+      msg ->
+        :ok
     end
   end, [id: :g2_2])
+
+  ref = make_ref()
+  Sup.send_to_group(:sup1, :group2, :g2_2, {:ping, ref, self()})
+
+  receive do
+    {:pong, ^ref} ->
+      :ok
+  end
   ```
   """
+
+  use GenServer, restart: :permanent, shutdown: 5_000
 
   defstruct [
     # partition id, if :id == :master that mean is master process
     :id,
-    # owner of the supervisor
-    :owner,
-    # name of supervisor
-    :master,
-
     # number of partitions, default is number of online schedulers
-    :number_of_partitions,
+    :num_partitions,
     # link the supervisor to the caller
-
     link: true,
-    children: [],
     # list of pid or callback function, for reporting worker crashed or worker finished.
     report_to: [],
-    # list of linked external pids
-    linked_pids: [],
-    partitions: []
+    partitions: %{},
+    # storage data for supervisor, workers/groups/chains
+    table: nil
   ]
 
-  alias __MODULE__
+  @default_time 3_000
 
-  alias Supervisor.{Group, Db, ApiHelper, Chain, Worker, Message, Partition, Looper, Validator}
+  alias __MODULE__
+  alias SuperWorker.Supervisor.{Worker, Group, Chain}
+
+  alias SuperWorker.Supervisor.{Utils, ApiHelper, Message, Validator, Db, Partition}
 
   require Logger
 
-  # Default timeout (miliseconds) for API calls.
-  @default_time 3_000
+  def start_link(%Supervisor{} = options) do
+    if running?(options.id) do
+      {:error, {:already_started, options.id}}
+    else
+      name = options.id || __MODULE__
+      GenServer.start_link(__MODULE__, options, name: name)
+    end
+  end
 
-  ## Public APIs
+  def start_link() do
+    supervisor = %Supervisor{
+      id: __MODULE__,
+      num_partitions: Utils.get_default_schedulers()
+    }
+
+    start_link(supervisor)
+  end
+
+  def start(%Supervisor{} = options) do
+    if running?(options.id) do
+      {:error, {:already_started, options.id}}
+    else
+      name = options.id || __MODULE__
+      GenServer.start(__MODULE__, options, name: name)
+    end
+  end
+
+  def start() do
+    supervisor = %Supervisor{
+      id: __MODULE__,
+      num_partitions: Utils.get_default_schedulers()
+    }
+
+    start(supervisor)
+  end
 
   @doc """
   Start supervisor for run standalone please set option :link to false.
   result format: {:ok, pid} or {:error, reason}
   """
-  @spec start(
+  @spec start_with_config(
           id: atom(),
           link: boolean() | pid(),
           number_of_partitions: integer(),
           report_to: list()
         ) :: {:ok, pid} | {:error, any()}
-  def start(opts, timeout \\ @default_time) when is_list(opts) do
-    with {:ok, sup} <- Validator.validate_and_convert(opts),
-         false <- is_running?(sup.id) do
-      start_supervisor(sup, timeout)
+  def start_with_config(config) when is_list(config) do
+    if !Keyword.keys(config) do
+      Logger.error(
+        "SuperWorker, Supervisor, config is incorrect format, config: #{inspect(config)}"
+      )
+
+      {:error, :invalid_config}
     else
-      true ->
-        Logger.error(
-          "SuperWorker, Supervisor, supervisor has id in #{inspect(opts)} is already running."
-        )
+      with {:ok, supervisor} <- Validator.validate_and_convert(config),
+           false <- running?(supervisor.id) do
+        do_start_supervisor(supervisor)
+      else
+        true ->
+          Logger.error(
+            "SuperWorker, Supervisor, supervisor has id in #{inspect(config)} is already running."
+          )
 
-        {:error, :already_running}
+          {:error, :already_running}
 
-      {:error, _} = error ->
-        Logger.error("SuperWorker, Supervisor, Error when starting supervisor: #{inspect(error)}")
-        error
+        {:error, _} = error ->
+          Logger.error(
+            "SuperWorker, Supervisor, Error when starting supervisor: #{inspect(error)}"
+          )
+
+          error
+      end
     end
+  end
+
+  def running?(id) when is_atom(id) do
+    match?({:ok, _}, get_pid(id))
   end
 
   @doc """
@@ -120,29 +177,15 @@ defmodule SuperWorker.Supervisor do
   @spec stop(atom(), shutdown_type :: atom(), timeout :: integer()) ::
           {:ok, atom()} | {:error, any()}
   def stop(sup_id, shutdown_type \\ :kill, timeout \\ @default_time) do
-    case get_pid(sup_id) do
-      {:error, _} = err ->
-        Logger.error("SuperWorker, Supervisor, supervisor is not running.")
-        err
+    Logger.debug(
+      "SuperWorker, Supervisor, stop supervisor: #{inspect(sup_id)},  shutdown type: #{inspect(shutdown_type)}"
+    )
 
-      {:ok, pid} ->
-        Logger.debug(
-          "SuperWorker, Supervisor, stopping supervisor: #{inspect(pid)}, shutdown type: #{inspect(shutdown_type)}"
-        )
-
-        ApiHelper.call_api(pid, :stop, shutdown_type, timeout)
-    end
-  end
-
-  @doc """
-  Check if supervisor is running.
-  return true if supervisor is running, otherwise return false.
-  """
-  @spec is_running?(atom()) :: boolean()
-  def is_running?(sup_id) do
-    case get_pid(sup_id) do
-      {:ok, _} -> true
-      {:error, _} -> false
+    with true <- running?(sup_id) do
+      GenServer.call(sup_id, {:stop, shutdown_type}, timeout)
+    else
+      false ->
+        {:error, :not_running}
     end
   end
 
@@ -153,95 +196,85 @@ defmodule SuperWorker.Supervisor do
     Process.get({:supervisor, :sup_id})
   end
 
-  ## Chan APIs ##
+  ## Standalone worker api ##
 
   @doc """
-  Add a worker to the chain in supervisor.
+  Add a standalone worker process to the supervisor.
+  function for start worker can be a function or a {module, function, arguments}.
+  Standalone worker is run independently from other workers follow :one_to_one strategy.
+  If worker crashes, it will check the restart strategy of worker then act accordingly.
   """
-  @spec add_chain_worker(atom(), atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
+  @spec add_standalone_worker(atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
           {:ok, atom()} | {:error, any()}
-  def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ @default_time)
+  def add_standalone_worker(sup_id, mfa_or_fun, options \\ [], timeout \\ @default_time)
 
-  def add_chain_worker(sup_id, chain_id, {m, f, a} = mfa, opts, timeout)
-      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_add_chain_worker(sup_id, chain_id, [{:fun, mfa} | opts], timeout)
+  def add_standalone_worker(sup_id, {m, f, a} = mfa, options, timeout)
+      when is_list(options) and is_atom(m) and is_atom(f) and is_list(a) do
+    do_add_worker(
+      sup_id,
+      [fun: mfa, type: :standalone, parent: nil] ++ options,
+      timeout
+    )
   end
 
-  def add_chain_worker(sup_id, chain_id, fun, opts, timeout)
-      when is_list(opts) and is_function(fun, 0) do
-    do_add_chain_worker(sup_id, chain_id, [{:fun, {:fun, fun}} | opts], timeout)
+  def add_standalone_worker(sup_id, fun, options, timeout)
+      when is_list(options) and is_function(fun, 0) do
+    do_add_worker(sup_id, [fun: {:fun, fun}, type: :standalone, parent: nil] ++ options, timeout)
   end
 
-  @doc """
-  Add a chain to the supervisor.
-  Chain's options follow docs in `Chain` module.
-  """
-  def add_chain(sup_id, opts, timeout \\ 5_000) do
-    with true <- is_running?(sup_id),
-         {:ok, chain} <- Chain.check_options(opts),
-         {:error, _} <- get_chain(sup_id, chain.id),
-         {:ok, parition_id, pid} <- Partition.get_host_partition(sup_id, chain.id) do
-      %Chain{} = chain
-      chain = %{chain | supervisor: sup_id, partition: parition_id}
-      ApiHelper.call_api(pid, :add_chain, chain, timeout)
-    else
-      wrong ->
-        Logger.error("SuperWorker, Supervisor, error when adding chain: #{inspect(wrong)}")
-        {:error, :supervisor_not_found_or_chain_exists}
-    end
+  def add_standalone_worker(sup_id, {:fun, fun} = f, options, timeout)
+      when is_list(options) and is_function(fun, 0) do
+    do_add_worker(
+      sup_id,
+      [fun: f, type: :standalone, parent: nil] ++ options,
+      timeout
+    )
   end
 
-  @doc """
-  Send data to the entry worker in the chain.
-  If chain doesn't has any worker, it will be dropped.
-  """
-  def send_to_chain(sup_id, chain_id, data, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, pid} <- verify_and_get_pid(sup_id, chain_id) do
-      ApiHelper.call_api(pid, :add_data_to_chain, {chain_id, data}, timeout)
-    end
+  def add_standalone_worker(sup_id, {genserver_module, _} = f, options, timeout)
+      when is_list(options) and is_atom(genserver_module) do
+    options = convert_gen_server_specs(f, options)
+
+    do_add_worker(
+      sup_id,
+      [type: :standalone, parent: nil] ++ options,
+      timeout
+    )
   end
 
-  @doc """
-  get chain structure from supervisor.
-  """
-  @spec get_chain(atom(), any()) :: {:ok, Chain.t()} | {:error, any()}
-  def get_chain(sup_id, chain_id, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, _partition_id, pid} <- Partition.get_host_partition(sup_id, chain_id) do
-      ApiHelper.call_api(pid, :get_chain, chain_id, timeout)
-    else
-      wrong ->
-        Logger.error("SuperWorker, Supervisor, error when get chain: #{inspect(wrong)}")
-        {:error, :supervisor_not_found_or_chain_exists}
-    end
+  def add_standalone_worker(sup_id, genserver_module, opts, timeout)
+      when is_list(opts) and is_atom(genserver_module) do
+    add_standalone_worker(sup_id, {genserver_module, []}, opts, timeout)
   end
 
   @doc """
-  remove a worker from chain.
+  Send data directly to the worker standalone in the supervisor.
   """
-  def remove_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, chain_id) do
-      ApiHelper.call_api(pid, :remove_chain_worker, {worker_id, chain_id}, timeout)
-    end
+  def send_to_standalone_worker(sup_id, worker_id, data, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, send standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
+    )
+
+    get_partition_and_send(sup_id, :send_to_worker, {worker_id, data}, timeout)
+  end
+
+  def remove_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, remove standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
+    )
+
+    get_partition_and_send(sup_id, :remove_standalone_worker, worker_id, timeout)
   end
 
   @doc """
-  remove chain.
+  get pid of standalone worker
   """
-  def remove_chain(sup_id, chain_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, chain_id) do
-      ApiHelper.call_api(pid, :remove_chain, chain_id, timeout)
-    end
-  end
+  def get_pid_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, get pid of standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
+    )
 
-  @doc """
-  get pid of chain worker
-  """
-  def get_pid_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, worker_id) do
-      ApiHelper.call_api(pid, :get_worker_pid, {worker_id, {:chain, chain_id}}, timeout)
-    end
+    get_partition_and_send(sup_id, :get_worker_pid, {worker_id, {:standalone, nil}}, timeout)
   end
 
   ## Group APIs ##
@@ -254,14 +287,22 @@ defmodule SuperWorker.Supervisor do
           {:ok, atom()} | {:error, any()}
   def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ @default_time)
 
-  def add_group_worker(sup_id, group_id, {m, f, a} = mfa, opts, timeout)
-      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) and group_id != nil do
-    do_add_group_worker(sup_id, group_id, [{:fun, mfa} | opts], timeout)
+  def add_group_worker(sup_id, group_id, {m, f, a} = mfa, options, timeout)
+      when is_list(options) and is_atom(m) and is_atom(f) and is_list(a) and group_id != nil do
+    do_add_worker(
+      sup_id,
+      [fun: mfa, type: :group, parent: group_id] ++ options,
+      timeout
+    )
   end
 
-  def add_group_worker(sup_id, group_id, fun, opts, timeout)
-      when is_list(opts) and is_function(fun, 0) do
-    do_add_group_worker(sup_id, group_id, [{:fun, {:fun, fun}} | opts], timeout)
+  def add_group_worker(sup_id, group_id, fun, options, timeout)
+      when is_list(options) and is_function(fun, 0) do
+    do_add_worker(
+      sup_id,
+      [fun: {:fun, fun}, type: :group, parent: group_id] ++ options,
+      timeout
+    )
   end
 
   def add_group_worker(sup_id, group_id, module, options, timeout)
@@ -273,7 +314,11 @@ defmodule SuperWorker.Supervisor do
       when is_atom(module) and group_id != nil do
     options = convert_gen_server_specs(worker, options)
 
-    do_add_group_worker(sup_id, group_id, options, timeout)
+    do_add_worker(
+      sup_id,
+      [type: :group, parent: group_id] ++ options,
+      timeout
+    )
   end
 
   @doc """
@@ -281,34 +326,15 @@ defmodule SuperWorker.Supervisor do
   Group's options follow docs in `Group` module.
   """
   @spec add_group(atom(), list(), integer()) :: {:ok, atom()} | {:error, any()}
-  def add_group(sup_id, opts, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, group = %Group{}} <- Group.check_options(opts),
-         {:error, _} <- get_group(sup_id, group.id),
-         {:ok, parititon_id, pid} <- Partition.get_host_partition(sup_id, group.id) do
-      group = %Group{group | supervisor: sup_id, partition: parititon_id}
-      ApiHelper.call_api(pid, :add_group, group, timeout)
-    else
-      wrong ->
-        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect(wrong)}")
-        {:error, :supervisor_not_found_or_group_exists}
-    end
-  end
+  def add_group(sup_id, options, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, add group, supervisor: #{inspect(sup_id)},  group options: #{inspect(options)}"
+    )
 
-  @doc """
-  get group structure from supervisor.
-  """
-  @spec get_group(atom(), atom()) :: {:ok, Group.t()} | {:error, any()}
-  def get_group(sup_id, group_id, timeout \\ @default_time) do
-    Db.get_group(sup_id, group_id)
+    with {:ok, group = %Group{}} <- Group.check_options(options) do
+      group = %Group{group | supervisor: sup_id}
 
-    with true <- is_running?(sup_id),
-         {:ok, _partition_id, pid} <- Partition.get_host_partition(sup_id, group_id) do
-      ApiHelper.call_api(pid, :get_group, group_id, timeout)
-    else
-      wrong ->
-        Logger.error("SuperWorker, Supervisor, error when get group: #{inspect(wrong)}")
-        {:error, :supervisor_not_found_or_chain_exists}
+      get_partition_and_send(sup_id, :add_group, group, timeout)
     end
   end
 
@@ -316,10 +342,11 @@ defmodule SuperWorker.Supervisor do
   Send data to all workers in a group.
   """
   def broadcast_to_group(sup_id, group_id, data, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
-      ApiHelper.call_api(pid, :broadcast_to_group, {group_id, data}, timeout)
-    end
+    Logger.debug(
+      "SuperWorker, Supervisor, send data to all workers in group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
+    )
+
+    get_partition_and_send(sup_id, :broadcast_to_group, {group_id, data}, timeout)
   end
 
   @doc """
@@ -347,19 +374,20 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Send data to a worker in the group.
   """
-  def send_to_group(sup_id, group_id, worker_id, data, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
-      ApiHelper.call_api(pid, :send_to_group, {group_id, worker_id, data}, timeout)
-    end
+  def send_to_group_worker(sup_id, group_id, worker_id, data, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, send data to group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
+    )
+
+    get_partition_and_send(sup_id, :send_to_group, {group_id, worker_id, data}, timeout)
   end
 
   @doc """
   Send data to a random worker in the group.
   """
   def send_to_group_random(sup_id, group_id, data, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
+    with true <- running?(sup_id),
+         {:ok, pid} <- query_target_partition(sup_id, group_id) do
       ApiHelper.call_api(pid, :send_to_group_random, {group_id, data}, timeout)
     end
   end
@@ -381,10 +409,13 @@ defmodule SuperWorker.Supervisor do
         {:error, :supervisor_not_found}
 
       true ->
-        send_to_group(sup_id, group_id, worker_id, data)
+        send_to_group_worker(sup_id, group_id, worker_id, data)
     end
   end
 
+  @doc """
+  Send data to a random worker in the same group.
+  """
   def send_to_my_group_random(data) do
     group_id = get_my_group()
     sup_id = get_my_supervisor()
@@ -392,7 +423,7 @@ defmodule SuperWorker.Supervisor do
     cond do
       group_id == nil ->
         Logger.error("SuperWorker, Supervisor, group not found.")
-        {:error, :grou_not_found}
+        {:error, :group_not_found}
 
       sup_id == nil ->
         Logger.error("SuperWorker, Supervisor, supervisor not found.")
@@ -407,27 +438,33 @@ defmodule SuperWorker.Supervisor do
   remove a worker out of group
   """
   def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
-      ApiHelper.call_api(pid, :remove_group_worker, {worker_id, group_id}, timeout)
-    end
+    Logger.debug(
+      "SuperWorker, Supervisor, remove worker from group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
+    )
+
+    get_partition_and_send(sup_id, :remove_group_worker, {worker_id, group_id}, timeout)
   end
 
   @doc """
   remove group
   """
   def remove_group(sup_id, group_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, group_id) do
-      ApiHelper.call_api(pid, :remove_group, group_id, timeout)
-    end
+    Logger.debug(
+      "SuperWorker, Supervisor, remove group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
+    )
+
+    get_partition_and_send(sup_id, :remove_group, group_id, timeout)
   end
 
   @doc """
   get pid of group worker.
   """
   def get_pid_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, worker_id) do
-      ApiHelper.call_api(pid, :get_worker_pid, {worker_id, {:group, group_id}}, timeout)
-    end
+    Logger.debug(
+      "SuperWorker, Supervisor, get pid of group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
+    )
+
+    get_partition_and_send(sup_id, :get_worker_pid, {worker_id, {:group, group_id}}, timeout)
   end
 
   def get_my_group() do
@@ -439,16 +476,11 @@ defmodule SuperWorker.Supervisor do
   """
   @spec restart_group_worker(atom(), any, any, integer()) :: {:ok, atom()} | {:error, any()}
   def restart_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
-    data = {group_id, worker_id}
+    Logger.debug(
+      "SuperWorker, Supervisor, restart group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
+    )
 
-    with true <- is_running?(sup_id),
-         {:ok, _parititon_id, pid} <- Partition.get_host_partition(sup_id, data) do
-      ApiHelper.call_api(pid, :restart_group_worker, data, timeout)
-    else
-      wrong ->
-        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect(wrong)}")
-        {:error, :supervisor_not_found_or_group_exists}
-    end
+    get_partition_and_send(sup_id, :restart_group_worker, {group_id, worker_id}, timeout)
   end
 
   @doc """
@@ -456,250 +488,239 @@ defmodule SuperWorker.Supervisor do
   """
   @spec restart_group(atom(), any, integer()) :: {:ok, atom()} | {:error, any()}
   def restart_group(sup_id, group_id, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, _parititon_id, pid} <- Partition.get_host_partition(sup_id, group_id) do
-      ApiHelper.call_api(pid, :restart_group, group_id, timeout)
-    else
-      wrong ->
-        Logger.error("SuperWorker, Supervisor, error when adding group: #{inspect(wrong)}")
-        {:error, :supervisor_not_found_or_group_exists}
-    end
-  end
-
-  ## Standalone worker api ##
-
-  @doc """
-  Add a standalone worker process to the supervisor.
-  function for start worker can be a function or a {module, function, arguments}.
-  Standalone worker is run independently from other workers follow :one_to_one strategy.
-  If worker crashes, it will check the restart strategy of worker then act accordingly.
-  """
-  @spec add_standalone_worker(atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
-          {:ok, atom()} | {:error, any()}
-  def add_standalone_worker(sup_id, mfa_or_fun, opts \\ [], timeout \\ @default_time)
-
-  def add_standalone_worker(sup_id, {m, f, a} = mfa, opts, timeout)
-      when is_list(opts) and is_atom(m) and is_atom(f) and is_list(a) do
-    do_add_standalone_worker(sup_id, [{:fun, mfa} | opts], timeout)
-  end
-
-  def add_standalone_worker(sup_id, fun, opts, timeout)
-      when is_list(opts) and is_function(fun, 0) do
-    do_add_standalone_worker(sup_id, [{:fun, {:fun, fun}} | opts], timeout)
-  end
-
-  def add_standalone_worker(sup_id, {:fun, fun} = f, opts, timeout)
-      when is_list(opts) and is_function(fun, 0) do
-    do_add_standalone_worker(sup_id, [{:fun, f} | opts], timeout)
-  end
-
-  def add_standalone_worker(sup_id, {genserver_module, _} = f, options, timeout)
-      when is_list(options) and is_atom(genserver_module) do
-    options = convert_gen_server_specs(f, options)
-
-    do_add_standalone_worker(sup_id, options, timeout)
-  end
-
-  def add_standalone_worker(sup_id, genserver_module, opts, timeout)
-      when is_list(opts) and is_atom(genserver_module) do
-    add_standalone_worker(sup_id, {genserver_module, []}, opts, timeout)
-  end
-
-  @doc """
-  Send data directly to the worker standalone in the supervisor.
-  """
-  def send_to_standalone_worker(sup_id, worker_id, data, timeout \\ @default_time) do
-    with true <- is_running?(sup_id),
-         {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
-      ApiHelper.call_api(pid, :send_to_worker, {worker_id, data}, timeout)
-    end
-  end
-
-  def remove_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
-      ApiHelper.call_api(pid, :remove_standalone_worker, worker_id, timeout)
-    end
-  end
-
-  def get_all_standalone_workers(sup_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, :standalone) do
-      ApiHelper.call_api(pid, :get_all_standalone_workers, :standalone, timeout)
-    end
-  end
-
-  @doc """
-  get pid of standalone worker
-  """
-  def get_pid_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
-    with {:ok, pid} <- verify_and_get_pid(sup_id, worker_id) do
-      ApiHelper.call_api(pid, :get_worker_pid, {worker_id, {:standalone, nil}}, timeout)
-    end
-  end
-
-  ## Internal public functions
-
-  def init(sup = %Supervisor{}, message = %Message{}) do
-    # Register the supervisor process.
-    Process.register(self(), sup.id)
-
-    # Link to remote pid if link is a pids
-    case sup.link do
-      pid when is_pid(pid) ->
-        Process.link(pid)
-
-      list_pid when is_list(list_pid) ->
-        Enum.each(list_pid, fn pid ->
-          Process.link(pid)
-        end)
-
-      bool when bool in [true, false] ->
-        :ok
-    end
-
-    Db.init(sup.id)
-
-    Logger.debug("SuperWorker, Supervisor, create table for #{inspect(sup.id)} done.")
-
-    Db.put_sup_info(sup.id, :master, sup)
-
-    # Turn main process to system process.
-    Process.flag(:trap_exit, true)
-
-    list_partitions = init_additional_partitions(sup)
-
-    started_partitions =
-      Enum.reduce(1..length(list_partitions), [], fn _, acc ->
-        receive do
-          {:partition_started, id} ->
-            Logger.debug(
-              "SuperWorker, Supervisor, supervisor #{inspect(sup.id)} received started partition msg from #{inspect(id)}"
-            )
-
-            [id | acc]
-        after
-          @default_time ->
-            Logger.debug(
-              "SuperWorker, Supervisor, supervisor #{inspect(sup.id)} timeout when starting partition. Current list: #{inspect(acc)}"
-            )
-
-            acc
-        end
-      end)
-
-    if length(started_partitions) != length(list_partitions) do
-      Logger.error(
-        "SuperWorker, Supervisor, supervisor #{inspect(sup.id)} failed to start partitions."
-      )
-
-      ApiHelper.api_response(message, {:error, :failed_to_start_partitions})
-    else
-      state =
-        sup
-        |> Map.put(:partitions, list_partitions)
-
-      Logger.debug(
-        "SuperWorker, Supervisor, supervisor #{inspect(state.id)} initialized: #{inspect(state)}"
-      )
-
-      # TO-DO: Add group, chain, worker from opts.
-      if sup.children != nil do
-        Enum.each(sup.children, fn child ->
-          case child do
-            {:group, group} ->
-              add_group(state.id, group)
-
-            {:chain, chain} ->
-              add_chain(state.id, chain)
-
-            {:standalone, worker} ->
-              if Keyword.get(worker, :options) == nil do
-                add_standalone_worker(state.id, worker.task)
-              else
-                add_standalone_worker(state.id, worker.task, worker.opts)
-              end
-          end
-        end)
-      end
-
-      ApiHelper.api_response(message, {:ok, self()})
-
-      # Start the main loop
-      Looper.main_loop(state)
-    end
-  end
-
-  def child_spec(opts) do
-    %{
-      # default id is module name
-      id: Keyword.get(opts, :id, Supervisor),
-      start: {Supervisor, :start, [opts]}
-    }
-  end
-
-  ## Private functions
-
-  defp init_partition(partition = %Supervisor{}) do
-    # Start the main loop
-    pid = spawn_link(Supervisor, :start_partition, [partition])
-
     Logger.debug(
-      "SuperWorker, Supervisor, #{inspect(partition.id)} initialized, pid: #{inspect(pid)}"
+      "SuperWorker, Supervisor, restart group , supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
     )
 
-    {:ok, partition.id, pid}
+    get_partition_and_send(sup_id, :restart_group, group_id, timeout)
   end
 
-  def start_partition(state) do
-    Db.put_sup_pid(state.master, state.id, self())
+  ## Chan APIs ##
 
-    send(state.master, {:partition_started, state.id})
+  @doc """
+  Add a worker to the chain in supervisor.
+  """
+  @spec add_chain_worker(atom(), atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
+          {:ok, atom()} | {:error, any()}
+  def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ @default_time)
 
-    # Turn partition process to system process.
-    Process.flag(:trap_exit, true)
-
-    Looper.main_loop(state)
+  def add_chain_worker(sup_id, chain_id, {m, f, a} = mfa, options, timeout)
+      when is_list(options) and is_atom(m) and is_atom(f) and is_list(a) do
+    do_add_worker(
+      sup_id,
+      [fun: mfa, type: :chain, parent: chain_id] ++ options,
+      timeout
+    )
   end
 
-  defp init_additional_partitions(sup) do
-    partitions = sup.number_of_partitions
-
-    Enum.map(0..(partitions - 1), fn i ->
-      Logger.debug("SuperWorker, Supervisor, [#{inspect(sup.id)}] add partition: #{inspect(i)}")
-
-      sup =
-        sup
-        |> Map.put(:master, sup.id)
-        |> Map.put(:id, String.to_atom("#{Atom.to_string(sup.id)}_#{i}"))
-
-      {:ok, partition, pid} = init_partition(sup)
-      {partition, pid}
-    end)
+  def add_chain_worker(sup_id, chain_id, fun, options, timeout)
+      when is_list(options) and is_function(fun, 0) do
+    do_add_worker(
+      sup_id,
+      [fun: {:fun, fun}, type: :chain, parent: chain_id] ++ options,
+      timeout
+    )
   end
 
-  defp shutdown(state, :kill) do
-    Logger.debug("SuperWorker, Supervisor, shutting down supervisor: #{inspect(state.id)}")
+  @doc """
+  Add a chain to the supervisor.
+  Chain's options follow docs in `Chain` module.
+  """
+  def add_chain(sup_id, options, timeout \\ 5_000) do
+    Logger.debug(
+      "SuperWorker, Supervisor, add chain to supervisor , supervisor: #{inspect(sup_id)},  chain options: #{inspect(options)}"
+    )
 
-    # TO-DO: Implement graceful shutdown for worker processes.
-    #
-    {:ok, groups} = Db.get_all_groups(state.master)
+    with {:ok, chain} <- Chain.check_options(options) do
+      %Chain{} = chain
+      chain = %{chain | supervisor: sup_id}
 
-    Enum.each(groups, fn group ->
-      Group.kill_all_workers(group)
+      get_partition_and_send(sup_id, :add_chain, chain, timeout)
+    end
+  end
+
+  @doc """
+  Send data to the entry worker in the chain.
+  If chain doesn't has any worker, it will be dropped.
+  """
+  def send_to_chain(sup_id, chain_id, data, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, send data to chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}"
+    )
+
+    get_partition_and_send(sup_id, :add_data_to_chain, {chain_id, data}, timeout)
+  end
+
+  @doc """
+  get chain structure from supervisor.
+  """
+  @spec get_chain(atom(), any()) :: {:ok, Chain.t()} | {:error, any()}
+  def get_chain(sup_id, chain_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, get chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}"
+    )
+
+    get_partition_and_send(sup_id, :get_chain, chain_id, timeout)
+  end
+
+  @doc """
+  remove a worker from chain.
+  """
+  def remove_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, remove worker in chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}, worker: #{inspect(worker_id)}"
+    )
+
+    get_partition_and_send(sup_id, :remove_chain_worker, {worker_id, chain_id}, timeout)
+  end
+
+  @doc """
+  remove chain.
+  """
+  def remove_chain(sup_id, chain_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, remove chain, #{inspect(sup_id)}, #{inspect(chain_id)}"
+    )
+
+    get_partition_and_send(sup_id, :remove_chain, chain_id, timeout)
+  end
+
+  @doc """
+  get pid of chain worker
+  """
+  def get_pid_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, get pid of chain worker, #{inspect(sup_id)}, #{inspect(chain_id)}, #{inspect(worker_id)}"
+    )
+
+    get_partition_and_send(sup_id, :get_worker_pid, {worker_id, {:chain, chain_id}}, timeout)
+  end
+
+  ## Call Backs
+
+  @impl true
+  def init(supervisor = %Supervisor{}) do
+    with {:ok, _} <- link_process(supervisor) do
+      # Initialize the table for the supervisor
+      table = Db.init(supervisor.id)
+
+      supervisor = %{supervisor | table: table}
+
+      Logger.debug("SuperWorker, Supervisor, create table for #{inspect(supervisor.id)} done}")
+
+      Db.put_sup_info(supervisor.table, :master, supervisor)
+
+      partitions = Partition.init_additional_partitions(supervisor)
+      list_partition_ids = Map.keys(partitions)
+
+      Enum.each(partitions, fn {_, pid} ->
+        msg = Message.new(:partition_list, pid, partitions)
+        send(pid, {:internal_api, msg})
+      end)
+
+      {:ok, %{supervisor: supervisor, partitions: partitions, partition_ids: list_partition_ids}}
+    else
+      failed ->
+        Logger.error(
+          "SuperWorker, Supervisor, failed to init partitions/link process, reason: #{inspect(failed)}"
+        )
+
+        {:error, :failed_to_init}
+    end
+  end
+
+  @impl true
+  def handle_call({:query_target_partition, data}, _from, state) do
+    order = Utils.get_hash_order(data, state.supervisor.num_partitions)
+    pid = Map.get(state.partitions, order, {:error, :not_found_partition})
+
+    {:reply, pid, state}
+  end
+
+  def handle_call({:stop, shutdown_type}, _from, state) do
+    Enum.each(state.partitions, fn {id, pid} ->
+      ApiHelper.internal_call_api_no_reply(pid, :stop, shutdown_type)
+      Logger.info("SuperWorker, Supervisor, sent stop signal to partition: #{id}")
     end)
 
-    {:ok, chains} = Db.get_all_chains(state.master)
+    {:reply, :ok, state}
+  end
 
-    Enum.each(chains, fn chain ->
-      Chain.kill_all_workers(chain)
-    end)
+  @impl true
+  def handle_info({:partition_started, partition_id}, state) do
+    Logger.debug("SuperWorker, Supervisor, Partition started: #{partition_id}")
+    {:noreply, state}
+  end
 
-    {:ok, workers} = Db.get_all_standalone_worker_infos(state.master)
+  @impl true
+  def handle_info({:partition_stopped, partition_id}, state) do
+    Logger.debug("SuperWorker, Supervisor, Partition stopped: #{partition_id}")
 
-    Enum.each(workers, fn worker ->
-      Process.exit(worker.pid, :kill)
-    end)
+    stopped_partitions =
+      [partition_id | Map.get(state, :stopped_partitions, [])]
 
-    {:ok, :brutal_kill}
+    if length(stopped_partitions) == state.supervisor.num_partitions do
+      {:stop, :normal, state}
+    else
+      {:noreply, Map.put(state, :stopped_partitions, stopped_partitions)}
+    end
+  end
+
+  ## Private Functions
+
+  defp query_target_partition(supervisor_id, data) do
+    # Implement logic to get target partition
+
+    try do
+      result = GenServer.call(supervisor_id, {:query_target_partition, data})
+      {:ok, result}
+    catch
+      :exit, reason ->
+        Logger.error(
+          "SuperWorker, Supervisor, failed to query target partition, reason: #{inspect(reason)}"
+        )
+
+        {:error, :failed_to_query}
+
+      :error, reason ->
+        Logger.error(
+          "SuperWorker, Supervisor, failed to query target partition, reason: #{inspect(reason)}"
+        )
+
+        {:error, :failed_to_query}
+    end
+  end
+
+  defp link_process(supervisor = %Supervisor{}) do
+    # Support for link to remote process
+    cond do
+      is_pid(supervisor.link) ->
+        Process.link(supervisor.link)
+        {:ok, :linked}
+
+      supervisor.link == true || supervisor.link == false ->
+        {:ok, :linked}
+
+      true ->
+        {:error, {:invalid_link, supervisor.link}}
+    end
+  end
+
+  # Start the supervisor main processes.
+  defp do_start_supervisor(opts = %Supervisor{}) do
+    Logger.debug("SuperWorker, Supervisor, starting supervisor with options: #{inspect(opts)}")
+
+    # Start main process of the supervisor
+    case opts.link do
+      true ->
+        Logger.debug("SuperWorker, Supervisor, starting supervisor with link.")
+        opts = Map.put(opts, :linked_pids, self())
+        start_link(opts)
+
+      _ ->
+        Logger.debug("SuperWorker, Supervisor, starting supervisor without link.")
+        start(opts)
+    end
   end
 
   defp get_pid(id) when is_atom(id) do
@@ -709,114 +730,6 @@ defmodule SuperWorker.Supervisor do
 
       pid ->
         {:ok, pid}
-    end
-  end
-
-  # Start the supervisor main processes.
-  defp start_supervisor(opts = %Supervisor{}, timeout) do
-    Logger.debug("SuperWorker, Supervisor, starting supervisor with options: #{inspect(opts)}")
-
-    message = Message.new(:init_sup, nil, nil)
-
-    # Start main process of the supervisor
-    case opts.link do
-      true ->
-        Logger.debug("SuperWorker, Supervisor, starting supervisor with link.")
-        opts = Map.put(opts, :linked_pids, [self()])
-        spawn_link(Supervisor, :init, [opts, message])
-
-      false ->
-        Logger.debug("SuperWorker, Supervisor, starting supervisor without link.")
-        spawn(Supervisor, :init, [opts, message])
-
-      pid when is_pid(pid) ->
-        Logger.debug("SuperWorker, Supervisor, starting supervisor and link with remote pid.")
-        opts = Map.put(opts, :linked_pids, [pid])
-        spawn(Supervisor, :init, [opts, message])
-
-      list_pid when is_list(list_pid) ->
-        Logger.debug("SuperWorker, Supervisor, starting supervisor and link with remote pids.")
-        opts = Map.put(opts, :linked_pids, list_pid)
-        spawn(Supervisor, :init, [opts, message])
-    end
-
-    ApiHelper.api_receiver(message.id, timeout)
-  end
-
-  # Check the supervisor is running or not.
-  # if running get pid of partition.
-  @spec verify_and_get_pid(atom(), any()) :: {:error, atom()} | {:ok, pid()}
-  defp verify_and_get_pid(sup_id, id) do
-    with true <- is_running?(sup_id),
-         {:ok, _partition_id, pid} <- Partition.get_host_partition(sup_id, id) do
-      {:ok, pid}
-    else
-      false ->
-        Logger.error("SuperWorker, Supervisor, supervisor #{inspect(sup_id)} not running.")
-        {:error, :not_running}
-
-      {:error, reason} = error ->
-        Logger.error("SuperWorker, Supervisor, get target partition failed: #{inspect(reason)}")
-        error
-    end
-  end
-
-  @spec do_add_standalone_worker(atom(), list(), integer()) ::
-          {:ok, any()} | {:error, any()}
-  defp do_add_standalone_worker(sup_id, opts, timeout) do
-    Logger.debug(
-      "SuperWorker, Supervisor, starting standalone child process with options: #{inspect(opts)}"
-    )
-
-    with {:ok, opts} <- Worker.check_standalone_options(opts ++ [type: :standalone, parent: nil]),
-         {:ok, pid} <- verify_and_get_pid(sup_id, opts.id) do
-      ApiHelper.call_api(pid, :start_worker, opts, timeout)
-    else
-      error ->
-        Logger.error(
-          "SuperWorker, Supervisor, cannot add standalone worker, something happened: #{inspect(error)}, options: #{inspect(opts)}"
-        )
-
-        error
-    end
-  end
-
-  defp do_add_group_worker(sup_id, group_id, opts, timeout)
-       when group_id != nil do
-    Logger.debug(
-      "SuperWorker, Supervisor, starting worker group(#{inspect(group_id)}) process with options: #{inspect(opts)}"
-    )
-
-    with {:ok, opts} <- Worker.check_group_options(opts ++ [type: :group, parent: group_id]),
-         {:ok, pid} <- verify_and_get_pid(sup_id, opts.id) do
-      Logger.debug(
-        "SuperWorker, Supervisor, start call :start_worker api with opts: #{inspect(opts)}"
-      )
-
-      ApiHelper.call_api(pid, :start_worker, opts, timeout)
-    else
-      error ->
-        Logger.error(
-          "SuperWorker, Supervisor, cannot add group worker: #{inspect(error)}, options: #{inspect(opts)}"
-        )
-
-        error
-    end
-  end
-
-  defp do_add_chain_worker(sup_id, chain_id, opts, timeout) do
-    Logger.debug("SuperWorker, Supervisor, starting child process with options: #{inspect(opts)}")
-
-    with {:ok, opts} <- Worker.check_chain_options(opts ++ [type: :chain, parent: chain_id]),
-         {:ok, pid} <- verify_and_get_pid(sup_id, opts.id) do
-      ApiHelper.call_api(pid, :start_worker, opts, timeout)
-    else
-      error ->
-        Logger.error(
-          "SuperWorker, Supervisor, cannot add chain worker: #{inspect(error)}, options: #{inspect(opts)}"
-        )
-
-        error
     end
   end
 
@@ -831,5 +744,52 @@ defmodule SuperWorker.Supervisor do
       |> Map.to_list()
 
     Keyword.merge([{:fun, mfa} | default_options], opts)
+  end
+
+  defp get_partition_and_send(sup_id, api, params, timeout) do
+    with true <- running?(sup_id),
+         {:ok, pid} <- query_target_partition(sup_id, params) do
+      Logger.debug(
+        "SuperWorker, Supervisor, sending api #{inspect(api)} to partition #{inspect(pid)}"
+      )
+
+      ApiHelper.call_api(pid, api, params, timeout)
+    else
+      false ->
+        Logger.error("SuperWorker, Supervisor, not found supervisor for send api")
+        {:error, :supervisor_not_found}
+
+      {:error, reason} = error ->
+        Logger.error(
+          "SuperWorker, Supervisor, error when processing api #{inspect(api)}, reason: #{inspect(reason)}"
+        )
+
+        error
+    end
+  end
+
+  @spec do_add_worker(atom(), list(), integer()) ::
+          {:ok, any()} | {:error, any()}
+  defp do_add_worker(sup_id, options, timeout) do
+    Logger.debug("SuperWorker, Supervisor, starting worker with options: #{inspect(options)}")
+
+    result =
+      case Keyword.get(options, :type) do
+        :standalone ->
+          Worker.check_standalone_options(options)
+
+        :group ->
+          Worker.check_group_options(options)
+
+        :chain ->
+          Worker.check_chain_options(options)
+
+        _ ->
+          {:error, :invalid_type}
+      end
+
+    with {:ok, options} <- result do
+      get_partition_and_send(sup_id, :start_worker, options, timeout)
+    end
   end
 end

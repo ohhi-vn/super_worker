@@ -7,12 +7,12 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
   @sup_id :sup_group_test
 
   setup_all do
-    {:ok, _} = Sup.start(link: false, id: @sup_id, number_of_partitions: 2)
+    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 2)
     :ok
   end
 
   setup do
-    if Sup.is_running?(@sup_id) do
+    if Sup.running?(@sup_id) do
       :ok
     else
       raise "Supervisor is not running"
@@ -22,9 +22,10 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
   @tag :standalone_add_workers
   test "add standalone workers to supervisor" do
     ref = make_ref()
+    num_workers = 5
 
     ids =
-      for index <- 1..5 do
+      for index <- 1..num_workers do
         id = {ref, index}
 
         {:ok, _} =
@@ -36,14 +37,10 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
         id
       end
 
-    running_list =
-      with {:ok, workers} <- Sup.get_all_standalone_workers(@sup_id) do
-        Enum.map(workers, fn worker -> worker.id end)
-      else
-        _ -> raise "unexpected result"
-      end
-
-    Enum.all?(ids, fn id -> Enum.member?(running_list, id) end)
+    Enum.each(ids, fn id ->
+      result = Sup.get_pid_standalone_worker(@sup_id, id)
+      assert match?({:ok, _}, result)
+    end)
   end
 
   @tag :standalone_send_data
@@ -252,12 +249,6 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     result = Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
 
     assert result == {:error, :not_found}
-
-    result = Db.get_worker_info(@sup_id, worker_id, {:standalone, nil})
-    assert match?({:error, _}, result)
-
-    result = Db.get_worker_by_id(@sup_id, worker_id, {:standalone, nil})
-    assert match?({:error, _}, result)
   end
 
   @tag :standalone_reuse_id_worker

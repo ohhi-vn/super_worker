@@ -10,12 +10,16 @@ defmodule SuperWorker.Supervisor.ChainTest do
   @sup_id :sup_test_chain
 
   setup_all do
-    {:ok, _} = Sup.start(link: false, id: @sup_id)
+    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id)
     :ok
   end
 
   setup do
-    :ok
+    if Sup.running?(@sup_id) do
+      :ok
+    else
+      raise "Supervisor is not running"
+    end
   end
 
   @tag :chain_verify_strategy
@@ -69,11 +73,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
     assert(0 == length(workers))
 
-    # make sure data is cleaned
-    result = Db.get_worker_info(@sup_id, worker_id, {:chain, chain_id})
-    assert match?({:error, _}, result)
-
-    result = Db.get_worker_by_id(@sup_id, worker_id, {:chain, chain_id})
+    result = Sup.get_pid_chain_worker(@sup_id, chain_id, worker_id)
     assert match?({:error, _}, result)
   end
 
@@ -93,12 +93,8 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
     Sup.remove_chain(@sup_id, chain_id)
 
-    # make sure data is cleaned
-    result = Db.get_worker_infos_by_parent(@sup_id, {:chain, chain_id})
-    assert result == {:ok, []}
-
-    result = Db.get_workers_by_parent(@sup_id, {:chain, chain_id})
-    assert result == {:ok, []}
+    result = Sup.get_pid_chain_worker(@sup_id, chain_id, worker_id)
+    assert match?({:error, _}, result)
   end
 
   @tag :chain_add_workers_2

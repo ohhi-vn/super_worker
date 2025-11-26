@@ -193,10 +193,10 @@ defmodule SuperWorker.Supervisor.Validator do
   # TO-DO: Merge with generic_default_sup_opts/1.
   defp default_sup_opts(opts) do
     opts =
-      if Map.has_key?(opts, :number_of_partitions) do
+      if Map.has_key?(opts, :num_partitions) do
         opts
       else
-        Map.put(opts, :number_of_partitions, :erlang.system_info(:schedulers_online))
+        Map.put(opts, :num_partitions, :erlang.system_info(:schedulers_online))
       end
 
     opts =
@@ -204,6 +204,13 @@ defmodule SuperWorker.Supervisor.Validator do
         opts
       else
         Map.put(opts, :link, true)
+      end
+
+    opts =
+      if Map.has_key?(opts, :name) do
+        opts
+      else
+        Map.put(opts, :name, SuperWorker.Supervisor)
       end
 
     opts = Map.put(opts, :master, opts.id)
@@ -214,8 +221,8 @@ defmodule SuperWorker.Supervisor.Validator do
   # Validate the type & value of options.
   defp validate_options(options) do
     with {:ok, opts} <- check_type(options, :id, &is_atom/1),
-         {:ok, opts} <- check_type(opts, :number_of_partitions, &is_integer/1),
-         {:ok, opts} <- check_type(opts, :number_of_partitions, &(&1 > 0)),
+         {:ok, opts} <- check_type(opts, :num_partitions, &is_integer/1),
+         {:ok, opts} <- check_type(opts, :num_partitions, &(&1 > 0)),
          {:ok, opts} <- check_type(opts, :owner, &is_pid/1),
          {:ok, opts} <- check_type(opts, :link, &is_boolean/1) do
       {:ok, opts}

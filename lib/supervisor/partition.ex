@@ -1,53 +1,53 @@
 defmodule SuperWorker.Supervisor.Partition do
-  alias SuperWorker.Supervisor.Db
+  alias SuperWorker.Supervisor
+  alias Supervisor.{Db, Looper}
 
-  import SuperWorker.Supervisor.Utils, only: [get_hash_order: 2]
+  alias __MODULE__
 
   require Logger
 
-  @spec get_host_partition(atom, any) :: {:error, atom} | {:ok, atom, pid}
-  def get_host_partition(sup_id, data) do
-    with {:ok, sup} <- Db.get_sup_info(sup_id, :master),
-         partition_id <- get_target_partition(sup_id, data, sup.number_of_partitions),
-         {:ok, pid} <- get_partition_pid(sup_id, partition_id) do
-      {:ok, partition_id, pid}
-    else
-      error ->
-        Logger.error(
-          "SuperWorker, Supervisor, get partition pid failed: #{inspect(error)}, data: #{inspect(data)}, sup_id: #{inspect(sup_id)}"
-        )
+  def start_partition(state) do
+    Db.put_sup_pid(state.table, state.id, self())
 
-        error
-    end
+    send(state.master, {:partition_started, state.id})
+
+    # Turn partition process to system process.
+    Process.flag(:trap_exit, true)
+
+    Looper.main_loop(state)
   end
 
-  @spec get_target_partition(atom(), any(), integer()) :: atom()
-  defp get_target_partition(prefix, data, num_partitions) when is_integer(num_partitions) do
-    partition_id = get_hash_order(data, num_partitions)
-    get_partition_id(prefix, partition_id)
+  def init_additional_partitions(supervisor = %Supervisor{}) do
+    Logger.debug(
+      "SuperWorker, Supervisor, [#{inspect(supervisor.id)}] init additional partitions, options: #{inspect(supervisor)}"
+    )
+
+    Enum.map(1..supervisor.num_partitions, fn i ->
+      Logger.debug(
+        "SuperWorker, Supervisor, [#{inspect(supervisor.id)}] add partition: #{inspect(i)}"
+      )
+
+      supervisor =
+        supervisor
+        |> Map.put(:master, supervisor.id)
+        |> Map.put(:id, i)
+
+      {:ok, partition, pid} = init_partition(supervisor)
+      {partition, pid}
+    end)
+    |> Enum.into(%{})
   end
 
-  @spec get_partition_pid(atom(), atom()) :: {:error, atom()} | {:ok, pid()}
-  defp get_partition_pid(sup_id, partition_id) do
-    case Db.get_sup_pid(sup_id, partition_id) do
-      {:ok, pid} ->
-        {:ok, pid}
+  ## Private functions
 
-      _ ->
-        Logger.error(
-          "SuperWorker, Supervisor, supervisor #{inspect(sup_id)} partition not found: #{inspect(partition_id)}"
-        )
+  defp init_partition(partition = %Supervisor{}) do
+    # Start the main loop
+    pid = spawn_link(Partition, :start_partition, [partition])
 
-        {:error, {:partition_not_found, partition_id}}
-    end
-  end
+    Logger.debug(
+      "SuperWorker, Supervisor, #{inspect(partition.id)} initialized, pid: #{inspect(pid)}"
+    )
 
-  @spec get_partition_id(atom(), integer()) :: atom()
-  defp get_partition_id(sup_id, partition_id) do
-    if partition_id < 0 do
-      sup_id
-    else
-      String.to_atom("#{Atom.to_string(sup_id)}_#{inspect(partition_id)}")
-    end
+    {:ok, partition.id, pid}
   end
 end

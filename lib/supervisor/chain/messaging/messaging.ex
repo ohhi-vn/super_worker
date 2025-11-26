@@ -32,7 +32,7 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
           {:ok, atom()} | {:error, atom()}
   def send_next(chain = %Chain{}, order, msg = %Message{}) do
     with {:ok, {worker_id, pid}} <-
-           Db.get_chain_order(chain.supervisor, chain.id, order) do
+           Db.get_chain_order(chain.table, chain.id, order) do
       Logger.debug(
         "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker: #{inspect(worker_id)}. Sending message."
       )

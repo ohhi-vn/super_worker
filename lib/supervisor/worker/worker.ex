@@ -3,9 +3,7 @@ defmodule SuperWorker.Supervisor.Worker do
   Documentation for `SuperWorker.Supervisor.Worker`.
   """
 
-  alias __MODULE__
-
-  alias SuperWorker.Supervisor.{Db, Validator, Constants}
+  alias SuperWorker.Supervisor.{Validator, Constants}
 
   @enforce_keys [:id, :fun]
   defstruct [
@@ -23,6 +21,7 @@ defmodule SuperWorker.Supervisor.Worker do
     supervisor: nil,
     # partition id.
     partition: nil,
+    table: nil,
     # number of workers in chain.
     num_workers: 1,
     # parent(group/chain) id.
@@ -98,10 +97,6 @@ defmodule SuperWorker.Supervisor.Worker do
       end
 
     {:ok, opts}
-  end
-
-  def save(worker = %Worker{}) do
-    Db.put_worker_info(worker.supervisor, worker)
   end
 
   defp map_to_struct(opts) when is_map(opts) do
