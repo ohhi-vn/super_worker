@@ -85,6 +85,9 @@ defmodule SuperWorker.ConfigLoader.Parser do
   ]
   ```
   """
+
+  alias SuperWorker.Supervisor.Worker
+
   @spec parse(config()) :: {:ok, parsed_config()} | {:error, any()}
   def parse(config) when is_list(config) do
     Logger.debug("SuperWorker, Parser, parsing config: #{inspect(config)}")
@@ -198,6 +201,8 @@ defmodule SuperWorker.ConfigLoader.Parser do
   end
 
   defp parse_group({id, group_config}, index) when is_list(group_config) do
+    Logger.debug("Parsing group with id: #{id}, config: #{inspect(group_config)}")
+
     with {:ok, options} <- extract_group_options(group_config),
          {:ok, workers} <- extract_workers(group_config) do
       {:ok,
@@ -213,12 +218,12 @@ defmodule SuperWorker.ConfigLoader.Parser do
           "SuperWorker, Parser, invalid group config at index #{index}, config: #{inspect(group_config)}, error: #{inspect(other)}"
         )
 
-        {:error, {:invalid_group_config, "Group at index #{index} must be a keyword list"}}
+        {:error, {:invalid_group_config, other}}
     end
   end
 
   defp parse_group(group_config, index) do
-    Logger.warning(
+    Logger.error(
       "SuperWorker, Parser, invalid group config at index #{index}, config: #{inspect(group_config)}"
     )
 
@@ -226,7 +231,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
   end
 
   defp extract_group_options(config) do
-    Keyword.get(config, :options, [])
+    config
     |> Enum.filter(fn {key, _value} -> key in @group_option_keys end)
     |> validate_group_options()
   end
@@ -298,7 +303,11 @@ defmodule SuperWorker.ConfigLoader.Parser do
     end
   end
 
-  defp parse_chain(_chain_config, index) do
+  defp parse_chain(chain_config, index) do
+    Logger.error(
+      "SuperWorker, Parser, invalid chain config at index #{index}, #{inspect(chain_config)}"
+    )
+
     {:error, {:invalid_chain_config, "Chain at index #{index} must be a keyword list"}}
   end
 
@@ -394,17 +403,29 @@ defmodule SuperWorker.ConfigLoader.Parser do
   defp extract_workers(config) do
     workers = Keyword.get(config, :workers, [])
 
+    Logger.debug("SuperWorker, Parser, parses workers config, workers: #{inspect(workers)}")
+
     if is_list(workers) do
       parsed_workers =
         workers
         |> Enum.with_index()
-        |> Enum.map(fn
-          {{worker_id, worker_config}, index} ->
-            Keyword.put(worker_config, :id, worker_id)
-            parse_worker_spec(worker_config, index)
+        |> Enum.map(fn {worker, index} ->
+          Logger.debug(
+            "SuperWorker, Parser, parses worker config at index #{index}, config: #{inspect(worker)}"
+          )
 
-          {worker_config, index} ->
-            parse_worker_spec(worker_config, index)
+          case worker do
+            {gen_server_worker, options} = gen_server
+            when is_atom(gen_server_worker) and is_list(options) ->
+              parse_worker_spec(gen_server, index)
+
+            {worker_id, worker_config} ->
+              Keyword.put(worker_config, :id, worker_id)
+              parse_worker_spec(worker_config, index)
+
+            worker_config ->
+              parse_worker_spec(worker_config, index)
+          end
         end)
 
       errors = Enum.filter(parsed_workers, fn result -> match?({:error, _}, result) end)
@@ -504,6 +525,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
   def convert_regular_child_spec({module, keywords}) do
     result =
       module.child_spec(keywords)
+      |> add_default_options()
       |> regular_child_spec_to_spec()
 
     {:ok, result}
@@ -511,6 +533,14 @@ defmodule SuperWorker.ConfigLoader.Parser do
 
   def convert_regular_child_spec(module) do
     convert_regular_child_spec({module, []})
+  end
+
+  def add_default_options(specs = %{}) do
+    if Map.has_key?(specs, :restart) do
+      specs
+    else
+      Map.put(specs, :restart, Worker.default_restart_strategy())
+    end
   end
 
   defp regular_child_spec_to_spec(specs = %{}) do

@@ -9,7 +9,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
   # Simple worker module for testing
   defmodule TestWorker do
     def start_link do
-      pid = spawn(fn -> simple_worker() end)
+      pid = spawn_link(fn -> simple_worker() end)
       {:ok, pid}
     end
 
@@ -18,6 +18,8 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
         :stop -> :ok
         _ -> simple_worker()
       end
+
+      IO.puts("exiting...")
     end
   end
 
@@ -35,7 +37,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       # Clean up any running supervisors
       Application.get_all_env(@app)
       |> Enum.each(fn {key, _} ->
-        if is_atom(key) and key != :options and Supervisor.is_running?(key) do
+        if is_atom(key) and Supervisor.running?(key) do
           Supervisor.stop(key)
           wait_until_stopped(key, 1000)
         end
@@ -67,7 +69,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, :options, some: :global_option)
 
       assert :ok = ConfigParser.load()
-      refute Supervisor.is_running?(:options)
+      refute Supervisor.running?(:options)
     end
   end
 
@@ -81,8 +83,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
           link: false
         ],
         groups: [
-          [
-            id: :test_group,
+          test_group: [
             restart_strategy: :one_for_one,
             workers: []
           ]
@@ -92,8 +93,8 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, sup_id, config)
 
       assert :ok = ConfigParser.load()
-      assert Supervisor.is_running?(sup_id)
-      assert {:ok, _group} = Supervisor.get_group(sup_id, :test_group)
+      assert Supervisor.running?(sup_id)
+      assert Supervisor.group_exists?(sup_id, :test_group)
 
       # Cleanup
       Supervisor.stop(sup_id)
@@ -105,20 +106,20 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       config_1 = [
         options: [number_of_partitions: 1, link: false],
-        groups: [[id: :group1, restart_strategy: :one_for_one, workers: []]]
+        groups: [group1: [restart_strategy: :one_for_one, workers: []]]
       ]
 
       config_2 = [
         options: [number_of_partitions: 1, link: false],
-        groups: [[id: :group2, restart_strategy: :one_for_all, workers: []]]
+        groups: [group2: [restart_strategy: :one_for_all, workers: []]]
       ]
 
       Application.put_env(@app, sup_id_1, config_1)
       Application.put_env(@app, sup_id_2, config_2)
 
       assert :ok = ConfigParser.load()
-      assert Supervisor.is_running?(sup_id_1)
-      assert Supervisor.is_running?(sup_id_2)
+      assert Supervisor.running?(sup_id_1)
+      assert Supervisor.running?(sup_id_2)
 
       # Cleanup
       Supervisor.stop(sup_id_1)
@@ -127,29 +128,33 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
     test "loads configuration with workers" do
       sup_id = :load_test_with_workers
+      group_id = :worker_group
+      worker_id = :worker_1
 
       config = [
         options: [number_of_partitions: 1, link: false],
         groups: [
-          [
-            id: :worker_group,
-            restart_strategy: :one_for_one,
-            workers: [
-              [
-                mfa: {TestWorker, :start_link, []},
-                options: [id: :worker1]
-              ]
-            ]
-          ]
+          {group_id,
+           [
+             restart_strategy: :one_for_one,
+             workers: [
+               [
+                 mfa: {TestWorker, :simple_worker, []},
+                 options: [id: worker_id]
+               ]
+             ]
+           ]}
         ]
       ]
 
       Application.put_env(@app, sup_id, config)
 
       assert :ok = ConfigParser.load()
-      assert Supervisor.is_running?(sup_id)
-      assert {:ok, _group} = Supervisor.get_group(sup_id, :worker_group)
-
+      Process.sleep(10)
+      assert Supervisor.running?(sup_id)
+      assert Supervisor.group_exists?(sup_id, group_id)
+      result = Supervisor.get_pid_group_worker(sup_id, group_id, worker_id)
+      assert match?({:ok, _pid}, result)
       # Cleanup
       Supervisor.stop(sup_id)
     end
@@ -160,10 +165,10 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       config = [
         options: [number_of_partitions: 2, link: false],
         groups: [
-          [id: :test_group, restart_strategy: :one_for_one, workers: []]
+          test_group: [restart_strategy: :one_for_one, workers: []]
         ],
         chains: [
-          [id: :test_chain, restart_strategy: :rest_for_one, workers: []]
+          test_chain: [restart_strategy: :rest_for_one, workers: []]
         ],
         workers: [
           [mfa: {TestWorker, :start_link, []}, options: [id: :standalone1]]
@@ -173,7 +178,8 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, sup_id, config)
 
       assert :ok = ConfigParser.load()
-      assert Supervisor.is_running?(sup_id)
+      Process.sleep(10)
+      assert Supervisor.running?(sup_id)
 
       # Cleanup
       Supervisor.stop(sup_id)
@@ -187,7 +193,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       valid_config = [
         options: [number_of_partitions: 1, link: false],
-        groups: [[id: :valid_group, restart_strategy: :one_for_one, workers: []]]
+        groups: [valid_group: [restart_strategy: :one_for_one, workers: []]]
       ]
 
       # Invalid config - group missing id
@@ -202,9 +208,9 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       assert :ok = ConfigParser.load()
 
       # Valid supervisor should have started
-      assert Supervisor.is_running?(sup_id_valid)
+      assert Supervisor.running?(sup_id_valid)
       # Invalid supervisor should not be running
-      refute Supervisor.is_running?(sup_id_invalid)
+      refute Supervisor.running?(sup_id_invalid)
 
       # Cleanup
       Supervisor.stop(sup_id_valid)
@@ -217,15 +223,15 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       config = [
         options: [number_of_partitions: 1, link: false],
-        groups: [[id: :one_group, restart_strategy: :one_for_one, workers: []]]
+        groups: [one_group: [restart_strategy: :one_for_one, workers: []]]
       ]
 
       Application.put_env(@app, sup_id, config)
 
       assert {:ok, pid} = ConfigParser.load_one(sup_id)
       assert is_pid(pid)
-      assert Supervisor.is_running?(sup_id)
-      assert {:ok, _group} = Supervisor.get_group(sup_id, :one_group)
+      assert Supervisor.running?(sup_id)
+      assert Supervisor.group_exists?(sup_id, :one_group)
 
       # Cleanup
       Supervisor.stop(sup_id)
@@ -237,8 +243,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       config = [
         options: [number_of_partitions: 1, link: false],
         groups: [
-          [
-            id: :group_with_workers,
+          group_with_workers: [
             restart_strategy: :one_for_one,
             workers: [
               [mfa: {TestWorker, :start_link, []}, options: [id: :w1]]
@@ -250,7 +255,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, sup_id, config)
 
       assert {:ok, _pid} = ConfigParser.load_one(sup_id)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
 
       # Cleanup
       Supervisor.stop(sup_id)
@@ -261,15 +266,15 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       config = [
         options: [number_of_partitions: 2, link: false],
-        groups: [[id: :g1, restart_strategy: :one_for_one, workers: []]],
-        chains: [[id: :c1, restart_strategy: :one_for_all, workers: []]],
+        groups: [g1: [restart_strategy: :one_for_one, workers: []]],
+        chains: [c1: [restart_strategy: :one_for_all, workers: []]],
         workers: [[mfa: {TestWorker, :start_link, []}, options: [id: :s1]]]
       ]
 
       Application.put_env(@app, sup_id, config)
 
       assert {:ok, _pid} = ConfigParser.load_one(sup_id)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
 
       # Cleanup
       Supervisor.stop(sup_id)
@@ -281,7 +286,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       non_existent = :non_existent_supervisor
 
       assert {:error, :config_not_found} = ConfigParser.load_one(non_existent)
-      refute Supervisor.is_running?(non_existent)
+      refute Supervisor.running?(non_existent)
     end
 
     test "returns error when configuration is invalid" do
@@ -297,7 +302,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       result = ConfigParser.load_one(sup_id)
       assert match?({:error, _}, result)
-      refute Supervisor.is_running?(sup_id)
+      refute Supervisor.running?(sup_id)
     end
 
     test "returns error when supervisor with same ID already exists" do
@@ -329,7 +334,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, sup_id, config)
 
       assert {:ok, _pid} = ConfigParser.load_one(sup_id)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
 
       # Cleanup
       Supervisor.stop(sup_id)
@@ -345,7 +350,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, sup_id, config)
 
       assert {:ok, _pid} = ConfigParser.load_one(sup_id)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
 
       # Cleanup
       Supervisor.stop(sup_id)
@@ -359,28 +364,28 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       config_1 = [
         options: [number_of_partitions: 1, link: false],
-        groups: [[id: :int_group_1, restart_strategy: :one_for_one, workers: []]]
+        groups: [int_group_1: [restart_strategy: :one_for_one, workers: []]]
       ]
 
       config_2 = [
         options: [number_of_partitions: 1, link: false],
-        groups: [[id: :int_group_2, restart_strategy: :one_for_all, workers: []]]
+        groups: [int_group_2: [restart_strategy: :one_for_all, workers: []]]
       ]
 
       Application.put_env(@app, sup_id_1, config_1)
 
       # Load first supervisor
       assert :ok = ConfigParser.load()
-      assert Supervisor.is_running?(sup_id_1)
+      assert Supervisor.running?(sup_id_1)
 
       # Add and load second supervisor
       Application.put_env(@app, sup_id_2, config_2)
       assert {:ok, _pid} = ConfigParser.load_one(sup_id_2)
-      assert Supervisor.is_running?(sup_id_2)
+      assert Supervisor.running?(sup_id_2)
 
       # Both should be running
-      assert Supervisor.is_running?(sup_id_1)
-      assert Supervisor.is_running?(sup_id_2)
+      assert Supervisor.running?(sup_id_1)
+      assert Supervisor.running?(sup_id_2)
 
       # Cleanup
       Supervisor.stop(sup_id_1)
@@ -398,13 +403,11 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, sup_id, config)
 
       assert {:ok, _pid} = ConfigParser.load_one(sup_id)
-      assert Supervisor.is_running?(sup_id)
-
-      # The supervisor should be accessible by the same ID
-      assert true = Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
 
       # Cleanup
       Supervisor.stop(sup_id)
+      Process.sleep(10)
     end
   end
 
@@ -414,7 +417,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
   end
 
   defp wait_until_stopped(sup_id, timeout) do
-    if Supervisor.is_running?(sup_id) do
+    if Supervisor.running?(sup_id) do
       Process.sleep(50)
       wait_until_stopped(sup_id, timeout - 50)
     else

@@ -34,8 +34,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       config = [
         options: [number_of_partitions: 1],
         groups: [
-          [
-            id: :my_group,
+          my_group: [
             restart_strategy: :one_for_one,
             workers: []
           ]
@@ -54,8 +53,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       config = [
         options: [number_of_partitions: 1],
         chains: [
-          [
-            id: :my_chain,
+          my_chain: [
             restart_strategy: :rest_for_one,
             send_type: :round_robin,
             workers: []
@@ -117,8 +115,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       config = [
         options: [],
         groups: [
-          [
-            id: :group_with_workers,
+          group_with_workers: [
             restart_strategy: :one_for_all,
             workers: [
               [
@@ -130,14 +127,15 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
                 options: [id: :w2]
               ],
               GenServerTest,
-              {GenServerTest, []}
+              {GenServerTest, [id: :gen_server_worker]}
             ]
           ]
         ]
       ]
 
-      assert {:ok, parsed} = Parser.parse(config)
-      assert [group] = parsed.children
+      {:ok, parsed} = Parser.parse(config)
+      [group] = parsed.children
+
       assert length(group.workers) == 4
       assert Enum.at(group.workers, 0).mfa == {MyModule, :worker1, []}
       assert Enum.at(group.workers, 1).mfa == {MyModule, :worker2, []}
@@ -147,8 +145,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       config = [
         options: [],
         chains: [
-          [
-            id: :chain_with_workers,
+          chain_with_workers: [
             restart_strategy: :rest_for_one,
             send_type: :broadcast,
             workers: [
@@ -182,8 +179,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
           report_to: []
         ],
         groups: [
-          [
-            id: :group1,
+          group1: [
             restart_strategy: :one_for_one,
             workers: [
               [mfa: {MyModule, :g1_worker, []}, options: [id: :g1w1]]
@@ -191,8 +187,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
           ]
         ],
         chains: [
-          [
-            id: :chain1,
+          chain1: [
             restart_strategy: :rest_for_one,
             send_type: :partition,
             workers: [
@@ -332,24 +327,21 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "uses default values for invalid restart_strategy in groups" do
       config = [
         groups: [
-          [
-            id: :my_group,
+          my_group: [
             restart_strategy: :invalid_strategy,
             workers: []
           ]
         ]
       ]
 
-      assert {:ok, parsed} = Parser.parse(config)
-      assert [group] = parsed.children
-      assert group.options[:restart_strategy] == :one_for_one
+      result = Parser.parse(config)
+      assert match?({:error, _}, result)
     end
 
     test "uses default values for invalid restart_strategy in chains" do
       config = [
         chains: [
-          [
-            id: :my_chain,
+          my_chain: [
             restart_strategy: :invalid_strategy,
             workers: []
           ]
@@ -364,8 +356,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "uses default values for invalid send_type in chains" do
       config = [
         chains: [
-          [
-            id: :my_chain,
+          my_chain: [
             send_type: :invalid_send_type,
             workers: []
           ]
@@ -396,7 +387,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       for strategy <- [:one_for_one, :one_for_all] do
         config = [
           groups: [
-            [id: :group, restart_strategy: strategy, workers: []]
+            group: [restart_strategy: strategy, workers: []]
           ]
         ]
 
@@ -410,7 +401,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       for strategy <- [:one_for_one, :one_for_all, :rest_for_one] do
         config = [
           chains: [
-            [id: :chain, restart_strategy: strategy, workers: []]
+            chain: [restart_strategy: strategy, workers: []]
           ]
         ]
 
@@ -424,7 +415,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       for send_type <- [:broadcast, :random, :partition, :round_robin] do
         config = [
           chains: [
-            [id: :chain, send_type: send_type, workers: []]
+            chain: [send_type: send_type, workers: []]
           ]
         ]
 
@@ -457,7 +448,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "handles missing options key" do
       config = [
         groups: [
-          [id: :group, workers: []]
+          group: [workers: []]
         ]
       ]
 
@@ -468,7 +459,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "handles group with empty workers list" do
       config = [
         groups: [
-          [id: :group, restart_strategy: :one_for_one, workers: []]
+          group: [restart_strategy: :one_for_one, workers: []]
         ]
       ]
 
@@ -480,7 +471,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "handles chain with empty workers list" do
       config = [
         chains: [
-          [id: :chain, restart_strategy: :rest_for_one, workers: []]
+          chain: [restart_strategy: :rest_for_one, workers: []]
         ]
       ]
 
@@ -504,8 +495,8 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "handles multiple groups with same configuration" do
       config = [
         groups: [
-          [id: :group1, restart_strategy: :one_for_one, workers: []],
-          [id: :group2, restart_strategy: :one_for_one, workers: []]
+          group1: [restart_strategy: :one_for_one, workers: []],
+          group2: [restart_strategy: :one_for_one, workers: []]
         ]
       ]
 

@@ -7,7 +7,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
   # Simple worker module for testing
   defmodule TestWorker do
     def start_link do
-      pid = spawn(fn -> simple_worker() end)
+      pid = spawn_link(fn -> simple_worker() end)
       {:ok, pid}
     end
 
@@ -48,7 +48,9 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
     sup_id = :"test_sup_#{:erlang.unique_integer([:positive])}"
 
     on_exit(fn ->
-      if Supervisor.is_running?(sup_id) do
+      Process.sleep(10)
+
+      if Supervisor.running?(sup_id) do
         Supervisor.stop(sup_id)
         wait_until_stopped(sup_id, 1000)
       end
@@ -66,7 +68,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
       assert {:ok, pid} = Bootstrap.start_supervisor(config)
       assert is_pid(pid)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
 
     test "starts supervisor with custom partitions", %{sup_id: sup_id} do
@@ -76,7 +78,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
 
     test "starts supervisor with a group", %{sup_id: sup_id} do
@@ -93,9 +95,8 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
-      assert {:ok, group} = Supervisor.get_group(sup_id, :test_group)
-      assert group.id == :test_group
+      assert Supervisor.running?(sup_id)
+      assert Supervisor.group_exists?(sup_id, :test_group)
     end
 
     test "starts supervisor with a group and workers", %{sup_id: sup_id} do
@@ -117,9 +118,8 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
-      assert {:ok, group} = Supervisor.get_group(sup_id, :worker_group)
-      assert group.id == :worker_group
+      assert Supervisor.running?(sup_id)
+      assert Supervisor.group_exists?(sup_id, :worker_group)
     end
 
     test "starts supervisor with a chain", %{sup_id: sup_id} do
@@ -136,7 +136,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
 
       # Note: Chain might not have a get_chain function exposed, so we just verify supervisor started
     end
@@ -160,7 +160,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
 
     test "starts supervisor with standalone worker using MFA", %{sup_id: sup_id} do
@@ -176,7 +176,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
 
     test "starts supervisor with standalone worker using function", %{sup_id: sup_id} do
@@ -197,7 +197,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
 
     test "starts supervisor with multiple children types", %{sup_id: sup_id} do
@@ -230,8 +230,8 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
-      assert {:ok, _group} = Supervisor.get_group(sup_id, :multi_group)
+      assert Supervisor.running?(sup_id)
+      assert Supervisor.group_exists?(sup_id, :multi_group)
     end
 
     test "starts supervisor with multiple groups", %{sup_id: sup_id} do
@@ -254,8 +254,8 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert {:ok, _} = Supervisor.get_group(sup_id, :group1)
-      assert {:ok, _} = Supervisor.get_group(sup_id, :group2)
+      assert Supervisor.group_exists?(sup_id, :group1)
+      assert Supervisor.group_exists?(sup_id, :group2)
     end
   end
 
@@ -304,7 +304,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
       # Verify supervisor was cleaned up
       Process.sleep(100)
-      refute Supervisor.is_running?(sup_id)
+      refute Supervisor.running?(sup_id)
     end
   end
 
@@ -316,7 +316,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
 
     test "handles group with empty workers list", %{sup_id: sup_id} do
@@ -333,8 +333,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert {:ok, group} = Supervisor.get_group(sup_id, :empty_group)
-      assert group.id == :empty_group
+      assert Supervisor.group_exists?(sup_id, :empty_group)
     end
 
     test "handles chain with empty workers list", %{sup_id: sup_id} do
@@ -351,7 +350,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       }
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
 
     test "handles minimal options", %{sup_id: sup_id} do
@@ -362,7 +361,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
       # Should use defaults for missing options
       assert {:ok, _pid} = Bootstrap.start_supervisor(config)
-      assert Supervisor.is_running?(sup_id)
+      assert Supervisor.running?(sup_id)
     end
   end
 
@@ -376,8 +375,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
           link: false
         ],
         groups: [
-          [
-            id: :integration_group,
+          integration_group: [
             restart_strategy: :one_for_one,
             workers: [
               [
@@ -395,8 +393,8 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       config_with_id = put_in(parsed_config, [:options, :id], sup_id)
 
       assert {:ok, _pid} = Bootstrap.start_supervisor(config_with_id)
-      assert Supervisor.is_running?(sup_id)
-      assert {:ok, _group} = Supervisor.get_group(sup_id, :integration_group)
+      assert Supervisor.running?(sup_id)
+      assert Supervisor.group_exists?(sup_id, :integration_group)
     end
   end
 
@@ -406,7 +404,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
   end
 
   defp wait_until_stopped(sup_id, timeout) do
-    if Supervisor.is_running?(sup_id) do
+    if Supervisor.running?(sup_id) do
       Process.sleep(50)
       wait_until_stopped(sup_id, timeout - 50)
     else

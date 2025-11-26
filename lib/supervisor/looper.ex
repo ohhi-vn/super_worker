@@ -65,10 +65,21 @@ defmodule SuperWorker.Supervisor.Looper do
     {:ok, workers} = Db.get_all_standalone_worker_infos(state.table)
 
     Enum.each(workers, fn worker ->
-      Process.exit(worker.pid, :kill)
+      kill_worker(state, worker.id)
     end)
 
     {:ok, :brutal_kill}
+  end
+
+  defp kill_worker(state, worker_id) do
+    with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
+      Process.exit(pid, :kill)
+    else
+      other ->
+        Logger.warning(
+          "SuperWorker, Supervisor, #{state.id} failed to kill worker process: #{inspect(worker_id)}, error: #{inspect(other)}"
+        )
+    end
   end
 
   # process exit message for outside processes.
@@ -380,6 +391,24 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
+  # check group is existed
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :group_exists, data: group_id}
+       ) do
+    result =
+      with {:ok, _group} <- Db.get_group(state.table, group_id) do
+        true
+      else
+        _other ->
+          false
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
   # remove group.
   defp process_public_api_message(
          state,
@@ -667,7 +696,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
   # Stop supervisor from api.
   defp process_internal_api_message(state, message = %Message{type: :stop, data: type}) do
-    Logger.info(
+    Logger.debug(
       "SuperWorker, Supervisor, #{state.id} Stopping partition, request from #{inspect(message.from)}"
     )
 

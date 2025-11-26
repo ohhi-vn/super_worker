@@ -457,6 +457,17 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
+  group is existed
+  """
+  def group_exists?(sup_id, group_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, check group is existed, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
+    )
+
+    get_partition_and_send(sup_id, :group_exists, group_id, timeout)
+  end
+
+  @doc """
   get pid of group worker.
   """
   def get_pid_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do

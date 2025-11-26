@@ -271,6 +271,10 @@ defmodule SuperWorker.Supervisor.Group do
               end
             end
 
+            Logger.debug(
+              "SuperWorker, Group, worker #{inspect(worker.id)} started, fun: #{inspect(worker.fun)}"
+            )
+
             case worker.fun do
               {m, f, a} ->
                 apply(m, f, a)

@@ -3,6 +3,8 @@ defmodule SuperWorker.Supervisor.Worker do
   Documentation for `SuperWorker.Supervisor.Worker`.
   """
 
+  @default_restart_strategy :transient
+
   alias SuperWorker.Supervisor.{Validator, Constants}
 
   @enforce_keys [:id, :fun]
@@ -12,7 +14,7 @@ defmodule SuperWorker.Supervisor.Worker do
     # name of worker.
     :name,
     # restart strategy of worker. Affected by the supervisor & parent restart strategy.
-    restart_strategy: :transient,
+    restart_strategy: @default_restart_strategy,
     # type of worker. :standalone, :group, :chain
     type: :standalone,
     # anonymous function {:fun, fun} or  {function, module, arguments} of worker.
@@ -69,6 +71,10 @@ defmodule SuperWorker.Supervisor.Worker do
          {:ok, opts} <- map_to_struct(opts) do
       {:ok, opts}
     end
+  end
+
+  def default_restart_strategy() do
+    @default_restart_strategy
   end
 
   defp validate_restart_strategy(opts) do

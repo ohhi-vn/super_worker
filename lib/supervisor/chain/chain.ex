@@ -166,9 +166,10 @@ defmodule SuperWorker.Supervisor.Chain do
   def kill_all_workers(chain = %Chain{}) do
     {:ok, workers} = Db.get_workers_by_parent(chain.table, {:chain, chain.id})
 
-    Enum.each(workers, fn {worker_id, _, pid} ->
-      Logger.debug("SuperWorker, Chain, kill #{inspect(worker_id)}, pid: #{inspect(pid)}")
+    Enum.each(workers, fn {worker_id, pid} ->
       Process.exit(pid, :kill)
+      Db.delete_worker(chain.table, worker_id)
+      Db.delete_worker_info(chain.table, worker_id, {:chain, chain.id})
     end)
 
     {:ok, chain}
