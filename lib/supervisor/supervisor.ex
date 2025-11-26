@@ -38,7 +38,7 @@ defmodule SuperWorker.Supervisor do
   opts = [id: :sup1, number_of_partitions: 2, link: false]
 
   # Start supervisor
-  Sup.start(opts)
+  Sup.start_with_config(opts)
 
   # Add group in runtime, you also can add group in config.
   Sup.add_group(:sup1, [id: :group1, restart_strategy: :one_for_all])
@@ -55,7 +55,7 @@ defmodule SuperWorker.Supervisor do
   end, [id: :g2_2])
 
   ref = make_ref()
-  Sup.send_to_group(:sup1, :group2, :g2_2, {:ping, ref, self()})
+  Sup.send_to_group_worker(:sup1, :group2, :g2_2, {:ping, ref, self()})
 
   receive do
     {:pong, ^ref} ->

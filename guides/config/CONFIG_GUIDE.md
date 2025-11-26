@@ -394,7 +394,7 @@ def start(_type, _args) do
   SuperWorker.ConfigLoader.ConfigParser.load()
 
   children = []
-  Supervisor.start_link(children, strategy: :one_for_one, name: SuperWorker.Supervisor)
+  Supervisor.start_link(children, strategy: :one_for_one, name: SuperWorker.MainAppSupervisor)
 end
 ```
 

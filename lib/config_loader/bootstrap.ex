@@ -78,7 +78,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   defp start_supervisor_process(options) do
     Logger.debug("SuperWorker, Bootstrap, starting supervisor process with: #{inspect(options)}")
 
-    case Supervisor.start(options) do
+    case Supervisor.start_with_config(options) do
       {:ok, pid} ->
         Logger.debug("SuperWorker, Bootstrap, supervisor process started: #{inspect(pid)}")
         {:ok, pid}

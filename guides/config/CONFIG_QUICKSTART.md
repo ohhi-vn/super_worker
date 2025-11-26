@@ -133,7 +133,7 @@ SuperWorker.ConfigLoader.ConfigParser.load_one(:my_app_supervisor)
 Check if running:
 
 ```elixir
-SuperWorker.Supervisor.is_running?(:my_app_supervisor)
+SuperWorker.Supervisor.running?(:my_app_supervisor)
 ```
 
 Stop a supervisor:
