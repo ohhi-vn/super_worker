@@ -4,9 +4,6 @@ defmodule SuperWorker.Supervisor.Looper do
 
   require Logger
 
-  # Default timeout (miliseconds) for API calls.
-  @default_time 3_000
-
   # Main loop for partition process.
   def main_loop(state) do
     receive do

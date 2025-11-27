@@ -1,7 +1,7 @@
 # Intro
 
-The library support for auto scale & distritubed for Elixir application.
-Help dev can easily work with concurrency.
+The library support for newbies work with process & supervisor in Elixir.
+Easy to add & identify processes in system.
 
 *Note: Library is still developing, please don't use for product.*
 
@@ -13,7 +13,13 @@ It's matched with dynamic typed language like Elixir.
 
 ## Features
 
-Support new kind of process, chain processes is made for easy create a powerful stream processing.
+Group processes for easy to maintain and communitcate with group.
+
+Chain processes for work with multi steps or stream processing by process.
+
+Standalone processes for add new process & interact with processes by id.
+
+Each Group/Chain/Standalone process has it restart strategy.
 
 ## Supervisor
 
@@ -38,7 +44,7 @@ Client(Client) <-->|api| Supervisor
 
 - Group processes
 - Chain processes
-- Freedom processes
+- Standalone processes
 
 ### Group processes
 
@@ -58,7 +64,7 @@ graph LR
 ### Chain processes
 
 Support chain task type. The data after process in a process will be passed to next process in chain.
-If a process is crashed, all other process in chain will be die follow.
+If a process is crashed, all other process in chain will be died follow (depend restart strategy of chain).
 
 From foreign process data can pass to chain (first worker in chain or directly to a worker with id) by Supervisor APIs.
 
@@ -84,8 +90,6 @@ graph LR
 
 ## Planned features
 
-- Support GenServer.
-- Callback module for easy understand & implement.
 - Multiprocess per chain node.
 - Auto scale for chain.
 - Distributed in cluster.

@@ -26,7 +26,7 @@ defmodule SuperWorker.Supervisor.Validator do
 
   def validate_and_convert(options) do
     with {:ok, opts} <- normalize_options(options, @sup_params),
-         {:ok, opts} <- default_sup_opts(opts),
+         {:ok, opts} <- default_sup_options(opts),
          {:ok, opts} <- generic_default_options(opts),
          {:ok, opts} <- validate_options(opts),
          {:ok, sup} <- to_struct(opts) do
@@ -39,7 +39,7 @@ defmodule SuperWorker.Supervisor.Validator do
     do_normalize_opts(opts, allowed_params, %{}, [])
   end
 
-  @spec generic_default_options(map()) :: map()
+  @spec generic_default_options(map()) :: {:ok, map()}
   defp generic_default_options(opts) when is_map(opts) do
     {:ok, Map.put_new(opts, :owner, self())}
   end
@@ -108,33 +108,6 @@ defmodule SuperWorker.Supervisor.Validator do
   end
 
   # ============================================================================
-  # System Information
-  # ============================================================================
-
-  @doc """
-  Returns the number of online schedulers in the system.
-
-  This is typically used as the default number of partitions.
-  """
-  @spec get_default_schedulers() :: pos_integer()
-  def get_default_schedulers do
-    System.schedulers_online()
-  end
-
-  @doc """
-  Counts the number of messages in a process's message queue.
-
-  Returns 0 if the process is not alive.
-  """
-  @spec count_msgs(pid()) :: non_neg_integer()
-  def count_msgs(pid) when is_pid(pid) do
-    case Process.info(pid, :message_queue_len) do
-      {:message_queue_len, n} when is_integer(n) -> n
-      nil -> 0
-    end
-  end
-
-  # ============================================================================
   # Private Functions
   # ============================================================================
 
@@ -191,31 +164,31 @@ defmodule SuperWorker.Supervisor.Validator do
 
   # Set the default options if not provided.
   # TO-DO: Merge with generic_default_sup_opts/1.
-  defp default_sup_opts(opts) do
-    opts =
-      if Map.has_key?(opts, :num_partitions) do
-        opts
+  defp default_sup_options(options) do
+    options =
+      if Map.has_key?(options, :num_partitions) do
+        options
       else
-        Map.put(opts, :num_partitions, :erlang.system_info(:schedulers_online))
+        Map.put(options, :num_partitions, :erlang.system_info(:schedulers_online))
       end
 
-    opts =
-      if Map.has_key?(opts, :link) do
-        opts
+    options =
+      if Map.has_key?(options, :link) do
+        options
       else
-        Map.put(opts, :link, true)
+        Map.put(options, :link, true)
       end
 
-    opts =
-      if Map.has_key?(opts, :name) do
-        opts
+    options =
+      if Map.has_key?(options, :name) do
+        options
       else
-        Map.put(opts, :name, SuperWorker.Supervisor)
+        Map.put(options, :name, SuperWorker.Supervisor)
       end
 
-    opts = Map.put(opts, :master, opts.id)
+    options = Map.put(options, :master, options.id)
 
-    {:ok, opts}
+    {:ok, options}
   end
 
   # Validate the type & value of options.

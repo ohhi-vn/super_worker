@@ -42,7 +42,6 @@ defmodule SuperWorker.Supervisor.ApiHelper do
 
   ## Examples
 
-      ref = response_ref()
       # ... send message with ref ...
       api_receiver(ref, 5000)
 
