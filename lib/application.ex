@@ -13,6 +13,7 @@ defmodule SuperWorker.Application do
   def start(_type, _args) do
     Logger.debug("SuperWorker, Application, start app")
 
+    # Load supervisors' configuration
     Cfg.load()
 
     children = []

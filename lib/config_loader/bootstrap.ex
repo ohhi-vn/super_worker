@@ -26,7 +26,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
   ```elixir
   config = %{
-    options: [id: :my_sup, number_of_partitions: 2, link: false],
+    options: [id: :my_sup, num_partitions: 2, link: false],
     children: [
       %{
         type: :group,

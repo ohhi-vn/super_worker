@@ -11,7 +11,7 @@ defmodule SuperWorker.Supervisor.Validator do
   - Process information helpers
   """
 
-  @sup_params [:id, :number_of_partitions, :link, :report_to, :children]
+  @sup_params [:id, :num_partitions, :link, :report_to, :children]
 
   alias SuperWorker.Supervisor
 

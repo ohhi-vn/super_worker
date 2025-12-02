@@ -20,7 +20,7 @@ config :super_worker, :example_simple_supervisor,
   # Supervisor-level options
   options: [
     # Number of partitions for distributing work (default: number of schedulers)
-    number_of_partitions: 2,
+    num_partitions: 2,
     # Whether to link the supervisor to the calling process
     link: false,
     # List of PIDs to report worker crashes and events to
@@ -58,7 +58,7 @@ config :super_worker, :example_simple_supervisor,
 
 config :super_worker, :example_chain_supervisor,
   options: [
-    number_of_partitions: 4,
+    num_partitions: 4,
     link: false
   ],
   chains: [
@@ -98,7 +98,7 @@ config :super_worker, :example_chain_supervisor,
 
 config :super_worker, :example_standalone_supervisor,
   options: [
-    number_of_partitions: 1,
+    num_partitions: 1,
     link: false
   ],
   workers: [
@@ -133,7 +133,7 @@ config :super_worker, :example_standalone_supervisor,
 
 config :super_worker, :example_complex_supervisor,
   options: [
-    number_of_partitions: 8,
+    num_partitions: 8,
     link: false,
     report_to: []
   ],
@@ -244,7 +244,7 @@ config :super_worker, :example_complex_supervisor,
 
 config :super_worker, :example_dev_supervisor,
   options: [
-    number_of_partitions: 1,
+    num_partitions: 1,
     link: false
   ],
   groups: [

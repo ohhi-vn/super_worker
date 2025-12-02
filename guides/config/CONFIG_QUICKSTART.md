@@ -17,12 +17,11 @@ import Config
 
 config :super_worker, :my_app_supervisor,
   options: [
-    number_of_partitions: 2,
+    num_partitions: 2,
     link: false
   ],
   groups: [
-    [
-      id: :api_workers,
+    api_workers: [
       restart_strategy: :one_for_one,
       workers: [
         [
@@ -44,10 +43,9 @@ The supervisor starts automatically when your application boots. No additional c
 
 ```elixir
 config :super_worker, :job_supervisor,
-  options: [number_of_partitions: 4, link: false],
+  options: [num_partitions: 4, link: false],
   groups: [
-    [
-      id: :job_workers,
+    job_workers: [
       restart_strategy: :one_for_one,
       workers: [
         [mfa: {MyApp.Jobs.EmailWorker, :start_link, []}, options: [id: :email]],
@@ -61,10 +59,9 @@ config :super_worker, :job_supervisor,
 
 ```elixir
 config :super_worker, :pipeline_supervisor,
-  options: [number_of_partitions: 2, link: false],
+  options: [num_partitions: 2, link: false],
   chains: [
-    [
-      id: :data_pipeline,
+    data_pipeline: [
       restart_strategy: :rest_for_one,
       send_type: :round_robin,
       workers: [
@@ -80,12 +77,12 @@ config :super_worker, :pipeline_supervisor,
 
 ```elixir
 config :super_worker, :app_supervisor,
-  options: [number_of_partitions: 4, link: false],
+  options: [num_partitions: 4, link: false],
   groups: [
-    [id: :api_group, restart_strategy: :one_for_one, workers: [...]]
+    api_group: [restart_strategy: :one_for_one, workers: [...]]
   ],
   chains: [
-    [id: :processing_chain, restart_strategy: :rest_for_one, workers: [...]]
+    processing_chain: [restart_strategy: :rest_for_one, workers: [...]]
   ],
   workers: [
     # Standalone workers with individual restart strategies
@@ -146,7 +143,7 @@ SuperWorker.Supervisor.stop(:my_app_supervisor)
 
 ### Supervisor Options
 
-- `number_of_partitions` - Number of partitions (default: CPU cores)
+- `num_partitions` - Number of partitions (default: CPU cores)
 - `link` - Link to caller process (true/false)
 - `report_to` - List of PIDs for event reporting
 
@@ -173,12 +170,12 @@ SuperWorker.Supervisor.stop(:my_app_supervisor)
 # config/dev.exs
 import Config
 config :super_worker, :my_supervisor,
-  options: [number_of_partitions: 1, link: false]
+  options: [num_partitions: 1, link: false]
 
 # config/prod.exs
 import Config
 config :super_worker, :my_supervisor,
-  options: [number_of_partitions: 8, link: false]
+  options: [num_partitions: 8, link: false]
 ```
 
 ## Troubleshooting

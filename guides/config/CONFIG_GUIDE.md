@@ -21,12 +21,11 @@ import Config
 
 config :super_worker, :my_supervisor,
   options: [
-    number_of_partitions: 2,
+    num_partitions: 2,
     link: false
   ],
   groups: [
-    [
-      id: :worker_pool,
+    worker_pool: [
       restart_strategy: :one_for_one,
       workers: [
         [
@@ -60,7 +59,7 @@ SuperWorker.ConfigLoader.ConfigParser.load_one(:my_supervisor)
 
 ```elixir
 options: [
-  number_of_partitions: 2,  # Number of partitions (default: number of schedulers)
+  num_partitions: 2,  # Number of partitions (default: number of schedulers)
   link: false,              # Whether to link supervisor to caller
   report_to: [],            # List of PIDs to report events to
   strategy: :one_for_one    # Supervisor strategy (optional)
@@ -73,8 +72,7 @@ Groups are collections of workers that share a restart strategy:
 
 ```elixir
 groups: [
-  [
-    id: :my_group,                    # Required: Unique atom identifier
+  my_group: [
     restart_strategy: :one_for_one,   # :one_for_one or :one_for_all
     type: :normal,                    # Optional: group type
     max_restarts: 3,                  # Optional: max restarts
@@ -92,8 +90,7 @@ Chains enable sequential data processing where output flows from one worker to t
 
 ```elixir
 chains: [
-  [
-    id: :processing_chain,              # Required: Unique atom identifier
+  processing_chain: [
     restart_strategy: :rest_for_one,    # :one_for_one, :one_for_all, :rest_for_one
     send_type: :round_robin,            # :broadcast, :random, :partition, :round_robin
     queue_length: 100,                  # Optional: max queue size
@@ -157,12 +154,11 @@ Workers can be specified in two ways:
 ```elixir
 config :super_worker, :app_supervisor,
   options: [
-    number_of_partitions: 4,
+    num_partitions: 4,
     link: false
   ],
   groups: [
-    [
-      id: :api_handlers,
+    api_handlers: [
       restart_strategy: :one_for_one,
       workers: [
         [mfa: {MyApp.API.Handler, :start_link, []}, options: [id: :handler_1]],
@@ -171,8 +167,7 @@ config :super_worker, :app_supervisor,
     ]
   ],
   chains: [
-    [
-      id: :order_pipeline,
+    order_pipeline: [
       restart_strategy: :rest_for_one,
       send_type: :partition,
       workers: [
@@ -265,13 +260,6 @@ Starts supervisors from parsed configurations.
 - **`:transient`** - Restart only on abnormal termination
 - **`:temporary`** - Never restart the worker
 
-## Chain Send Types
-
-- **`:broadcast`** - Send data to all workers at the current level
-- **`:random`** - Send to a randomly selected worker
-- **`:partition`** - Use consistent hashing based on data
-- **`:round_robin`** - Distribute messages evenly across workers
-
 ## Best Practices
 
 1. **Use Descriptive IDs**: Choose clear, meaningful atom IDs for all supervisors, groups, chains, and workers
@@ -281,10 +269,10 @@ Starts supervisors from parsed configurations.
 3. **Environment-Specific Configs**: Use different configurations for dev/test/prod environments:
    ```elixir
    # config/dev.exs
-   config :super_worker, :my_sup, options: [number_of_partitions: 1]
+   config :super_worker, :my_sup, options: [num_partitions: 1]
 
    # config/prod.exs
-   config :super_worker, :my_sup, options: [number_of_partitions: 8]
+   config :super_worker, :my_sup, options: [num_partitions: 8]
    ```
 
 4. **Validate Early**: Invalid configurations are caught during parsing, so test your configs in development

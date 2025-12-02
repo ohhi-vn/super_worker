@@ -26,7 +26,7 @@ defmodule SuperWorker.Supervisor.Constants.Types do
   @exit_reasons [:normal, :killed, :restart, :removed]
 
   # Parameter Keys for configuration validation
-  @supervisor_params [:id, :number_of_partitions, :link, :report_to, :children]
+  @supervisor_params [:id, :num_partitions, :link, :report_to, :children]
   @worker_params [:id, :type, :name, :fun, :parent, :restart_strategy]
   @standalone_params [:restart_strategy, :max_restarts, :max_seconds, :auto_restart_time]
   @group_params [:id, :restart_strategy, :type, :max_restarts, :max_seconds, :auto_restart_time]

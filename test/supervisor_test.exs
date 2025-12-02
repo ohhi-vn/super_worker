@@ -27,7 +27,7 @@ defmodule SuperWorker.SupervisorTest do
 
   @tag :supervisor_start
   test "start/stop supervisor, no linked process" do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 1)
+    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 1)
 
     assert true == Sup.running?(@sup_id)
     Sup.stop(@sup_id)
@@ -38,7 +38,7 @@ defmodule SuperWorker.SupervisorTest do
 
   @tag :supervisor_start2
   test "start/stop supervisor, no linked process - 2" do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 10)
+    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 10)
 
     assert true == Sup.running?(@sup_id)
     Sup.stop(@sup_id)
@@ -49,21 +49,21 @@ defmodule SuperWorker.SupervisorTest do
 
   @tag :supervisor_check_duplicate_id
   test "check duplicated supervisor's id" do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 1)
-    {:error, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 1)
+    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 1)
+    {:error, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 1)
     assert true == Sup.running?(@sup_id)
   end
 
   @tag :supervisor_check_duplicate_id2
   test "check duplicated supervisor's id - 2" do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 10)
-    {:error, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 10)
+    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 10)
+    {:error, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 10)
     assert true == Sup.running?(@sup_id)
   end
 
   @tag :supervisor_start_link_1
   test "start supervisor with link" do
-    {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 1)
+    {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 1)
     result = Sup.running?(@sup_id)
 
     assert true == result
@@ -74,7 +74,7 @@ defmodule SuperWorker.SupervisorTest do
 
   @tag :supervisor_start_link_1a
   test "start supervisor with link - a" do
-    {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 10)
+    {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 10)
     result = Sup.running?(@sup_id)
 
     assert true == result
@@ -87,7 +87,7 @@ defmodule SuperWorker.SupervisorTest do
   test "start supervisor with link, process still alive if linked process exit :normal - a" do
     pid =
       spawn(fn ->
-        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 1)
+        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 1)
 
         receive do
           {from, :exit, reason} ->
@@ -117,7 +117,7 @@ defmodule SuperWorker.SupervisorTest do
   test "start supervisor with link, process still alive if linked process exit :normal - 2a" do
     pid =
       spawn(fn ->
-        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 3)
+        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 3)
 
         receive do
           {from, :exit, reason} ->
@@ -147,7 +147,7 @@ defmodule SuperWorker.SupervisorTest do
   test "start supervisor with linked process, expected the supervisor is crashed follow crashed process" do
     pid =
       spawn(fn ->
-        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 1)
+        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 1)
 
         receive do
           {from, :crash} ->
@@ -183,7 +183,7 @@ defmodule SuperWorker.SupervisorTest do
   test "start supervisor with linked process, expected the supervisor is crashed follow crashed process - 3a" do
     pid =
       spawn(fn ->
-        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 10)
+        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 10)
 
         receive do
           {from, :crash} ->
@@ -219,7 +219,7 @@ defmodule SuperWorker.SupervisorTest do
   test "children crash follow supervisor" do
     pid =
       spawn(fn ->
-        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 1)
+        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 1)
         {:ok, _} = Sup.add_group(@sup_id, id: :group1, restart_strategy: :one_for_one)
         {:ok, _} = Sup.add_group_worker(@sup_id, :group1, {__MODULE__, :loop, [:w1]}, id: :w1)
 
@@ -250,7 +250,7 @@ defmodule SuperWorker.SupervisorTest do
   test "children crash follow supervisor - 2" do
     pid =
       spawn(fn ->
-        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, number_of_partitions: 10)
+        {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 10)
         {:ok, _} = Sup.add_group(@sup_id, id: :group1, restart_strategy: :one_for_one)
         {:ok, _} = Sup.add_group_worker(@sup_id, :group1, {__MODULE__, :loop, [:w1]}, id: :w1)
 
@@ -280,10 +280,10 @@ defmodule SuperWorker.SupervisorTest do
   @tag :supervisor_reuse_id_after_stop
   test "re-use id after stop" do
     sup_id = :test_reuse
-    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 1)
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 1)
     assert true == Sup.running?(sup_id)
 
-    result = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 1)
+    result = Sup.start_with_config(link: false, id: sup_id, num_partitions: 1)
 
     assert(match?({:error, _}, result))
 
@@ -291,11 +291,11 @@ defmodule SuperWorker.SupervisorTest do
     Process.sleep(1)
     assert false == Sup.running?(sup_id)
 
-    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 1)
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 1)
     assert true == Sup.running?(sup_id)
     Sup.stop(sup_id)
     Process.sleep(1)
-    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 1)
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 1)
     assert true == Sup.running?(sup_id)
     Sup.stop(sup_id)
     Process.sleep(1)
@@ -305,10 +305,10 @@ defmodule SuperWorker.SupervisorTest do
   @tag :supervisor_reuse_id_after_stop2
   test "re-use id after stop - 2" do
     sup_id = :test_reuse
-    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 10)
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 10)
     assert true == Sup.running?(sup_id)
 
-    result = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 10)
+    result = Sup.start_with_config(link: false, id: sup_id, num_partitions: 10)
 
     assert(match?({:error, _}, result))
 
@@ -316,11 +316,11 @@ defmodule SuperWorker.SupervisorTest do
     Process.sleep(1)
     assert false == Sup.running?(sup_id)
 
-    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 10)
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 10)
     assert true == Sup.running?(sup_id)
     Sup.stop(sup_id)
     Process.sleep(1)
-    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, number_of_partitions: 10)
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 10)
     assert true == Sup.running?(sup_id)
     Sup.stop(sup_id)
     Process.sleep(1)

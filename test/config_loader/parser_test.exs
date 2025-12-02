@@ -19,20 +19,20 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "parses minimal valid configuration with empty children" do
       config = [
         options: [
-          number_of_partitions: 2,
+          num_partitions: 2,
           link: false
         ]
       ]
 
       assert {:ok, parsed} = Parser.parse(config)
-      assert parsed.options[:number_of_partitions] == 2
+      assert parsed.options[:num_partitions] == 2
       assert parsed.options[:link] == false
       assert parsed.children == []
     end
 
     test "parses configuration with groups" do
       config = [
-        options: [number_of_partitions: 1],
+        options: [num_partitions: 1],
         groups: [
           my_group: [
             restart_strategy: :one_for_one,
@@ -51,7 +51,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
 
     test "parses configuration with chains" do
       config = [
-        options: [number_of_partitions: 1],
+        options: [num_partitions: 1],
         chains: [
           my_chain: [
             restart_strategy: :rest_for_one,
@@ -72,7 +72,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
 
     test "parses configuration with standalone workers" do
       config = [
-        options: [number_of_partitions: 1],
+        options: [num_partitions: 1],
         workers: [
           [
             mfa: {MyModule, :my_function, [:arg1]},
@@ -95,7 +95,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       fun = fn -> :ok end
 
       config = [
-        options: [number_of_partitions: 1],
+        options: [num_partitions: 1],
         workers: [
           [
             fun: fun,
@@ -174,7 +174,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "parses complex configuration with multiple children types" do
       config = [
         options: [
-          number_of_partitions: 4,
+          num_partitions: 4,
           link: true,
           report_to: []
         ],
@@ -201,7 +201,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       ]
 
       assert {:ok, parsed} = Parser.parse(config)
-      assert parsed.options[:number_of_partitions] == 4
+      assert parsed.options[:num_partitions] == 4
       assert parsed.options[:link] == true
       assert length(parsed.children) == 3
 
@@ -371,7 +371,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
     test "filters out unknown supervisor options" do
       config = [
         options: [
-          number_of_partitions: 2,
+          num_partitions: 2,
           unknown_option: :value,
           another_unknown: 123
         ]
@@ -380,7 +380,7 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       assert {:ok, parsed} = Parser.parse(config)
       refute Keyword.has_key?(parsed.options, :unknown_option)
       refute Keyword.has_key?(parsed.options, :another_unknown)
-      assert parsed.options[:number_of_partitions] == 2
+      assert parsed.options[:num_partitions] == 2
     end
 
     test "handles valid group restart strategies" do
@@ -506,15 +506,15 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       assert Enum.at(parsed.children, 1).id == :group2
     end
 
-    test "handles invalid number_of_partitions gracefully" do
+    test "handles invalid num_partitions gracefully" do
       config = [
         options: [
-          number_of_partitions: -1
+          num_partitions: -1
         ]
       ]
 
       assert {:ok, parsed} = Parser.parse(config)
-      refute Keyword.has_key?(parsed.options, :number_of_partitions)
+      refute Keyword.has_key?(parsed.options, :num_partitions)
     end
 
     test "handles invalid link value gracefully" do

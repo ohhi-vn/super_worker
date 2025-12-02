@@ -38,7 +38,12 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.get_all_env(@app)
       |> Enum.each(fn {key, _} ->
         if is_atom(key) and Supervisor.running?(key) do
-          Supervisor.stop(key)
+          Process.sleep(100)
+
+          if Supervisor.running?(key) do
+            Supervisor.stop(key)
+          end
+
           wait_until_stopped(key, 1000)
         end
       end)
@@ -79,7 +84,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       config = [
         options: [
-          number_of_partitions: 1,
+          num_partitions: 1,
           link: false
         ],
         groups: [
@@ -105,12 +110,12 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id_2 = :load_test_sup_multi_2
 
       config_1 = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [group1: [restart_strategy: :one_for_one, workers: []]]
       ]
 
       config_2 = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [group2: [restart_strategy: :one_for_all, workers: []]]
       ]
 
@@ -132,7 +137,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       worker_id = :worker_1
 
       config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [
           {group_id,
            [
@@ -163,7 +168,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id = :load_test_multi_children
 
       config = [
-        options: [number_of_partitions: 2, link: false],
+        options: [num_partitions: 2, link: false],
         groups: [
           test_group: [restart_strategy: :one_for_one, workers: []]
         ],
@@ -192,13 +197,13 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id_invalid = :load_test_invalid
 
       valid_config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [valid_group: [restart_strategy: :one_for_one, workers: []]]
       ]
 
       # Invalid config - group missing id
       invalid_config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [[restart_strategy: :one_for_one, workers: []]]
       ]
 
@@ -222,7 +227,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id = :load_one_test_sup
 
       config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [one_group: [restart_strategy: :one_for_one, workers: []]]
       ]
 
@@ -241,7 +246,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id = :load_one_with_workers
 
       config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [
           group_with_workers: [
             restart_strategy: :one_for_one,
@@ -265,7 +270,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id = :load_one_multi_type
 
       config = [
-        options: [number_of_partitions: 2, link: false],
+        options: [num_partitions: 2, link: false],
         groups: [g1: [restart_strategy: :one_for_one, workers: []]],
         chains: [c1: [restart_strategy: :one_for_all, workers: []]],
         workers: [[mfa: {TestWorker, :start_link, []}, options: [id: :s1]]]
@@ -294,7 +299,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
 
       # Invalid config - group missing required id
       invalid_config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [[restart_strategy: :one_for_one, workers: []]]
       ]
 
@@ -309,7 +314,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id = :duplicate_sup
 
       config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: []
       ]
 
@@ -328,7 +333,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id = :empty_config_sup
 
       config = [
-        options: [number_of_partitions: 1, link: false]
+        options: [num_partitions: 1, link: false]
       ]
 
       Application.put_env(@app, sup_id, config)
@@ -363,12 +368,12 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id_2 = :integration_sup_2
 
       config_1 = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [int_group_1: [restart_strategy: :one_for_one, workers: []]]
       ]
 
       config_2 = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: [int_group_2: [restart_strategy: :one_for_all, workers: []]]
       ]
 
@@ -396,7 +401,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       sup_id = :id_test_supervisor
 
       config = [
-        options: [number_of_partitions: 1, link: false],
+        options: [num_partitions: 1, link: false],
         groups: []
       ]
 

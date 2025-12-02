@@ -11,6 +11,10 @@ defmodule MyGenServer do
     GenServer.call(pid, {:get, key})
   end
 
+  def crash(pid) do
+    GenServer.cast(pid, :crash)
+  end
+
   def put(pid, key, value) do
     GenServer.cast(pid, {:put, key, value})
   end
@@ -33,6 +37,11 @@ defmodule MyGenServer do
 
   def handle_cast({:delete, key}, state) do
     {:noreply, Map.delete(state, key)}
+  end
+
+  def handle_cast(:crash, state) do
+    raise "I'm crashing"
+    {:noreply, state}
   end
 
   def handle_info({:ping, from} = msg, state) do

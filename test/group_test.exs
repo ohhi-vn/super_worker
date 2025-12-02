@@ -9,7 +9,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
   @sup_id :sup_group_test
 
   setup_all do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, number_of_partitions: 2)
+    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 2)
     :ok
   end
 

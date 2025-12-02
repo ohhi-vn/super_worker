@@ -23,7 +23,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
           options: keyword()
         }
 
-  @supervisor_option_keys [:number_of_partitions, :link, :report_to, :strategy]
+  @supervisor_option_keys [:num_partitions, :link, :report_to, :strategy]
   @group_option_keys [
     :id,
     :restart_strategy,
@@ -54,7 +54,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
   ```elixir
   [
     options: [
-      number_of_partitions: 2,
+      num_partitions: 2,
       link: false,
       strategy: :one_for_one
     ],
@@ -131,17 +131,20 @@ defmodule SuperWorker.ConfigLoader.Parser do
   defp validate_supervisor_options(options) do
     options
     |> Enum.map(fn
-      {:number_of_partitions, value} when is_integer(value) and value > 0 ->
-        {:number_of_partitions, value}
+      {:num_partitions, value} when is_integer(value) and value > 0 ->
+        {:num_partitions, value}
 
-      {:number_of_partitions, value} ->
+      {:num_partitions, value} ->
         Logger.warning(
-          "SuperWorker, Parser, invalid number_of_partitions: #{inspect(value)}, using default"
+          "SuperWorker, Parser, invalid num_partitions: #{inspect(value)}, using default"
         )
 
         nil
 
       {:link, value} when is_boolean(value) ->
+        {:link, value}
+
+      {:link, value} when is_pid(value) ->
         {:link, value}
 
       {:link, value} ->

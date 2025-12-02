@@ -62,7 +62,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
   describe "start_supervisor/1 with valid configurations" do
     test "starts supervisor with minimal configuration", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: []
       }
 
@@ -73,7 +73,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with custom partitions", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 4, link: false],
+        options: [id: sup_id, num_partitions: 4, link: false],
         children: []
       }
 
@@ -83,7 +83,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with a group", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :group,
@@ -101,7 +101,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with a group and workers", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :group,
@@ -124,7 +124,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with a chain", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :chain,
@@ -143,7 +143,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with a chain and workers", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :chain,
@@ -165,7 +165,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with standalone worker using MFA", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :standalone,
@@ -186,7 +186,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       end
 
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :standalone,
@@ -202,7 +202,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with multiple children types", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 2, link: false],
+        options: [id: sup_id, num_partitions: 2, link: false],
         children: [
           %{
             type: :group,
@@ -236,7 +236,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "starts supervisor with multiple groups", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :group,
@@ -262,7 +262,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
   describe "start_supervisor/1 error handling" do
     test "returns error when supervisor ID is missing" do
       config = %{
-        options: [number_of_partitions: 1],
+        options: [num_partitions: 1],
         children: []
       }
 
@@ -277,7 +277,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "returns error when supervisor with same ID already exists", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: []
       }
 
@@ -288,7 +288,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
     test "cleans up supervisor when children fail to start", %{sup_id: sup_id} do
       # Using an invalid child type to force failure
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :invalid_type,
@@ -311,7 +311,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
   describe "start_supervisor/1 edge cases" do
     test "handles empty children list gracefully", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: []
       }
 
@@ -321,7 +321,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "handles group with empty workers list", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :group,
@@ -338,7 +338,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
     test "handles chain with empty workers list", %{sup_id: sup_id} do
       config = %{
-        options: [id: sup_id, number_of_partitions: 1, link: false],
+        options: [id: sup_id, num_partitions: 1, link: false],
         children: [
           %{
             type: :chain,
@@ -371,7 +371,7 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
 
       raw_config = [
         options: [
-          number_of_partitions: 2,
+          num_partitions: 2,
           link: false
         ],
         groups: [

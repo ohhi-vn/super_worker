@@ -1,5 +1,5 @@
 defmodule SuperWorker.Supervisor.ApiHelperTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SuperWorker.Supervisor.{ApiHelper, Message}
 

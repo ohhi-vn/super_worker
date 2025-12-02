@@ -13,7 +13,7 @@ defmodule SuperWorker.Supervisor do
 
   ## Group processes
   Group processes are a set of processes that are started together.
-  If one of the processes is crashed, depending on the restart strategy of group only that process or all the processes will be restarted.
+  If one of the processes is crashed, depending on the restart strategy of group, only that process or all the processes will be restarted.
   Each group has a separated restart strategy.
 
   ## Chain processes
@@ -35,7 +35,7 @@ defmodule SuperWorker.Supervisor do
   alias SuperWorker.Supervisor, as: Sup
 
   # Config for supervisor
-  opts = [id: :sup1, number_of_partitions: 2, link: false]
+  opts = [id: :sup1, num_partitions: 2, link: false]
 
   # Start supervisor
   Sup.start_with_config(opts)
@@ -80,6 +80,15 @@ defmodule SuperWorker.Supervisor do
     table: nil
   ]
 
+  @type t :: %__MODULE__{
+          id: atom(),
+          num_partitions: pos_integer(),
+          link: boolean(),
+          report_to: [pid() | {atom(), pid()}],
+          partitions: %{pos_integer() => pid()},
+          table: nil
+        }
+
   @default_time 3_000
 
   alias __MODULE__
@@ -89,6 +98,10 @@ defmodule SuperWorker.Supervisor do
 
   require Logger
 
+  @doc """
+  start_link for using supervisor as child in other supervisor or link to current process.
+  """
+  @spec start_link(t()) :: {:ok, pid} | {:error, any()}
   def start_link(%Supervisor{} = options) do
     if running?(options.id) do
       {:error, {:already_started, options.id}}
@@ -98,6 +111,10 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  @doc """
+  Work like start_link/1 with default options.
+  """
+  @spec start_link() :: {:ok, pid} | {:error, any()}
   def start_link() do
     supervisor = %Supervisor{
       id: __MODULE__,
@@ -107,6 +124,10 @@ defmodule SuperWorker.Supervisor do
     start_link(supervisor)
   end
 
+  @doc """
+  Start supervisor run as independent process.
+  """
+  @spec start(t()) :: {:ok, pid} | {:error, any()}
   def start(%Supervisor{} = options) do
     if running?(options.id) do
       {:error, {:already_started, options.id}}
@@ -116,6 +137,10 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  @doc """
+  Start supervisor run as independent process with default options.
+  """
+  @spec start() :: {:ok, pid} | {:error, any()}
   def start() do
     supervisor = %Supervisor{
       id: __MODULE__,
@@ -132,38 +157,32 @@ defmodule SuperWorker.Supervisor do
   @spec start_with_config(
           id: atom(),
           link: boolean() | pid(),
-          number_of_partitions: integer(),
+          num_partitions: integer(),
           report_to: list()
         ) :: {:ok, pid} | {:error, any()}
   def start_with_config(config) when is_list(config) do
-    if !Keyword.keys(config) do
-      Logger.error(
-        "SuperWorker, Supervisor, config is incorrect format, config: #{inspect(config)}"
-      )
-
-      {:error, :invalid_config}
+    with {:ok, supervisor} <- Validator.validate_and_convert(config),
+         false <- running?(supervisor.id) do
+      do_start_supervisor(supervisor)
     else
-      with {:ok, supervisor} <- Validator.validate_and_convert(config),
-           false <- running?(supervisor.id) do
-        do_start_supervisor(supervisor)
-      else
-        true ->
-          Logger.error(
-            "SuperWorker, Supervisor, supervisor has id in #{inspect(config)} is already running."
-          )
+      true ->
+        Logger.error(
+          "SuperWorker, Supervisor, supervisor has id in #{inspect(config)} is already running."
+        )
 
-          {:error, :already_running}
+        {:error, :already_running}
 
-        {:error, _} = error ->
-          Logger.error(
-            "SuperWorker, Supervisor, Error when starting supervisor: #{inspect(error)}"
-          )
+      {:error, _} = error ->
+        Logger.error("SuperWorker, Supervisor, Error when starting supervisor: #{inspect(error)}")
 
-          error
-      end
+        error
     end
   end
 
+  @doc """
+  Check if supervisor is running.
+  """
+  @spec running?(atom()) :: boolean()
   def running?(id) when is_atom(id) do
     match?({:ok, _}, get_pid(id))
   end
@@ -174,7 +193,7 @@ defmodule SuperWorker.Supervisor do
   - :normal supervisor will send a message to worker for graceful shutdown. Not support for spawn process by function.
   - :kill supervisor will kill worker.
   """
-  @spec stop(atom(), shutdown_type :: atom(), timeout :: integer()) ::
+  @spec stop(atom(), shutdown_type :: atom(), timeout :: non_neg_integer()) ::
           {:ok, atom()} | {:error, any()}
   def stop(sup_id, shutdown_type \\ :kill, timeout \\ @default_time) do
     Logger.debug(
@@ -190,8 +209,9 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Get supervisor id in current process (except GenServer worker).
+  Get supervisor id in current process (not support for GenServer worker).
   """
+  @spec get_my_supervisor() :: atom() | nil
   def get_my_supervisor() do
     Process.get({:supervisor, :sup_id})
   end
@@ -200,11 +220,16 @@ defmodule SuperWorker.Supervisor do
 
   @doc """
   Add a standalone worker process to the supervisor.
-  function for start worker can be a function or a {module, function, arguments}.
+  function for start worker can be a function or a {module, function, arguments} or a GenServer.
   Standalone worker is run independently from other workers follow :one_to_one strategy.
   If worker crashes, it will check the restart strategy of worker then act accordingly.
   """
-  @spec add_standalone_worker(atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
+  @spec add_standalone_worker(
+          atom(),
+          {module(), atom(), list()} | fun() | module() | {module(), list()},
+          list(),
+          non_neg_integer()
+        ) ::
           {:ok, atom()} | {:error, any()}
   def add_standalone_worker(sup_id, mfa_or_fun, options \\ [], timeout \\ @default_time)
 
@@ -250,6 +275,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Send data directly to the worker standalone in the supervisor.
   """
+  @spec send_to_standalone_worker(atom(), any(), any(), non_neg_integer()) ::
+          :ok | {:error, term()}
   def send_to_standalone_worker(sup_id, worker_id, data, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, send standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
@@ -258,6 +285,11 @@ defmodule SuperWorker.Supervisor do
     get_partition_and_send(sup_id, :send_to_worker, {worker_id, data}, timeout)
   end
 
+  @doc """
+  Remove standalone worker from supervisor.
+  """
+  @spec remove_standalone_worker(atom(), any(), non_neg_integer()) ::
+          :ok | {:error, term()}
   def remove_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, remove standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
@@ -269,6 +301,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   get pid of standalone worker
   """
+  @spec get_pid_standalone_worker(atom(), any(), non_neg_integer()) ::
+          {:ok, pid()} | {:error, term()}
   def get_pid_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, get pid of standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
@@ -282,8 +316,15 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Add a  worker to a group in the supervisor.
   Function's options follow `Worker` module.
+  Support worker is function (mfa, anonymous function) or GenServer
   """
-  @spec add_group_worker(atom(), atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
+  @spec add_group_worker(
+          atom(),
+          atom(),
+          {module(), atom(), list()} | fun() | module() | {module(), list()},
+          list(),
+          non_neg_integer()
+        ) ::
           {:ok, atom()} | {:error, any()}
   def add_group_worker(sup_id, group_id, mfa_or_fun, opts, timeout \\ @default_time)
 
@@ -325,7 +366,7 @@ defmodule SuperWorker.Supervisor do
   Add a group to the supervisor.
   Group's options follow docs in `Group` module.
   """
-  @spec add_group(atom(), list(), integer()) :: {:ok, atom()} | {:error, any()}
+  @spec add_group(atom(), list(), non_neg_integer()) :: {:ok, atom()} | {:error, any()}
   def add_group(sup_id, options, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, add group, supervisor: #{inspect(sup_id)},  group options: #{inspect(options)}"
@@ -341,6 +382,7 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Send data to all workers in a group.
   """
+  @spec broadcast_to_group(atom(), atom(), any(), non_neg_integer()) :: :ok | {:error, any()}
   def broadcast_to_group(sup_id, group_id, data, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, send data to all workers in group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
@@ -353,6 +395,7 @@ defmodule SuperWorker.Supervisor do
   Send data to all workers in current group of worker.
   Using for communite between workers in the same group.
   """
+  @spec broadcast_to_my_group(any()) :: :ok | {:error, any()}
   def broadcast_to_my_group(data) do
     group_id = get_my_group()
     sup_id = get_my_supervisor()
@@ -372,8 +415,18 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
+  get current group id of worker.
+  """
+  @spec get_my_group() :: atom() | nil
+  def get_my_group() do
+    Process.get({:supervisor, :group_id})
+  end
+
+  @doc """
   Send data to a worker in the group.
   """
+  @spec send_to_group_worker(atom(), any(), any(), any(), non_neg_integer()) ::
+          :ok | {:error, any()}
   def send_to_group_worker(sup_id, group_id, worker_id, data, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, send data to group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
@@ -385,6 +438,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Send data to a random worker in the group.
   """
+  @spec send_to_group_random(atom(), any(), any(), non_neg_integer()) ::
+          :ok | {:error, any()}
   def send_to_group_random(sup_id, group_id, data, timeout \\ @default_time) do
     with true <- running?(sup_id),
          {:ok, pid} <- query_target_partition(sup_id, group_id) do
@@ -395,6 +450,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Send data to other worker in the same group.
   """
+  @spec send_to_my_group(any(), any()) ::
+          :ok | {:error, any()}
   def send_to_my_group(worker_id, data) do
     group_id = get_my_group()
     sup_id = get_my_supervisor()
@@ -416,6 +473,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Send data to a random worker in the same group.
   """
+  @spec send_to_my_group_random(any()) ::
+          :ok | {:error, any()}
   def send_to_my_group_random(data) do
     group_id = get_my_group()
     sup_id = get_my_supervisor()
@@ -437,6 +496,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   remove a worker out of group
   """
+  @spec remove_group_worker(atom(), any(), any(), non_neg_integer()) ::
+          :ok | {:error, any()}
   def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, remove worker from group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
@@ -448,6 +509,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   remove group
   """
+  @spec remove_group(atom(), any(), non_neg_integer()) ::
+          :ok | {:error, any()}
   def remove_group(sup_id, group_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, remove group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
@@ -459,6 +522,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   group is existed
   """
+  @spec group_exists?(atom(), any(), non_neg_integer()) ::
+          boolean() | {:error, any()}
   def group_exists?(sup_id, group_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, check group is existed, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
@@ -470,6 +535,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   get pid of group worker.
   """
+  @spec get_pid_group_worker(atom(), any(), any(), non_neg_integer()) ::
+          pid() | {:error, any()}
   def get_pid_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, get pid of group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
@@ -478,14 +545,11 @@ defmodule SuperWorker.Supervisor do
     get_partition_and_send(sup_id, :get_worker_pid, {worker_id, {:group, group_id}}, timeout)
   end
 
-  def get_my_group() do
-    Process.get({:supervisor, :group_id})
-  end
-
   @doc """
   Restart a worker in group
   """
-  @spec restart_group_worker(atom(), any, any, integer()) :: {:ok, atom()} | {:error, any()}
+  @spec restart_group_worker(atom(), any, any, non_neg_integer()) ::
+          {:ok, atom()} | {:error, any()}
   def restart_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, restart group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
@@ -497,7 +561,7 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Restart all workers in group
   """
-  @spec restart_group(atom(), any, integer()) :: {:ok, atom()} | {:error, any()}
+  @spec restart_group(atom(), any, non_neg_integer()) :: {:ok, atom()} | {:error, any()}
   def restart_group(sup_id, group_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, restart group , supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
@@ -511,7 +575,13 @@ defmodule SuperWorker.Supervisor do
   @doc """
   Add a worker to the chain in supervisor.
   """
-  @spec add_chain_worker(atom(), atom(), {module(), atom(), list()} | fun(), list(), integer()) ::
+  @spec add_chain_worker(
+          atom(),
+          atom(),
+          {module(), atom(), list()} | fun() | module() | {module(), list()},
+          list(),
+          non_neg_integer()
+        ) ::
           {:ok, atom()} | {:error, any()}
   def add_chain_worker(sup_id, chain_id, mfa_or_fun, opts, timeout \\ @default_time)
 
@@ -537,6 +607,8 @@ defmodule SuperWorker.Supervisor do
   Add a chain to the supervisor.
   Chain's options follow docs in `Chain` module.
   """
+  @spec add_chain(atom(), list(), non_neg_integer()) ::
+          {:ok, atom()} | {:error, any()}
   def add_chain(sup_id, options, timeout \\ 5_000) do
     Logger.debug(
       "SuperWorker, Supervisor, add chain to supervisor , supervisor: #{inspect(sup_id)},  chain options: #{inspect(options)}"
@@ -554,6 +626,8 @@ defmodule SuperWorker.Supervisor do
   Send data to the entry worker in the chain.
   If chain doesn't has any worker, it will be dropped.
   """
+  @spec send_to_chain(atom(), any(), any(), non_neg_integer()) ::
+          {:ok, any()} | {:error, any()}
   def send_to_chain(sup_id, chain_id, data, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, send data to chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}"
@@ -565,7 +639,7 @@ defmodule SuperWorker.Supervisor do
   @doc """
   get chain structure from supervisor.
   """
-  @spec get_chain(atom(), any()) :: {:ok, Chain.t()} | {:error, any()}
+  @spec get_chain(atom(), any(), non_neg_integer()) :: {:ok, Chain.t()} | {:error, any()}
   def get_chain(sup_id, chain_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, get chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}"
@@ -577,6 +651,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   remove a worker from chain.
   """
+  @spec remove_chain_worker(atom(), any(), any(), non_neg_integer()) ::
+          {:ok, any()} | {:error, any()}
   def remove_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, remove worker in chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}, worker: #{inspect(worker_id)}"
@@ -588,6 +664,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   remove chain.
   """
+  @spec remove_chain(atom(), any(), non_neg_integer()) ::
+          {:ok, any()} | {:error, any()}
   def remove_chain(sup_id, chain_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, remove chain, #{inspect(sup_id)}, #{inspect(chain_id)}"
@@ -599,6 +677,8 @@ defmodule SuperWorker.Supervisor do
   @doc """
   get pid of chain worker
   """
+  @spec get_pid_chain_worker(atom(), any(), any(), non_neg_integer()) ::
+          {:ok, any()} | {:error, any()}
   def get_pid_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
     Logger.debug(
       "SuperWorker, Supervisor, get pid of chain worker, #{inspect(sup_id)}, #{inspect(chain_id)}, #{inspect(worker_id)}"

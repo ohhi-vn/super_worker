@@ -61,7 +61,7 @@ defmodule Dev do
 
   # Start the supervisor, add a group and a chain.
   def start(sup_id \\ :sup1) do
-    result = Sup.start_with_config([ link: false, id: sup_id, number_of_partitions: 2])
+    result = Sup.start_with_config([ link: false, id: sup_id, num_partitions: 2])
     IO.inspect result
 
     # Group & workers for group.
@@ -74,7 +74,7 @@ defmodule Dev do
     # add_chain_data(sup_id)
   end
 
-  def add_group_data(sup_id \\ :sup1, group \\ :group_1, restart_strategy \\ :one_for_all, num_workers \\ 3) do
+  def add_group_data(sup_id \\ :sup_1, group \\ :group_1, restart_strategy \\ :one_for_all, num_workers \\ 3) do
     {:ok, _} = Sup.add_group(sup_id, [id: group, restart_strategy: restart_strategy])
     for i <- 1..num_workers do
       {:ok, _} = Sup.add_group_worker(sup_id, group, {__MODULE__, :task, [1500]}, [id: :"w_#{i}"])
