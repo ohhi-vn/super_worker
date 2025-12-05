@@ -33,7 +33,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
       unknown ->
         Logger.warning(
-          "SuperWorker, Supervisor, #{state.id} main_loop, unknown message: #{inspect(unknown)}"
+          "SuperWorker, Supervisor, partition #{state.id}, main_loop, unknown message: #{inspect(unknown)}"
         )
 
         main_loop(state)
@@ -42,41 +42,49 @@ defmodule SuperWorker.Supervisor.Looper do
     Logger.debug("SuperWorker, Supervisor, #{state.id} #{inspect(self())} main loop exited.")
   end
 
+  # TO-DO:
+  #  - Implement graceful shutdown for worker processes.
+  #  - Send to host partition for shutdown its workers.
+
   defp shutdown(state, :kill) do
     Logger.debug("SuperWorker, Supervisor, shutting down partition: #{inspect(state.id)}")
 
-    # TO-DO: Implement graceful shutdown for worker processes.
-    #
     {:ok, groups} = Db.get_all_groups(state.table)
 
     Enum.each(groups, fn group ->
-      Group.kill_all_workers(group)
+      {:ok, workers} = Group.get_all_workers(group)
+
+      Enum.each(workers, fn worker ->
+        # kill worker process on current partition only
+        if(get_target_partition(state, {group.id, worker.id}) == state.id) do
+          Process.exit(worker.pid, :kill)
+        end
+      end)
     end)
 
     {:ok, chains} = Db.get_all_chains(state.table)
 
     Enum.each(chains, fn chain ->
-      Chain.kill_all_workers(chain)
+      {:ok, workers} = Chain.get_all_workers(chain)
+
+      Enum.each(workers, fn worker ->
+        # kill worker process on current partition only
+        if(get_target_partition(state, {chain.id, worker.id}) == state.id) do
+          Process.exit(worker.pid, :kill)
+        end
+      end)
     end)
 
     {:ok, workers} = Db.get_all_standalone_worker_infos(state.table)
 
     Enum.each(workers, fn worker ->
-      kill_worker(state, worker.id)
+      # kill worker process on current partition only
+      if(get_target_partition(state, {nil, worker.id}) == state.id) do
+        Process.exit(worker.pid, :kill)
+      end
     end)
 
     {:ok, :brutal_kill}
-  end
-
-  defp kill_worker(state, worker_id) do
-    with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
-      Process.exit(pid, :kill)
-    else
-      other ->
-        Logger.warning(
-          "SuperWorker, Supervisor, #{state.id} failed to kill worker process: #{inspect(worker_id)}, error: #{inspect(other)}"
-        )
-    end
   end
 
   # process exit message for outside processes.
@@ -134,8 +142,6 @@ defmodule SuperWorker.Supervisor.Looper do
         Logger.debug(
           "SuperWorker, Supervisor, #{state.id} Everything is fine, starting worker: #{inspect(worker)}"
         )
-
-        worker = %{worker | table: state.table}
 
         result =
           case worker.type do
@@ -340,7 +346,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
   defp process_public_api_message(
          state,
-         message = %Message{type: :send_to_worker, data: {worker_id, data}}
+         message = %Message{type: :send_to_standalone_worker, data: {worker_id, data}}
        ) do
     result =
       with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
@@ -692,7 +698,7 @@ defmodule SuperWorker.Supervisor.Looper do
   end
 
   # Stop supervisor from api.
-  defp process_internal_api_message(state, message = %Message{type: :stop, data: type}) do
+  defp process_internal_api_message(state, message = %Message{type: :stop_supervisor, data: type}) do
     Logger.debug(
       "SuperWorker, Supervisor, #{state.id} Stopping partition, request from #{inspect(message.from)}"
     )
@@ -701,8 +707,6 @@ defmodule SuperWorker.Supervisor.Looper do
     shutdown(state, type)
 
     send(state.master, {:partition_stopped, state.id})
-
-    exit(:normal)
   end
 
   defp process_internal_api_message(_, _) do
@@ -773,8 +777,14 @@ defmodule SuperWorker.Supervisor.Looper do
 
     case result do
       {:ok, {pid, ref}} ->
-        # Link to child for case supervisor is down.
-        Process.link(pid)
+        try do
+          Process.link(pid)
+        rescue
+          error ->
+            Logger.error(
+              "SuperWorker, Standalone, failed to link worker #{inspect(worker.id)}: #{inspect(error)}"
+            )
+        end
 
         Db.put_worker(state.table, ref, worker.id, {:standalone, nil}, pid)
 

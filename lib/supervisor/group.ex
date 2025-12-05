@@ -291,9 +291,14 @@ defmodule SuperWorker.Supervisor.Group do
       "SuperWorker, Group, spawned worker #{inspect(worker.id)}, pid: #{inspect(pid)}, ref: #{inspect(ref)}"
     )
 
-    # Link to child for case supervisor is down.
-    # TO-DO: Improve case worker crash immediately.
-    Process.link(pid)
+    try do
+      Process.link(pid)
+    rescue
+      error ->
+        Logger.error(
+          "SuperWorker, Group, failed to link worker #{inspect(worker.id)}: #{inspect(error)}"
+        )
+    end
 
     worker
     |> Map.put(:pid, pid)

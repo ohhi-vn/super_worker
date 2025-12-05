@@ -18,7 +18,7 @@ defmodule SuperWorker.Supervisor.Constants.Types do
     :remove_group_worker,
     :send_to_group,
     :send_to_group_random,
-    :send_to_worker,
+    :send_to_standalone_worker,
     :broadcast_to_group,
     :add_data_to_chain,
     :stop

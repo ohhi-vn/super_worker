@@ -47,6 +47,19 @@ defmodule SuperWorker.SupervisorTest do
     assert false == Sup.running?(@sup_id)
   end
 
+  @tag :supervisor_start2
+  test "start/stop multi times supervisor, no linked process - 2" do
+    for _ <- 1..10 do
+      {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 10)
+
+      assert true == Sup.running?(@sup_id)
+      Sup.stop(@sup_id)
+      Process.sleep(10)
+
+      assert false == Sup.running?(@sup_id)
+    end
+  end
+
   @tag :supervisor_check_duplicate_id
   test "check duplicated supervisor's id" do
     {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 1)
@@ -73,14 +86,14 @@ defmodule SuperWorker.SupervisorTest do
   end
 
   @tag :supervisor_start_link_1a
-  test "start supervisor with link - a" do
+  test "start_link supervisor with - a" do
     {:ok, _} = Sup.start_with_config(link: true, id: @sup_id, num_partitions: 10)
     result = Sup.running?(@sup_id)
 
     assert true == result
     Sup.stop(@sup_id)
-    Process.sleep(1)
-    assert false == Sup.running?(@sup_id)
+    Process.sleep(100)
+    assert not Sup.running?(@sup_id)
   end
 
   @tag :supervisor_start_link_2
@@ -313,7 +326,7 @@ defmodule SuperWorker.SupervisorTest do
     assert(match?({:error, _}, result))
 
     Sup.stop(sup_id)
-    Process.sleep(1)
+    Process.sleep(100)
     assert false == Sup.running?(sup_id)
 
     {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 10)

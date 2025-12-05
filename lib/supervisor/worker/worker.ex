@@ -11,7 +11,7 @@ defmodule SuperWorker.Supervisor.Worker do
   defstruct [
     # worker id, unique in supervisor.
     :id,
-    # name of worker.
+    # name of worker, is atom for register process to communicate directly without lookup pid.
     :name,
     # restart strategy of worker. Affected by the supervisor & parent restart strategy.
     restart_strategy: @default_restart_strategy,
@@ -19,11 +19,6 @@ defmodule SuperWorker.Supervisor.Worker do
     type: :standalone,
     # anonymous function {:fun, fun} or  {function, module, arguments} of worker.
     fun: nil,
-    # supervisor id.
-    supervisor: nil,
-    # partition id.
-    partition: nil,
-    table: nil,
     # number of workers in chain.
     num_workers: 1,
     # parent(group/chain) id.
@@ -34,42 +29,35 @@ defmodule SuperWorker.Supervisor.Worker do
 
   @type t :: %__MODULE__{
           id: any,
+          name: atom,
           restart_strategy: atom,
           type: :standalone | :group | :chain,
           fun: nil | {:fun, fun} | {module, atom, [any]} | {:gen_server, {module, atom, [any]}},
-          supervisor: atom,
-          partition: atom,
           num_workers: non_neg_integer,
           parent: :standalone | {atom, any},
           order: non_neg_integer | nil
         }
 
-  def check_group_options(opts) do
-    with {:ok, opts} <- Validator.normalize_options(opts, Constants.Types.group_worker_params()),
-         {:ok, opts} <- validate_opts(opts),
-         {:ok, opts} <- default_opts(opts),
-         {:ok, opts} <- map_to_struct(opts) do
-      {:ok, opts}
-    end
-  end
+  def from_config(options) do
+    params =
+      case Keyword.get(options, :type) do
+        :standalone ->
+          Constants.Types.standalone_worker_params()
 
-  def check_chain_options(opts) do
-    with {:ok, opts} <- Validator.normalize_options(opts, Constants.Types.chain_worker_params()),
-         {:ok, opts} <- validate_opts(opts),
-         {:ok, opts} <- default_opts(opts),
-         {:ok, opts} <- map_to_struct(opts) do
-      {:ok, opts}
-    end
-  end
+        :group ->
+          Constants.Types.group_worker_params()
 
-  def check_standalone_options(opts) do
-    with {:ok, opts} <-
-           Validator.normalize_options(opts, Constants.Types.standalone_worker_params()),
-         {:ok, opts} <- validate_restart_strategy(opts),
-         {:ok, opts} <- validate_opts(opts),
-         {:ok, opts} <- default_opts(opts),
-         {:ok, opts} <- map_to_struct(opts) do
-      {:ok, opts}
+        :chain ->
+          Constants.Types.chain_worker_params()
+      end
+
+    with {:ok, options} <-
+           Validator.normalize_options(options, params),
+         {:ok, options} <- default_options(options),
+         {:ok, options} <- validate_restart_strategy(options),
+         {:ok, options} <- validate_options(options),
+         {:ok, options} <- map_to_struct(options) do
+      {:ok, options}
     end
   end
 
@@ -85,27 +73,34 @@ defmodule SuperWorker.Supervisor.Worker do
     end
   end
 
-  defp validate_opts(opts) do
+  defp validate_options(opts) do
     # TO-DO: Implement the validation.
     {:ok, opts}
   end
 
-  defp default_opts(opts) do
-    opts =
-      opts
+  defp default_options(options) do
+    options =
+      options
       |> Map.put(:start_time, DateTime.utc_now())
 
-    opts =
-      if Map.has_key?(opts, :id) do
-        opts
+    options =
+      if Map.has_key?(options, :id) do
+        options
       else
-        Map.put(opts, :id, SuperWorker.Supervisor.Utils.random_id())
+        Map.put(options, :id, SuperWorker.Supervisor.Utils.random_id())
       end
 
-    {:ok, opts}
+    options =
+      if Map.has_key?(options, :restart_strategy) do
+        options
+      else
+        Map.put(options, :restart_strategy, default_restart_strategy())
+      end
+
+    {:ok, options}
   end
 
-  defp map_to_struct(opts) when is_map(opts) do
-    {:ok, struct(__MODULE__, opts)}
+  defp map_to_struct(options) when is_map(options) do
+    {:ok, struct(__MODULE__, options)}
   end
 end

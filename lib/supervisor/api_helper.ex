@@ -19,11 +19,11 @@ defmodule SuperWorker.Supervisor.ApiHelper do
     :send_to_group,
     :send_to_group_random,
     :add_data_to_chain,
-    :send_to_worker,
+    :send_to_standalone_worker,
     :remove_group_worker,
     :add_group,
     :add_chain,
-    :stop
+    :stop_supervisor
   ]
 
   alias SuperWorker.Supervisor.Message

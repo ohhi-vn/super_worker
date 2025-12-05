@@ -10,6 +10,16 @@ The ConfigLoader system consists of three main modules:
 - **`Parser`** - Validates and transforms raw configurations into structured data
 - **`Bootstrap`** - Starts supervisors and their children from parsed configurations
 
+## Concept
+
+Each supervisor has a main process and number of partitions process.
+When supervisor api is called, main process find a partition process
+then forward api to that.
+
+Supervisor uses partition technic for handle amount of requests/workers.
+
+Each supervisor has an ETS table for keeping worker/group/chain information and runtime information.
+
 ## Quick Start
 
 ### 1. Define Configuration

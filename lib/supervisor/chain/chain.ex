@@ -131,7 +131,7 @@ defmodule SuperWorker.Supervisor.Chain do
     |> Enum.map(fn worker ->
       Logger.info("SuperWorker, Chain, restarting worker #{worker.id}, pid: #{worker.pid}")
       Process.exit(worker.pid, :kill)
-      worker = do_spawn_worker(worker)
+      worker = do_spawn_worker(chain, worker)
       worker.id
     end)
 
@@ -161,20 +161,6 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  @spec kill_all_workers(Chain.t()) :: {:ok, Chain.t()}
-  # TO-DO: refactor this function, remove ref & pid from worker
-  def kill_all_workers(chain = %Chain{}) do
-    {:ok, workers} = Db.get_workers_by_parent(chain.table, {:chain, chain.id})
-
-    Enum.each(workers, fn {worker_id, pid} ->
-      Process.exit(pid, :kill)
-      Db.delete_worker(chain.table, worker_id)
-      Db.delete_worker_info(chain.table, worker_id, {:chain, chain.id})
-    end)
-
-    {:ok, chain}
-  end
-
   ## Private functions
 
   defp spawn_worker(chain = %Chain{}, worker = %Worker{}) do
@@ -188,34 +174,39 @@ defmodule SuperWorker.Supervisor.Chain do
 
     Db.put_worker_info(chain.table, worker)
 
-    do_spawn_worker(worker)
+    do_spawn_worker(chain, worker)
 
     {:ok, chain}
   end
 
-  defp do_spawn_worker(%Worker{} = worker) do
+  defp do_spawn_worker(chain = %Chain{}, worker = %Worker{}) do
     {pid, ref} =
       spawn_monitor(fn ->
         # Store for user can directly access to the worker.
-        Process.put({:supervisor, :sup_id}, worker.supervisor)
+        Process.put({:supervisor, :sup_id}, chain.supervisor)
         Process.put({:supervisor, :chain}, worker.parent)
         Process.put({:supervisor, :worker_id}, worker.id)
 
-        loop_chain(%MapQueue{}, worker)
+        loop_chain(chain.table, %MapQueue{}, worker)
       end)
 
-    Db.put_worker(worker.table, ref, worker.id, {worker.type, worker.parent}, pid)
-    Db.put_chain_order(worker.table, worker.id, worker.parent, worker.order, pid)
+    Db.put_worker(chain.table, ref, worker.id, {worker.type, worker.parent}, pid)
+    Db.put_chain_order(chain.table, worker.id, worker.parent, worker.order, pid)
 
-    # Link to child for case supervisor is down.
-    # TO-DO: Improve case worker crash immediately.
-    Process.link(pid)
+    try do
+      Process.link(pid)
+    rescue
+      error ->
+        Logger.error(
+          "SuperWorker, Chain, failed to link worker #{inspect(worker.id)}: #{inspect(error)}"
+        )
+    end
 
     worker
   end
 
   # Support receive data from the previous process in the chain and pass it to the next process.
-  defp loop_chain(queue, %Worker{id: id, parent: chain_id} = worker) do
+  defp loop_chain(table, queue, worker = %Worker{id: id, parent: chain_id}) do
     receive do
       {:processed, msg_id, worker_id} ->
         Logger.debug(
@@ -223,7 +214,7 @@ defmodule SuperWorker.Supervisor.Chain do
         )
 
         {:ok, queue} = MapQueue.remove(queue, msg_id)
-        loop_chain(queue, worker)
+        loop_chain(table, queue, worker)
 
       {:new_data, msg = %Message{}} ->
         # TO-DO: catch throw, error from outside.
@@ -236,7 +227,7 @@ defmodule SuperWorker.Supervisor.Chain do
               apply(m, f, [msg.data | a])
           end
 
-        with {:ok, {first_id, _}} <- Db.get_chain_order(worker.table, chain_id, 1) do
+        with {:ok, {first_id, _}} <- Db.get_chain_order(table, chain_id, 1) do
           if first_id != id do
             send(msg.from, {:processed, msg.id, id})
           end
@@ -263,7 +254,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
             Messaging.send_next(chain, worker.order + 1, msg)
 
-            loop_chain(queue, worker)
+            loop_chain(table, queue, worker)
 
           {:error, reason} ->
             Logger.error(
@@ -276,7 +267,7 @@ defmodule SuperWorker.Supervisor.Chain do
               "SuperWorker, Chain, worker #{inspect(id)}, dropping chain process, chain: #{inspect(chain_id)}: #{inspect(reason)}"
             )
 
-            loop_chain(queue, worker)
+            loop_chain(table, queue, worker)
 
           {:stop, reason} ->
             Logger.info(
@@ -306,7 +297,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
             Messaging.send_next(chain, worker.order + 1, msg)
 
-            loop_chain(queue, worker)
+            loop_chain(table, queue, worker)
         end
 
       {:kill, reason} ->

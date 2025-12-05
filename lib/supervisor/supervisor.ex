@@ -13,7 +13,8 @@ defmodule SuperWorker.Supervisor do
 
   ## Group processes
   Group processes are a set of processes that are started together.
-  If one of the processes is crashed, depending on the restart strategy of group, only that process or all the processes will be restarted.
+  If one of the processes is crashed, depending on the restart strategy of group,
+  only that process or all the processes will be restarted.
   Each group has a separated restart strategy.
 
   ## Chain processes
@@ -62,21 +63,26 @@ defmodule SuperWorker.Supervisor do
       :ok
   end
   ```
+
+  Supervisor can add directly to other supervisor or
+  by add config to config file or self start with start/start_link/startwith_config function.
   """
 
   use GenServer, restart: :permanent, shutdown: 5_000
 
   defstruct [
-    # partition id, if :id == :master that mean is master process
+    # id of supervisor.
     :id,
     # number of partitions, default is number of online schedulers
     :num_partitions,
     # link the supervisor to the caller
     link: true,
     # list of pid or callback function, for reporting worker crashed or worker finished.
+    # reserve for the future, not implemented.
     report_to: [],
+    # for internal use only.
     partitions: %{},
-    # storage data for supervisor, workers/groups/chains
+    # storage data for supervisor, workers/groups/chains, for internal use only.
     table: nil
   ]
 
@@ -92,6 +98,7 @@ defmodule SuperWorker.Supervisor do
   @default_time 3_000
 
   alias __MODULE__
+
   alias SuperWorker.Supervisor.{Worker, Group, Chain}
 
   alias SuperWorker.Supervisor.{Utils, ApiHelper, Message, Validator, Db, Partition}
@@ -112,7 +119,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Work like start_link/1 with default options.
+  Work like `start_link/1` with default options.
   """
   @spec start_link() :: {:ok, pid} | {:error, any()}
   def start_link() do
@@ -125,7 +132,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Start supervisor run as independent process.
+  Start supervisor as independent process (no link process).
   """
   @spec start(t()) :: {:ok, pid} | {:error, any()}
   def start(%Supervisor{} = options) do
@@ -151,7 +158,9 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Start supervisor for run standalone please set option :link to false.
+  Start supervisor with configurations (Keyword).
+  For run standalone, please set option :link to false.
+  For link to other process (not current process), please set link to pid of that process.
   result format: {:ok, pid} or {:error, reason}
   """
   @spec start_with_config(
@@ -188,10 +197,10 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Stop supervisor.
+  Stop supervisor. Type of shutdown is using for reason of exit in Process.exit function.
   Type of shutdown:
-  - :normal supervisor will send a message to worker for graceful shutdown. Not support for spawn process by function.
-  - :kill supervisor will kill worker.
+  - `:normal` supervisor will send a message to worker for graceful shutdown. Not support for spawn process by function.
+  - `:kill` supervisor will kill worker.
   """
   @spec stop(atom(), shutdown_type :: atom(), timeout :: non_neg_integer()) ::
           {:ok, atom()} | {:error, any()}
@@ -201,7 +210,7 @@ defmodule SuperWorker.Supervisor do
     )
 
     with true <- running?(sup_id) do
-      GenServer.call(sup_id, {:stop, shutdown_type}, timeout)
+      GenServer.call(sup_id, {:stop_supervisor, shutdown_type}, timeout)
     else
       false ->
         {:error, :not_running}
@@ -282,7 +291,7 @@ defmodule SuperWorker.Supervisor do
       "SuperWorker, Supervisor, send standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
     )
 
-    get_partition_and_send(sup_id, :send_to_worker, {worker_id, data}, timeout)
+    get_partition_and_send(sup_id, :send_to_standalone_worker, {worker_id, data}, timeout)
   end
 
   @doc """
@@ -728,9 +737,9 @@ defmodule SuperWorker.Supervisor do
     {:reply, pid, state}
   end
 
-  def handle_call({:stop, shutdown_type}, _from, state) do
+  def handle_call({:stop_supervisor, shutdown_type}, _from, state) do
     Enum.each(state.partitions, fn {id, pid} ->
-      ApiHelper.internal_call_api_no_reply(pid, :stop, shutdown_type)
+      ApiHelper.internal_call_api_no_reply(pid, :stop_supervisor, shutdown_type)
       Logger.info("SuperWorker, Supervisor, sent stop signal to partition: #{id}")
     end)
 
@@ -838,8 +847,12 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp get_partition_and_send(sup_id, api, params, timeout) do
+    get_partition_and_send(sup_id, api, params, params, timeout)
+  end
+
+  defp get_partition_and_send(sup_id, api, params, partition_info, timeout) do
     with true <- running?(sup_id),
-         {:ok, pid} <- query_target_partition(sup_id, params) do
+         {:ok, pid} <- query_target_partition(sup_id, partition_info) do
       Logger.debug(
         "SuperWorker, Supervisor, sending api #{inspect(api)} to partition #{inspect(pid)}"
       )
@@ -864,23 +877,8 @@ defmodule SuperWorker.Supervisor do
   defp do_add_worker(sup_id, options, timeout) do
     Logger.debug("SuperWorker, Supervisor, starting worker with options: #{inspect(options)}")
 
-    result =
-      case Keyword.get(options, :type) do
-        :standalone ->
-          Worker.check_standalone_options(options)
-
-        :group ->
-          Worker.check_group_options(options)
-
-        :chain ->
-          Worker.check_chain_options(options)
-
-        _ ->
-          {:error, :invalid_type}
-      end
-
-    with {:ok, options} <- result do
-      get_partition_and_send(sup_id, :start_worker, options, timeout)
+    with {:ok, worker} <- Worker.from_config(options) do
+      get_partition_and_send(sup_id, :start_worker, worker, {worker.parent, worker.id}, timeout)
     end
   end
 end
