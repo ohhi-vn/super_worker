@@ -13,14 +13,13 @@ defmodule SuperWorker.Supervisor.ApiHelper do
   # List message from api.
   @api_types [
     :start_worker,
-    :get_group,
     :remove_group_worker,
-    :get_chain,
     :send_to_group,
     :send_to_group_random,
     :add_data_to_chain,
     :send_to_standalone_worker,
     :remove_group_worker,
+    :count_workers_in_group,
     :add_group,
     :add_chain,
     :stop_supervisor

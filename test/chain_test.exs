@@ -22,18 +22,6 @@ defmodule SuperWorker.Supervisor.ChainTest do
     end
   end
 
-  @tag :chain_verify_strategy
-  test "add chain & verify strategy" do
-    id1 = make_ref()
-    id2 = make_ref()
-    {:ok, _} = Sup.add_chain(@sup_id, id: id1, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_chain(@sup_id, id: id2, restart_strategy: :one_for_all)
-    {:ok, chain1} = Sup.get_chain(@sup_id, id1)
-    {:ok, chain2} = Sup.get_chain(@sup_id, id2)
-    assert :one_for_one == chain1.restart_strategy
-    assert :one_for_all == chain2.restart_strategy
-  end
-
   @tag :chain_add_workers
   test "add workers to chain" do
     id = make_ref()
@@ -44,14 +32,8 @@ defmodule SuperWorker.Supervisor.ChainTest do
         {:ok, _} = Sup.add_chain_worker(@sup_id, id, {MyTest, :loop, [index]}, id: index)
       end
 
-    {:ok, chain} = Sup.get_chain(@sup_id, id)
-    # wait for workers to be added, need to adjust for slow machines.
-    # TO-DO: Improve code for add worker (wait for worker to be added).
-    Process.sleep(100)
-
-    {:ok, workers} = Chain.get_all_workers(chain)
-
-    assert(length(list) == length(workers))
+    {:ok, count} = Sup.count_workers_in_chain(@sup_id, id)
+    assert(3 == count)
   end
 
   @tag :chain_remove_worker
@@ -63,15 +45,9 @@ defmodule SuperWorker.Supervisor.ChainTest do
     {:ok, _} =
       Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [worker_id]}, id: worker_id)
 
-    {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
-    {:ok, workers} = Chain.get_all_workers(chain)
-
-    assert(1 == length(workers))
+    {:ok, pid} = Sup.get_pid_chain_worker(@sup_id, chain_id, worker_id)
 
     Sup.remove_chain_worker(@sup_id, chain_id, worker_id)
-    {:ok, workers} = Chain.get_all_workers(chain)
-
-    assert(0 == length(workers))
 
     result = Sup.get_pid_chain_worker(@sup_id, chain_id, worker_id)
     assert match?({:error, _}, result)
@@ -86,10 +62,9 @@ defmodule SuperWorker.Supervisor.ChainTest do
     {:ok, _} =
       Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [worker_id]}, id: worker_id)
 
-    {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
-    {:ok, workers} = Chain.get_all_workers(chain)
+    {:ok, count} = Sup.count_workers_in_chain(@sup_id, chain_id)
 
-    assert(1 == length(workers))
+    assert(1 == count)
 
     Sup.remove_chain(@sup_id, chain_id)
 
@@ -100,24 +75,26 @@ defmodule SuperWorker.Supervisor.ChainTest do
   @tag :chain_add_workers_2
   test "add workers to chain 2" do
     ref = make_ref()
+    num_chains = 10
+    num_workers = 10
 
-    for index <- 1..10 do
+    for index <- 1..num_chains do
       chain_id = {ref, index}
       {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
 
       list =
-        for worker_index <- 1..10 do
+        for worker_index <- 1..num_workers do
           {:ok, _} =
             Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [worker_index]},
               id: worker_index
             )
         end
+    end
 
-      {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
-
-      {:ok, workers} = Chain.get_all_workers(chain)
-
-      assert(length(list) == length(workers))
+    for index <- 1..num_chains do
+      chain_id = {ref, index}
+      {:ok, count} = Sup.count_workers_in_chain(@sup_id, chain_id)
+      assert(count == num_workers)
     end
   end
 
@@ -157,9 +134,8 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
     for index <- 1..num_chains do
       chain_id = {ref, index}
-      {:ok, chain} = Sup.get_chain(@sup_id, chain_id)
-      {:ok, workers} = Chain.get_all_workers(chain)
-      assert(num_workers == length(workers))
+      {:ok, count} = Sup.count_workers_in_chain(@sup_id, chain_id)
+      assert(num_workers == count)
     end
   end
 

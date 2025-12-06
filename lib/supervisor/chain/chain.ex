@@ -138,6 +138,12 @@ defmodule SuperWorker.Supervisor.Chain do
     {:ok, chain}
   end
 
+  def count_workers(chain = %Chain{}) do
+    with {:ok, workers} <- Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id}) do
+      Enum.count(workers)
+    end
+  end
+
   @spec remove_worker(Chain.t(), any()) :: true
   def remove_worker(chain, worker_id) do
     kill_worker(chain, worker_id)
@@ -290,7 +296,7 @@ defmodule SuperWorker.Supervisor.Chain do
             end
 
             {:ok, queue, msg_id} = MapQueue.add(queue, data)
-            {:ok, chain} = Sup.get_chain(get_my_supervisor(), chain_id)
+            {:ok, chain} = Db.get_chain(table, chain_id)
 
             msg =
               Message.new(:chain_message, nil, {msg_id, data})

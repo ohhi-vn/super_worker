@@ -529,6 +529,19 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
+  count workers in group
+  """
+  @spec count_workers_in_group(atom(), any(), non_neg_integer()) ::
+          :ok | {:error, any()}
+  def count_workers_in_group(sup_id, group_id, timeout \\ @default_time) do
+    Logger.debug(
+      "SuperWorker, Supervisor, count workers in group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
+    )
+
+    get_partition_and_send(sup_id, :count_workers_in_group, group_id, timeout)
+  end
+
+  @doc """
   group is existed
   """
   @spec group_exists?(atom(), any(), non_neg_integer()) ::
@@ -646,15 +659,16 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  get chain structure from supervisor.
+  count workers in chain
   """
-  @spec get_chain(atom(), any(), non_neg_integer()) :: {:ok, Chain.t()} | {:error, any()}
-  def get_chain(sup_id, chain_id, timeout \\ @default_time) do
+  @spec count_workers_in_chain(atom(), any(), non_neg_integer()) ::
+          :ok | {:error, any()}
+  def count_workers_in_chain(sup_id, chain_id, timeout \\ @default_time) do
     Logger.debug(
-      "SuperWorker, Supervisor, get chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}"
+      "SuperWorker, Supervisor, count workers in chain, supervisor: #{inspect(sup_id)},  chain id: #{inspect(chain_id)}"
     )
 
-    get_partition_and_send(sup_id, :get_chain, chain_id, timeout)
+    get_partition_and_send(sup_id, :count_workers_in_chain, chain_id, timeout)
   end
 
   @doc """

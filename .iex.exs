@@ -3,11 +3,10 @@ alias SuperWorker.Supervisor.{Group, Chain, Standalone}
 alias SuperWorker.TermStorage, as: KV
 alias SuperWorker.Supervisor.ConfigParser, as: DevConfig
 
-IO.puts "Dev mode is running"
-IO.puts "SuperWorker.Supervisor has alias is Sup"
+IO.puts("Dev mode is running")
+IO.puts("SuperWorker.Supervisor has alias is Sup")
 
 IEx.configure(inspect: [limit: :infinity])
-
 
 defmodule MyGenServer do
   use GenServer, restart: :permanent
@@ -61,74 +60,121 @@ defmodule Dev do
 
   # Start the supervisor, add a group and a chain.
   def start(sup_id \\ :sup1) do
-    result = Sup.start_with_config([ link: false, id: sup_id, num_partitions: 2])
-    IO.inspect result
+    result = Sup.start_with_config(link: false, id: sup_id, num_partitions: 2)
+    IO.inspect(result)
 
     # Group & workers for group.
     # add_group_data()
 
     # Standalone
-    #add_standalone_data()
+    # add_standalone_data()
 
     # Chain & its workers.
     # add_chain_data(sup_id)
   end
 
-  def add_group_data(sup_id \\ :sup_1, group \\ :group_1, restart_strategy \\ :one_for_all, num_workers \\ 3) do
-    {:ok, _} = Sup.add_group(sup_id, [id: group, restart_strategy: restart_strategy])
+  def add_group_data(
+        sup_id \\ :sup1,
+        group \\ :group_1,
+        restart_strategy \\ :one_for_all,
+        num_workers \\ 3
+      ) do
+    {:ok, _} = Sup.add_group(sup_id, id: group, restart_strategy: restart_strategy)
+
     for i <- 1..num_workers do
-      {:ok, _} = Sup.add_group_worker(sup_id, group, {__MODULE__, :task, [1500]}, [id: :"w_#{i}"])
+      {:ok, _} = Sup.add_group_worker(sup_id, group, {__MODULE__, :task, [1500]}, id: :"w_#{i}")
     end
   end
 
-  def add_group_data_loop(sup_id \\ :sup1, group \\ :group_loop, restart_strategy \\ :one_for_all, num_workers \\ 3) do
-    {:ok, _} = Sup.add_group(sup_id, [id: group, restart_strategy: restart_strategy])
+  def add_group_data_loop(
+        sup_id \\ :sup1,
+        group \\ :group_loop,
+        restart_strategy \\ :one_for_all,
+        num_workers \\ 3
+      ) do
+    {:ok, _} = Sup.add_group(sup_id, id: group, restart_strategy: restart_strategy)
+
     for i <- 1..num_workers do
-      {:ok, _} = Sup.add_group_worker(sup_id, :group_loop, {__MODULE__, :loop, [i]}, [id: :"w_#{i}"])
+      {:ok, _} =
+        Sup.add_group_worker(sup_id, :group_loop, {__MODULE__, :loop, [i]}, id: :"w_#{i}")
     end
   end
 
-  def add_chain_data(sup_id \\ :sup1, chain_id \\ :chain_1, restart_strategy \\ :one_for_one, num_workers \\ 3) do
-    {:ok, _} = Sup.add_chain(sup_id, [id: chain_id, restart_strategy: restart_strategy, finished_callback: {__MODULE__, :print,[chain_id]}, send_type: :partition])
+  def add_chain_data(
+        sup_id \\ :sup1,
+        chain_id \\ :chain_1,
+        restart_strategy \\ :one_for_one,
+        num_workers \\ 3
+      ) do
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        restart_strategy: restart_strategy,
+        finished_callback: {__MODULE__, :print, [chain_id]},
+        send_type: :partition
+      )
+
     for i <- 1..num_workers do
-      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, [15]}, [id: :"c_#{i}"])
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {__MODULE__, :task, [15]}, id: :"c_#{i}")
     end
   end
 
   def add_standalone_data(sup_id \\ :sup1) do
-    {:ok, _} = Sup.add_standalone_worker(sup_id, {__MODULE__, :task, [15]}, [id: :w1, restart_strategy: :permanent])
-    {:ok, _} = Sup.add_standalone_worker(sup_id, {__MODULE__, :task_crash, [15, 5]}, [id: :w2, restart_strategy: :transient])
-    {:ok, _} = Sup.add_standalone_worker(sup_id, fn ->
-      receive do
-        msg -> IO.puts "Standalone worker received: #{inspect msg}"
-      end
-    end, [id: :w3, restart_strategy: :temporary])
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, {__MODULE__, :task, [15]},
+        id: :w1,
+        restart_strategy: :permanent
+      )
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, {__MODULE__, :task_crash, [15, 5]},
+        id: :w2,
+        restart_strategy: :transient
+      )
+
+    {:ok, _} =
+      Sup.add_standalone_worker(
+        sup_id,
+        fn ->
+          receive do
+            msg -> IO.puts("Standalone worker received: #{inspect(msg)}")
+          end
+        end, id: :w3, restart_strategy: :temporary)
   end
 
   # function to add a worker to the supervisor.
   def task(n, sleep \\ 1_000) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-    IO.puts prefix <> " Task is started, param: #{n}"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+    IO.puts(prefix <> " Task is started, param: #{n}")
 
-    sum = Enum.reduce(1..n, 0, fn i, acc ->
-      :timer.sleep(sleep)
-      acc + i
-    end)
-    IO.puts  IO.puts prefix <> " Task done, #{sum}"
+    sum =
+      Enum.reduce(1..n, 0, fn i, acc ->
+        :timer.sleep(sleep)
+        acc + i
+      end)
+
+    IO.puts(IO.puts(prefix <> " Task done, #{sum}"))
 
     {:next, n + 1}
   end
 
   def task_crash(n, at, sleep \\ 1_000) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-    IO.puts prefix <> " Task is started, param: #{n}"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+    IO.puts(prefix <> " Task is started, param: #{n}")
 
-    sum = Enum.reduce(1..n, 0, fn i, acc ->
-      if i == at, do: raise "Task #{inspect Process.get({:supervisor, :worker_id})} raised an error at #{i}"
-      :timer.sleep(sleep)
-      acc + i
-    end)
-    IO.puts prefix <> " Task done, #{sum}"
+    sum =
+      Enum.reduce(1..n, 0, fn i, acc ->
+        if i == at,
+          do:
+            raise(
+              "Task #{inspect(Process.get({:supervisor, :worker_id}))} raised an error at #{i}"
+            )
+
+        :timer.sleep(sleep)
+        acc + i
+      end)
+
+    IO.puts(prefix <> " Task done, #{sum}")
 
     {:next, n + 1}
   end
@@ -140,10 +186,11 @@ defmodule Dev do
   # return a anonymous function.
   def anonymous do
     fn ->
-      prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-      IO.puts prefix <> " Anonymous function"
+      prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+      IO.puts(prefix <> " Anonymous function")
+
       for i <- 1..5 do
-        IO.puts prefix <> " Task #{i}"
+        IO.puts(prefix <> " Task #{i}")
         :timer.sleep(1500)
       end
     end
@@ -151,33 +198,37 @@ defmodule Dev do
 
   # receive the result and print it. Raise an error if the result is an error.
   def print({:raise, reason}, chain_id) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-    IO.puts prefix <> " Chain #{inspect chain_id} will raise an error #{inspect reason}"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+    IO.puts(prefix <> " Chain #{inspect(chain_id)} will raise an error #{inspect(reason)}")
     raise reason
   end
+
   def print(result, chain_id) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
-    IO.puts prefix <> " Chain #{inspect chain_id} finished with result #{inspect result}"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+    IO.puts(prefix <> " Chain #{inspect(chain_id)} finished with result #{inspect(result)}")
   end
 
   # Basic loop, receive messages and print them.
   def loop(id) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+
     receive do
-      msg -> IO.puts prefix <> " task received: #{inspect msg}"
+      msg -> IO.puts(prefix <> " task received: #{inspect(msg)}")
     end
 
     loop(id)
   end
 
   def ping_pong(_id) do
-    prefix = "[#{inspect Process.get({:supervisor, :worker_id})}, #{inspect self()}]"
+    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+
     receive do
       {:ping, sender} ->
-        IO.puts prefix <> " Pong to #{inspect sender}"
+        IO.puts(prefix <> " Pong to #{inspect(sender)}")
         send(sender, {:pong, self()})
 
-      msg -> IO.puts prefix <> " task received: #{inspect msg}"
+      msg ->
+        IO.puts(prefix <> " task received: #{inspect(msg)}")
     end
   end
 end

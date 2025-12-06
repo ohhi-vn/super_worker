@@ -11,11 +11,10 @@ defmodule SuperWorker.Supervisor.Constants.Types do
   # API Messages and Exit Reasons
   @api_messages [
     :start_worker,
-    :get_group,
-    :get_chain,
     :add_group,
     :add_chain,
     :remove_group_worker,
+    :count_workers_in_group,
     :send_to_group,
     :send_to_group_random,
     :send_to_standalone_worker,

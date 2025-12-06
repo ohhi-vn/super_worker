@@ -39,7 +39,6 @@ defmodule SuperWorker.Supervisor.Group do
   @spec check_options([keyword]) :: {:ok, %Group{}} | {:error, atom | {atom, any}}
   def check_options(options) do
     with {:ok, options} <- Validator.normalize_options(options, @group_params),
-         {:ok, options} <- validate_restart_strategy(options),
          {:ok, options} <- validate_options(options),
          {:ok, group} <- to_struct(options) do
       {:ok, group}
@@ -314,8 +313,7 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   defp validate_options(options) do
-    # TO-DO: Implement the validation
-    {:ok, options}
+    validate_restart_strategy(options)
   end
 
   defp to_struct(options) when is_map(options) do

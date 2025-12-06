@@ -184,15 +184,6 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
-  # Get chain in supervisor and return to the caller.
-  defp process_public_api_message(state, message = %Message{type: :get_chain, data: chain_id}) do
-    result = Db.get_chain(state.table, chain_id)
-
-    ApiHelper.api_response(message, result)
-
-    main_loop(state)
-  end
-
   # broadcast a data to all worker in group.
   defp process_public_api_message(
          state,
@@ -412,6 +403,24 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
+  # check group is existed
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :count_workers_in_group, data: group_id}
+       ) do
+    result =
+      with {:ok, group} <- Db.get_group(state.table, group_id) do
+        {:ok, Group.count_workers(group)}
+      else
+        _other ->
+          {:error, :group_not_found}
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
   # remove group.
   defp process_public_api_message(
          state,
@@ -478,6 +487,24 @@ defmodule SuperWorker.Supervisor.Looper do
           )
 
           error
+      end
+
+    ApiHelper.api_response(message, result)
+
+    main_loop(state)
+  end
+
+  # check group is existed
+  defp process_public_api_message(
+         state,
+         message = %Message{type: :count_workers_in_chain, data: chain_id}
+       ) do
+    result =
+      with {:ok, chain} <- Db.get_chain(state.table, chain_id) do
+        {:ok, Chain.count_workers(chain)}
+      else
+        _other ->
+          {:error, :chan_not_found}
       end
 
     ApiHelper.api_response(message, result)
@@ -554,14 +581,6 @@ defmodule SuperWorker.Supervisor.Looper do
         state
     end
     |> main_loop()
-  end
-
-  # get group info from api.
-  defp process_public_api_message(state, message = %Message{type: :get_group, data: group_id}) do
-    result = Db.get_group(state.table, group_id)
-
-    ApiHelper.api_response(message, result)
-    main_loop(state)
   end
 
   # get group info from api.

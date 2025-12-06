@@ -27,7 +27,6 @@ defmodule SuperWorker.Supervisor.Validator do
   def validate_and_convert(options) do
     with {:ok, opts} <- normalize_options(options, @sup_params),
          {:ok, opts} <- default_sup_options(opts),
-         {:ok, opts} <- generic_default_options(opts),
          {:ok, opts} <- validate_options(opts),
          {:ok, sup} <- to_struct(opts) do
       {:ok, sup}
@@ -37,11 +36,6 @@ defmodule SuperWorker.Supervisor.Validator do
   @spec normalize_options([keyword() | atom()], [atom()]) :: api_result()
   def normalize_options(opts, allowed_params) when is_list(opts) and is_list(allowed_params) do
     do_normalize_opts(opts, allowed_params, %{}, [])
-  end
-
-  @spec generic_default_options(map()) :: {:ok, map()}
-  defp generic_default_options(opts) when is_map(opts) do
-    {:ok, Map.put_new(opts, :owner, self())}
   end
 
   @doc """
@@ -163,7 +157,6 @@ defmodule SuperWorker.Supervisor.Validator do
   end
 
   # Set the default options if not provided.
-  # TO-DO: Merge with generic_default_sup_opts/1.
   defp default_sup_options(options) do
     options =
       if Map.has_key?(options, :num_partitions) do
@@ -186,7 +179,10 @@ defmodule SuperWorker.Supervisor.Validator do
         Map.put(options, :name, SuperWorker.Supervisor)
       end
 
-    options = Map.put(options, :master, options.id)
+    options =
+      options
+      |> Map.put(:master, options.id)
+      |> Map.put(:owner, self())
 
     {:ok, options}
   end

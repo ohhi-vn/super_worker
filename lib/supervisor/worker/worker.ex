@@ -73,9 +73,51 @@ defmodule SuperWorker.Supervisor.Worker do
     end
   end
 
-  defp validate_options(opts) do
-    # TO-DO: Implement the validation.
-    {:ok, opts}
+  defp validate_options(options) do
+    errors =
+      Enum.reduce(options, [], fn {key, value}, acc ->
+        case key do
+          :order ->
+            if not is_integer(value) or value < 0 do
+              {:error, {:invalid, {:order, value}}}
+            else
+              acc
+            end
+
+          :name ->
+            if is_atom(value) do
+              acc
+            else
+              {:error, {:invalid, {:name, value}}}
+            end
+
+          :fun ->
+            case value do
+              {module, function, args}
+              when is_atom(module) and is_atom(function) and is_list(args) ->
+                acc
+
+              {:fun, fun} when is_function(fun) ->
+                acc
+
+              {:gen_server, {module, function, args}}
+              when is_atom(module) and is_atom(function) and is_list(args) ->
+                acc
+
+              _ ->
+                {:error, {:invalid, {:fun, value}}}
+            end
+
+          _ ->
+            acc
+        end
+      end)
+
+    if length(errors) > 0 do
+      {:error, errors}
+    else
+      {:ok, options}
+    end
   end
 
   defp default_options(options) do
