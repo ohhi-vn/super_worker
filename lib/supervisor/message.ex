@@ -20,7 +20,7 @@ defmodule SuperWorker.Supervisor.Message do
           id: reference,
           from: pid | atom | nil,
           to: pid | atom | nil,
-          type: :internal | :api,
+          type: :internal_api | :public_api,
           data: any
         }
 

@@ -142,22 +142,76 @@ defmodule SuperWorker.Supervisor.ChainTest do
   @tag :chain_send_data
   test "send data to chain" do
     chain_id = make_ref()
-    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: 1)
+    parent = self()
+
+    fun = fn result ->
+      IO.puts("chain finished, result: #{inspect(result)}")
+      send(parent, {:processed, result})
+    end
+
+    {:ok, _} =
+      Sup.add_chain(@sup_id,
+        id: chain_id,
+        restart_strategy: :one_for_one,
+        finished_callback: {:fun, fun}
+      )
+
+    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :task, [100]}, id: 1)
 
     Logger.debug("send data to chain: #{inspect(chain_id)}")
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 1_000)
+    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, 3)
 
     result =
       receive do
-        {:pong, _} ->
+        {:processed, result} ->
+          IO.puts("received result: #{inspect(result)}")
           true
 
         other ->
           IO.inspect(other)
           false
       after
-        1500 -> :timeout
+        15_000 -> :timeout
+      end
+
+    assert(true == result)
+  end
+
+  test "send data to chain 2" do
+    chain_id = make_ref()
+    parent = self()
+    num_workers = 10
+
+    fun = fn result ->
+      IO.puts("chain finished, result: #{inspect(result)}")
+      send(parent, {:processed, result})
+    end
+
+    {:ok, _} =
+      Sup.add_chain(@sup_id,
+        id: chain_id,
+        restart_strategy: :one_for_one,
+        finished_callback: {:fun, fun}
+      )
+
+    for i <- 1..num_workers do
+      {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :task, [num_workers]}, id: i)
+    end
+
+    Logger.debug("send data to chain: #{inspect(chain_id)}")
+    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, 3)
+
+    result =
+      receive do
+        {:processed, result} ->
+          IO.puts("received result: #{inspect(result)}")
+          true
+
+        other ->
+          IO.inspect(other)
+          false
+      after
+        15_000 -> :timeout
       end
 
     assert(true == result)

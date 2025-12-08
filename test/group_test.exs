@@ -110,6 +110,167 @@ defmodule SuperWorker.Supervisor.GroupTest do
     assert(true == result)
   end
 
+  test "broadcast message to group" do
+    group_id = make_ref()
+    num_workers = 3
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    for i <- 1..num_workers do
+      {:ok, _} =
+        Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [i]}, id: i)
+    end
+
+    Process.sleep(100)
+
+    Sup.broadcast_to_group(@sup_id, group_id, {:store, :test, :hello})
+
+    for i <- 1..num_workers do
+      Sup.send_to_group_worker(@sup_id, group_id, i, {:get, :test, self()})
+
+      result =
+        receive do
+          {:result, :hello} ->
+            true
+
+          other ->
+            other
+        after
+          1_000 -> "incorrect result from worker"
+        end
+
+      assert(true == result)
+    end
+
+    Sup.remove_group(@sup_id, group_id)
+  end
+
+  test "send random to group" do
+    group_id = make_ref()
+    num_workers = 3
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    for i <- 1..num_workers do
+      {:ok, _} =
+        Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [i]}, id: i)
+    end
+
+    Process.sleep(100)
+
+    Sup.broadcast_to_group(@sup_id, group_id, {:store, :test, :nothing})
+
+    Sup.send_to_group_random(@sup_id, group_id, {:store, :test, :hello})
+
+    results =
+      Enum.map(1..num_workers, fn i ->
+        Sup.send_to_group_worker(@sup_id, group_id, i, {:get, :test, self()})
+
+        result =
+          receive do
+            {:result, :hello} ->
+              true
+
+            {:result, :nothing} ->
+              false
+          after
+            1_000 -> "incorrect result from worker"
+          end
+      end)
+
+    assert 1 == Enum.count(results, &(&1 == true))
+    assert 2 == Enum.count(results, &(&1 == false))
+
+    Sup.remove_group(@sup_id, group_id)
+  end
+
+  test "restart worker in group" do
+    group_id = make_ref()
+    num_workers = 2
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    for i <- 1..num_workers do
+      {:ok, _} =
+        Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [i]}, id: i)
+    end
+
+    Process.sleep(100)
+
+    Sup.broadcast_to_group(@sup_id, group_id, {:store, :test, :hello})
+
+    Sup.restart_group_worker(@sup_id, group_id, 1)
+
+    Sup.send_to_group_worker(@sup_id, group_id, 1, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, nil} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker"
+      end
+
+    assert(true == result)
+
+    Sup.send_to_group_worker(@sup_id, group_id, 2, {:get, :test, self()})
+
+    result =
+      receive do
+        {:result, :hello} ->
+          true
+
+        other ->
+          other
+      after
+        1_000 -> "incorrect result from worker"
+      end
+
+    assert(true == result)
+
+    Sup.remove_group(@sup_id, group_id)
+  end
+
+  test "restart all workers in group" do
+    group_id = make_ref()
+    num_workers = 5
+
+    {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+    for i <- 1..num_workers do
+      {:ok, _} =
+        Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [i]}, id: i)
+    end
+
+    Process.sleep(100)
+
+    Sup.broadcast_to_group(@sup_id, group_id, {:store, :test, :hello})
+
+    Sup.restart_group(@sup_id, group_id)
+
+    for i <- 1..num_workers do
+      Sup.send_to_group_worker(@sup_id, group_id, i, {:get, :test, self()})
+
+      result =
+        receive do
+          {:result, nil} ->
+            true
+
+          other ->
+            other
+        after
+          1_000 -> "incorrect result from worker"
+        end
+
+      assert(true == result)
+    end
+
+    Sup.remove_group(@sup_id, group_id)
+  end
+
   @tag :group_add_mixed_workers
   test "add mixed workers to group" do
     group_id = make_ref()

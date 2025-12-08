@@ -65,7 +65,7 @@ defmodule SuperWorker.Supervisor do
   ```
 
   Supervisor can add directly to other supervisor or
-  by add config to config file or self start with start/start_link/startwith_config function.
+  by add config to config file or self start with start/start_link/start_with_config function.
   """
 
   use GenServer, restart: :permanent, shutdown: 5_000
@@ -886,7 +886,7 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
-  @spec do_add_worker(atom(), list(), integer()) ::
+  @spec do_add_worker(atom(), list(), non_neg_integer()) ::
           {:ok, any()} | {:error, any()}
   defp do_add_worker(sup_id, options, timeout) do
     Logger.debug("SuperWorker, Supervisor, starting worker with options: #{inspect(options)}")

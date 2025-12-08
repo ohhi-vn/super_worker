@@ -27,7 +27,6 @@ defmodule SuperWorker.Supervisor.Chain do
           table: atom
         }
 
-  alias SuperWorker.Supervisor, as: Sup
   alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue, Constants}
 
   alias __MODULE__
@@ -233,6 +232,10 @@ defmodule SuperWorker.Supervisor.Chain do
               apply(m, f, [msg.data | a])
           end
 
+        Logger.debug(
+          "SuperWorker, Chain, worker #{inspect(worker.id)} processed the data, result: #{inspect(result)}"
+        )
+
         with {:ok, {first_id, _}} <- Db.get_chain_order(table, chain_id, 1) do
           if first_id != id do
             send(msg.from, {:processed, msg.id, id})
@@ -254,9 +257,10 @@ defmodule SuperWorker.Supervisor.Chain do
             )
 
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
-            {:ok, chain} = Sup.get_chain(get_my_supervisor(), chain_id)
+            {:ok, chain} = Db.get_chain(table, chain_id)
 
-            msg = Message.new(:new_data, nil, {msg_id, new_data})
+            # msg = Message.new(:new_data, nil, new_data)
+            msg = %Message{id: msg_id, data: new_data, type: :new_data, from: self()}
 
             Messaging.send_next(chain, worker.order + 1, msg)
 

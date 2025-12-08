@@ -95,9 +95,9 @@ defmodule MyTest do
     loop(id)
   end
 
-  def task(n, sleep \\ 100) do
+  def task(n, sleep \\ 100) when is_integer(n) do
     prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
+    IO.puts(prefix <> " Task is started, param: #{inspect(n)}")
 
     sum =
       Enum.reduce(1..n, 0, fn i, acc ->
