@@ -9,6 +9,7 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   """
 
   require Logger
+  require SuperWorker.Log
 
   alias SuperWorker.Supervisor.{Chain, Db, Message, ErrorHandler}
 
@@ -21,7 +22,10 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   """
   @spec new_data(Chain.t(), Message.t()) :: :ok
   def new_data(chain = %Chain{}, msg = %Message{}) do
-    Logger.debug("Chain.Messaging: Injecting new data into chain #{inspect(chain.id)}")
+    SuperWorker.Log.debug(fn ->
+      "Chain.Messaging: Injecting new data into chain #{inspect(chain.id)}"
+    end)
+
     send_next(chain, 1, msg)
   end
 
@@ -33,9 +37,9 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   def send_next(chain = %Chain{}, order, msg = %Message{}) do
     with {:ok, {worker_id, pid}} <-
            Db.get_chain_order(chain.table, chain.id, order) do
-      Logger.debug(
+      SuperWorker.Log.debug(fn ->
         "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker: #{inspect(worker_id)}. Sending message."
-      )
+      end)
 
       send(pid, {:new_data, msg})
       {:ok, :sent_to_one}
@@ -53,7 +57,10 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
     case chain.send_type do
       :broadcast ->
         Enum.each(workers, fn {pid, worker_id} ->
-          Logger.debug("Chain.Messaging: Broadcasting to worker #{inspect(worker_id)}")
+          SuperWorker.Log.debug(fn ->
+            "Chain.Messaging: Broadcasting to worker #{inspect(worker_id)}"
+          end)
+
           send(pid, {:new_data, msg})
         end)
 
@@ -61,7 +68,11 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
 
       :random ->
         {pid, worker_id} = Enum.random(workers)
-        Logger.debug("Chain.Messaging: Sending randomly to worker #{inspect(worker_id)}")
+
+        SuperWorker.Log.debug(fn ->
+          "Chain.Messaging: Sending randomly to worker #{inspect(worker_id)}"
+        end)
+
         send(pid, {:new_data, msg})
         {:ok, :sent_random}
 
@@ -69,9 +80,9 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
         index = :erlang.phash2(msg.data, length(workers))
         {pid, worker_id} = Enum.at(workers, index)
 
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "Chain.Messaging: Sending via partition to worker #{inspect(worker_id)} at index #{index}"
-        )
+        end)
 
         send(pid, {:new_data, msg})
         {:ok, :sent_partition}
@@ -80,7 +91,11 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
         [{_, {:multi_workers, worker_id, _}} | _] = workers
         index = get_next_round_robin_order(chain, worker_id, length(workers))
         {pid, _} = Enum.at(workers, index)
-        Logger.debug("Chain.Messaging: Sending round-robin to worker at index #{index}")
+
+        SuperWorker.Log.debug(fn ->
+          "Chain.Messaging: Sending round-robin to worker at index #{index}"
+        end)
+
         send(pid, {:new_data, msg})
         {:ok, :sent_round_robin}
     end
@@ -98,9 +113,9 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   defp handle_finished_callback(chain, msg) do
     case chain.finished_callback do
       nil ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "Chain.Messaging: No finished_callback defined for chain #{inspect(chain.id)}"
-        )
+        end)
 
         {:ok, :no_callback}
 

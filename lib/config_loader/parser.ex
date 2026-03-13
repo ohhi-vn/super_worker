@@ -7,6 +7,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
   """
 
   require Logger
+  require SuperWorker.Log
 
   @type config :: keyword()
   @type parsed_config :: %{
@@ -90,7 +91,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
 
   @spec parse(config()) :: {:ok, parsed_config()} | {:error, any()}
   def parse(config) when is_list(config) do
-    Logger.debug("SuperWorker, Parser, parsing config: #{inspect(config)}")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Parser, parsing config: #{inspect(config)}" end)
 
     with {:ok, options} <- parse_supervisor_options(config),
          {:ok, children} <- parse_children(config) do
@@ -99,7 +100,10 @@ defmodule SuperWorker.ConfigLoader.Parser do
         children: children
       }
 
-      Logger.debug("SuperWorker, Parser, successfully parsed config: #{inspect(parsed)}")
+      SuperWorker.Log.debug(fn ->
+        "SuperWorker, Parser, successfully parsed config: #{inspect(parsed)}"
+      end)
+
       {:ok, parsed}
     else
       {:error, reason} = error ->
@@ -204,7 +208,9 @@ defmodule SuperWorker.ConfigLoader.Parser do
   end
 
   defp parse_group({id, group_config}, index) when is_list(group_config) do
-    Logger.debug("Parsing group with id: #{id}, config: #{inspect(group_config)}")
+    SuperWorker.Log.debug(fn ->
+      "Parsing group with id: #{id}, config: #{inspect(group_config)}"
+    end)
 
     with {:ok, options} <- extract_group_options(group_config),
          {:ok, workers} <- extract_workers(group_config) do
@@ -406,16 +412,18 @@ defmodule SuperWorker.ConfigLoader.Parser do
   defp extract_workers(config) do
     workers = Keyword.get(config, :workers, [])
 
-    Logger.debug("SuperWorker, Parser, parses workers config, workers: #{inspect(workers)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Parser, parses workers config, workers: #{inspect(workers)}"
+    end)
 
     if is_list(workers) do
       parsed_workers =
         workers
         |> Enum.with_index()
         |> Enum.map(fn {worker, index} ->
-          Logger.debug(
+          SuperWorker.Log.debug(fn ->
             "SuperWorker, Parser, parses worker config at index #{index}, config: #{inspect(worker)}"
-          )
+          end)
 
           case worker do
             {gen_server_worker, options} = gen_server

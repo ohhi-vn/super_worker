@@ -11,6 +11,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
   alias SuperWorker.ConfigLoader.Bootstrap
 
   require Logger
+  require SuperWorker.Log
 
   @doc """
   Loads all supervisor configurations defined in the application environment,
@@ -34,7 +35,9 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
   """
   @spec load() :: :ok
   def load() do
-    Logger.debug("SuperWorker, ConfigParser, loading all supervisor configurations.")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, ConfigParser, loading all supervisor configurations."
+    end)
 
     configs =
       Application.get_all_env(@app)
@@ -57,7 +60,9 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
   """
   @spec load_one(sup_id :: atom()) :: {:ok, pid} | {:error, any}
   def load_one(sup_id) do
-    Logger.debug("SuperWorker, ConfigParser, loading supervisor: #{inspect(sup_id)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, ConfigParser, loading supervisor: #{inspect(sup_id)}"
+    end)
 
     case Application.get_env(@app, sup_id) do
       nil ->
@@ -73,25 +78,25 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
   end
 
   defp load_and_start(sup_id, sup_config) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, ConfigParser, processing supervisor #{inspect(sup_id)} with config: #{inspect(sup_config)}"
-    )
+    end)
 
     with {:ok, parsed_config} <- Parser.parse(sup_config) do
       config_with_id = put_in(parsed_config, [:options, :id], sup_id)
 
-      Logger.debug(
+      SuperWorker.Log.debug(fn ->
         "SuperWorker, ConfigParser, starting supervisor #{inspect(sup_id)} with processed config: #{inspect(config_with_id)}"
-      )
+      end)
 
       Bootstrap.start_supervisor(config_with_id)
     else
-      {:error, reason} ->
+      {:error, reason} = error ->
         Logger.error(
           "SuperWorker, ConfigParser, failed to process configuration for supervisor #{inspect(sup_id)}: #{inspect(reason)}"
         )
 
-        {:error, reason}
+        error
     end
   end
 end

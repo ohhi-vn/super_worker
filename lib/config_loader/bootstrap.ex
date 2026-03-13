@@ -9,6 +9,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   alias SuperWorker.Supervisor
 
   require Logger
+  require SuperWorker.Log
 
   @doc """
   Starts a supervisor with the given parsed configuration.
@@ -44,7 +45,9 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   """
   @spec start_supervisor(map()) :: {:ok, pid()} | {:error, any()}
   def start_supervisor(%{options: options, children: children}) do
-    Logger.debug("SuperWorker, Bootstrap, starting supervisor with options: #{inspect(options)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Bootstrap, starting supervisor with options: #{inspect(options)}"
+    end)
 
     sup_id = Keyword.get(options, :id)
 
@@ -76,11 +79,16 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
   # Starts the supervisor process with the given options
   defp start_supervisor_process(options) do
-    Logger.debug("SuperWorker, Bootstrap, starting supervisor process with: #{inspect(options)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Bootstrap, starting supervisor process with: #{inspect(options)}"
+    end)
 
     case Supervisor.start_with_config(options) do
       {:ok, pid} ->
-        Logger.debug("SuperWorker, Bootstrap, supervisor process started: #{inspect(pid)}")
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Bootstrap, supervisor process started: #{inspect(pid)}"
+        end)
+
         {:ok, pid}
 
       {:error, reason} = error ->
@@ -94,14 +102,14 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
   # Adds all children to the supervisor
   defp add_children(_sup_id, []) do
-    Logger.debug("SuperWorker, Bootstrap, no children to add")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Bootstrap, no children to add" end)
     :ok
   end
 
   defp add_children(sup_id, children) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Bootstrap, adding #{length(children)} children to supervisor #{inspect(sup_id)}"
-    )
+    end)
 
     results =
       children
@@ -121,15 +129,18 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
   # Adds a single child (group, chain, or standalone worker)
   defp add_child(sup_id, %{type: :group} = group) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Bootstrap, adding group #{inspect(group.id)}, options: #{inspect(group.options)}"
-    )
+    end)
 
     group_options = Keyword.put(group.options, :id, group.id)
 
     with {:ok, _} <- Supervisor.add_group(sup_id, group_options),
          :ok <- add_group_workers(sup_id, group.id, group.workers) do
-      Logger.debug("SuperWorker, Bootstrap, successfully added group: #{inspect(group.id)}")
+      SuperWorker.Log.debug(fn ->
+        "SuperWorker, Bootstrap, successfully added group: #{inspect(group.id)}"
+      end)
+
       :ok
     else
       {:error, reason} = error ->
@@ -142,13 +153,16 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   end
 
   defp add_child(sup_id, %{type: :chain} = chain) do
-    Logger.debug("SuperWorker, Bootstrap, adding chain #{inspect(chain.id)}")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Bootstrap, adding chain #{inspect(chain.id)}" end)
 
     chain_options = Keyword.put(chain.options, :id, chain.id)
 
     with {:ok, _} <- Supervisor.add_chain(sup_id, chain_options),
          :ok <- add_chain_workers(sup_id, chain.id, chain.workers) do
-      Logger.debug("SuperWorker, Bootstrap, successfully added chain: #{inspect(chain.id)}")
+      SuperWorker.Log.debug(fn ->
+        "SuperWorker, Bootstrap, successfully added chain: #{inspect(chain.id)}"
+      end)
+
       :ok
     else
       {:error, reason} = error ->
@@ -161,7 +175,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   end
 
   defp add_child(sup_id, %{type: :standalone, mfa: mfa, options: options}) do
-    Logger.debug("SuperWorker, Bootstrap, adding standalone worker")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Bootstrap, adding standalone worker" end)
 
     # Ensure restart_strategy is set for standalone workers (default: :permanent)
     options_with_defaults =
@@ -173,9 +187,9 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
     case Supervisor.add_standalone_worker(sup_id, mfa, options_with_defaults) do
       {:ok, worker_id} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Bootstrap, successfully added standalone worker: #{inspect(worker_id)}"
-        )
+        end)
 
         :ok
 
@@ -195,14 +209,14 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
   # Adds workers to a group
   defp add_group_workers(_sup_id, _group_id, []) do
-    Logger.debug("SuperWorker, Bootstrap, no workers to add to group")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Bootstrap, no workers to add to group" end)
     :ok
   end
 
   defp add_group_workers(sup_id, group_id, workers) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Bootstrap, adding #{length(workers)} workers to group #{inspect(group_id)}"
-    )
+    end)
 
     results =
       workers
@@ -225,15 +239,15 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   end
 
   defp add_group_worker(sup_id, group_id, %{mfa: mfa, options: options}, index) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Bootstrap, adding worker at index #{index} to group #{inspect(group_id)}, mfa: #{inspect(mfa)}, options: #{inspect(options)}"
-    )
+    end)
 
     case Supervisor.add_group_worker(sup_id, group_id, mfa, options) do
       {:ok, worker_id} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Bootstrap, successfully added worker #{inspect(worker_id)} to group #{inspect(group_id)}"
-        )
+        end)
 
         :ok
 
@@ -248,14 +262,14 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
 
   # Adds workers to a chain
   defp add_chain_workers(_sup_id, _chain_id, []) do
-    Logger.debug("SuperWorker, Bootstrap, no workers to add to chain")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Bootstrap, no workers to add to chain" end)
     :ok
   end
 
   defp add_chain_workers(sup_id, chain_id, workers) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Bootstrap, adding #{length(workers)} workers to chain #{inspect(chain_id)}"
-    )
+    end)
 
     results =
       workers
@@ -278,15 +292,15 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   end
 
   defp add_chain_worker(sup_id, chain_id, %{mfa: mfa, options: options}, index) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Bootstrap, adding worker at index #{index} to chain #{inspect(chain_id)}"
-    )
+    end)
 
     case Supervisor.add_chain_worker(sup_id, chain_id, mfa, options) do
       {:ok, worker_id} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Bootstrap, successfully added worker #{inspect(worker_id)} to chain #{inspect(chain_id)}"
-        )
+        end)
 
         :ok
 

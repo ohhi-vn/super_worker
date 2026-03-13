@@ -6,9 +6,12 @@ defmodule SuperWorker.Supervisor.Db do
   alias SuperWorker.Supervisor.{Worker, Group, Chain}
 
   require Logger
+  require SuperWorker.Log
 
   def init(sup_name) when is_atom(sup_name) do
-    Logger.debug("SuperWorker, Db, creating table for supervisor #{inspect(sup_name)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Db, creating table for supervisor #{inspect(sup_name)}"
+    end)
 
     table =
       Ets.new(sup_name, [
@@ -19,13 +22,24 @@ defmodule SuperWorker.Supervisor.Db do
         {:read_concurrency, true}
       ])
 
-    Logger.debug("SuperWorker, Db, created table for supervisor #{inspect(sup_name)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Db, created table for supervisor #{inspect(sup_name)}"
+    end)
 
     table
   end
 
   def put_worker(table, ref, worker_id, parent, pid) do
-    Ets.insert_new(table, {{:ref, ref}, worker_id, parent, pid})
+    # Remove every old ref-row that belongs to this logical worker.
+    stale =
+      Ets.match_object(table, {{:ref, :_}, worker_id, parent, :_})
+
+    Enum.each(stale, fn {{_, old_ref}, _, _, _} ->
+      Ets.delete(table, {:ref, old_ref})
+    end)
+
+    # Now insert the single authoritative row.
+    Ets.insert(table, {{:ref, ref}, worker_id, parent, pid})
   end
 
   def get_worker(table, ref) do
@@ -36,8 +50,39 @@ defmodule SuperWorker.Supervisor.Db do
 
   def get_worker_by_id(table, worker_id, parent) do
     case Ets.match_object(table, {{:ref, :_}, worker_id, parent, :_}) do
-      [{{_, ref}, _, _, pid}] -> {:ok, {ref, pid}}
-      [] -> {:error, :not_found}
+      # Happy path – exactly one entry.
+      [{{_, ref}, _, _, pid}] ->
+        {:ok, {ref, pid}}
+
+      # No entry found.
+      [] ->
+        {:error, :not_found}
+
+      # Multiple stale entries exist (left behind by an incomplete restart cycle).
+      # Keep the entry whose pid is still alive; purge the rest.
+      # If none are alive, purge all and return :not_found.
+      entries ->
+        Logger.warning(
+          "SuperWorker, Db, get_worker_by_id found #{length(entries)} entries " <>
+            "for worker #{inspect(worker_id)}, parent #{inspect(parent)}. " <>
+            "Cleaning up stale entries."
+        )
+
+        {alive, dead} =
+          Enum.split_with(entries, fn {{_, _ref}, _, _, pid} -> Process.alive?(pid) end)
+
+        # Purge every stale / duplicate ref row.
+        Enum.each(dead, fn {{_, ref}, _, _, _} -> Ets.delete(table, {:ref, ref}) end)
+
+        case alive do
+          # Exactly one alive pid — also drop any extra alive duplicates to be safe.
+          [{{_, ref}, _, _, pid} | extras] ->
+            Enum.each(extras, fn {{_, r}, _, _, _} -> Ets.delete(table, {:ref, r}) end)
+            {:ok, {ref, pid}}
+
+          [] ->
+            {:error, :not_found}
+        end
     end
   end
 

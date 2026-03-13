@@ -12,6 +12,7 @@ defmodule SuperWorker.TermStorage do
   """
 
   require Logger
+  require SuperWorker.Log
 
   @me __MODULE__
 
@@ -19,7 +20,8 @@ defmodule SuperWorker.TermStorage do
   Get the value of the key from the storage.
   """
   def get(key) do
-    Logger.debug("SuperWorker, TermStorage, get key: #{inspect key}")
+    SuperWorker.Log.debug(fn -> "SuperWorker, TermStorage, get key: #{inspect(key)}" end)
+
     case :persistent_term.get({@me, key}, nil) do
       nil -> {:error, :not_found}
       value -> {:ok, value}
@@ -44,10 +46,12 @@ defmodule SuperWorker.TermStorage do
   Get all key/value in the storage.
   """
   def get_all do
-    Enum.filter(:persistent_term.get(),
-    fn
-      {{mod, _}, _} -> mod == @me
-      _ -> false
-    end)
+    Enum.filter(
+      :persistent_term.get(),
+      fn
+        {{mod, _}, _} -> mod == @me
+        _ -> false
+      end
+    )
   end
 end

@@ -5,6 +5,7 @@ defmodule SuperWorker.Supervisor.Partition do
   alias __MODULE__
 
   require Logger
+  require SuperWorker.Log
 
   def start_partition(state) do
     Db.put_sup_pid(state.table, state.id, self())
@@ -18,14 +19,14 @@ defmodule SuperWorker.Supervisor.Partition do
   end
 
   def init_additional_partitions(supervisor = %Supervisor{}) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, [#{inspect(supervisor.id)}] init additional partitions, options: #{inspect(supervisor)}"
-    )
+    end)
 
     Enum.map(1..supervisor.num_partitions, fn i ->
-      Logger.debug(
+      SuperWorker.Log.debug(fn ->
         "SuperWorker, Supervisor, [#{inspect(supervisor.id)}] add partition: #{inspect(i)}"
-      )
+      end)
 
       supervisor =
         supervisor
@@ -44,9 +45,9 @@ defmodule SuperWorker.Supervisor.Partition do
     # Start the main loop
     pid = spawn_link(Partition, :start_partition, [partition])
 
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, #{inspect(partition.id)} initialized, pid: #{inspect(pid)}"
-    )
+    end)
 
     {:ok, partition.id, pid}
   end

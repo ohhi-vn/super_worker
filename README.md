@@ -3,7 +3,7 @@
 The library support for newbies work with process & supervisor in Elixir.
 Easy to add & identify processes in system.
 
-*Note: Library is still developing, please don't use for product.*
+*Note: Library is still unstable, please don't use for product.*
 
 ## Guide
 

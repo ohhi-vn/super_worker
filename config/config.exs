@@ -7,6 +7,7 @@
 # General application configuration
 import Config
 
+config :super_worker, debug_log: false
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

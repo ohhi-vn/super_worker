@@ -30,6 +30,7 @@ defmodule SuperWorker.Supervisor.Group do
   alias SuperWorker.Supervisor.{Worker, Db, Validator, Constants}
 
   require Logger
+  require SuperWorker.Log
 
   ## Public functions
 
@@ -53,9 +54,9 @@ defmodule SuperWorker.Supervisor.Group do
   Get worker from the group.
   """
   def get_worker(%Group{} = group, worker_id) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, supervisor #{inspect(group.supervisor)}, group #{inspect(group.id)}, get_worker: #{inspect(worker_id)}"
-    )
+    end)
 
     worker_id =
       case worker_id do
@@ -70,9 +71,9 @@ defmodule SuperWorker.Supervisor.Group do
   Get all workers from the group.
   """
   def get_all_workers(%Group{} = group) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, get_all_workers for supervisor #{inspect(group.supervisor)}"
-    )
+    end)
 
     Db.get_worker_infos_by_parent(group.table, {:group, group.id})
   end
@@ -121,13 +122,15 @@ defmodule SuperWorker.Supervisor.Group do
   A internal function. Restart a worker in the group.
   """
   def restart_worker(group = %Group{}, worker = %Worker{}) do
-    Logger.debug("SuperWoker, Group, restart worker #{inspect(worker)}")
+    SuperWorker.Log.debug(fn -> "SuperWoker, Group, restart worker #{inspect(worker)}" end)
     kill_worker(group, worker, :restart)
     spawn_worker(group, worker)
   end
 
   def restart_worker(group = %Group{}, worker_id) do
-    Logger.debug("SuperWoker, Group, restart worker by id #{inspect(worker_id)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWoker, Group, restart worker by id #{inspect(worker_id)}"
+    end)
 
     case get_worker(group, worker_id) do
       {:ok, worker} ->
@@ -168,9 +171,9 @@ defmodule SuperWorker.Supervisor.Group do
   def kill_worker(group = %Group{}, worker = %Worker{}, reason) do
     with {:ok, {_, pid}} <- Db.get_worker_by_id(group.table, worker.id, {:group, group.id}) do
       if Process.alive?(pid) do
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Group, group: #{inspect(group.id)}, kill_worker: #{inspect(worker)}, reason: #{inspect(reason)}"
-        )
+        end)
 
         Process.exit(pid, reason)
         {:ok, :killed}
@@ -202,7 +205,7 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   defp spawn_worker(group = %Group{}, %Worker{} = worker) do
-    Logger.debug("SuperWorker, Group, spawn_worker: #{inspect(worker)}")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Group, spawn_worker: #{inspect(worker)}" end)
     do_spawn_worker(group, worker)
 
     {:ok, group}
@@ -270,9 +273,9 @@ defmodule SuperWorker.Supervisor.Group do
               end
             end
 
-            Logger.debug(
+            SuperWorker.Log.debug(fn ->
               "SuperWorker, Group, worker #{inspect(worker.id)} started, fun: #{inspect(worker.fun)}"
-            )
+            end)
 
             case worker.fun do
               {m, f, a} ->
@@ -286,9 +289,9 @@ defmodule SuperWorker.Supervisor.Group do
 
     Db.put_worker(group.table, ref, worker.id, {:group, group.id}, pid)
 
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, spawned worker #{inspect(worker.id)}, pid: #{inspect(pid)}, ref: #{inspect(ref)}"
-    )
+    end)
 
     try do
       Process.link(pid)

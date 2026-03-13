@@ -5,20 +5,23 @@ defmodule SuperWorker.Application do
 
   use Application
   require Logger
+  require SuperWorker.Log
 
   alias SuperWorker.ConfigLoader.ConfigParser, as: Cfg
 
   @impl true
   @spec start(any, any) :: {:error, any} | {:ok, pid}
   def start(_type, _args) do
-    Logger.debug("SuperWorker, Application, start app")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Application, start app" end)
 
     # Load supervisors' configuration
     Cfg.load()
 
     children = []
 
-    Logger.debug("SuperWorker, Application, load with children: #{inspect(children)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Application, load with children: #{inspect(children)}"
+    end)
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

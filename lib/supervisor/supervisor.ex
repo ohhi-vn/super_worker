@@ -104,6 +104,7 @@ defmodule SuperWorker.Supervisor do
   alias SuperWorker.Supervisor.{Utils, ApiHelper, Message, Validator, Db, Partition}
 
   require Logger
+  require SuperWorker.Log
 
   @doc """
   start_link for using supervisor as child in other supervisor or link to current process.
@@ -205,9 +206,9 @@ defmodule SuperWorker.Supervisor do
   @spec stop(atom(), shutdown_type :: atom(), timeout :: non_neg_integer()) ::
           {:ok, atom()} | {:error, any()}
   def stop(sup_id, shutdown_type \\ :kill, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, stop supervisor: #{inspect(sup_id)},  shutdown type: #{inspect(shutdown_type)}"
-    )
+    end)
 
     with true <- running?(sup_id) do
       GenServer.call(sup_id, {:stop_supervisor, shutdown_type}, timeout)
@@ -287,9 +288,9 @@ defmodule SuperWorker.Supervisor do
   @spec send_to_standalone_worker(atom(), any(), any(), non_neg_integer()) ::
           :ok | {:error, term()}
   def send_to_standalone_worker(sup_id, worker_id, data, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, send standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :send_to_standalone_worker, {worker_id, data}, timeout)
   end
@@ -300,9 +301,9 @@ defmodule SuperWorker.Supervisor do
   @spec remove_standalone_worker(atom(), any(), non_neg_integer()) ::
           :ok | {:error, term()}
   def remove_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, remove standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :remove_standalone_worker, worker_id, timeout)
   end
@@ -313,9 +314,9 @@ defmodule SuperWorker.Supervisor do
   @spec get_pid_standalone_worker(atom(), any(), non_neg_integer()) ::
           {:ok, pid()} | {:error, term()}
   def get_pid_standalone_worker(sup_id, worker_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, get pid of standalone worker, supervisor: #{inspect(sup_id)},  worker id: #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :get_worker_pid, {worker_id, {:standalone, nil}}, timeout)
   end
@@ -377,9 +378,9 @@ defmodule SuperWorker.Supervisor do
   """
   @spec add_group(atom(), list(), non_neg_integer()) :: {:ok, atom()} | {:error, any()}
   def add_group(sup_id, options, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, add group, supervisor: #{inspect(sup_id)},  group options: #{inspect(options)}"
-    )
+    end)
 
     with {:ok, group = %Group{}} <- Group.check_options(options) do
       group = %Group{group | supervisor: sup_id}
@@ -393,9 +394,9 @@ defmodule SuperWorker.Supervisor do
   """
   @spec broadcast_to_group(atom(), atom(), any(), non_neg_integer()) :: :ok | {:error, any()}
   def broadcast_to_group(sup_id, group_id, data, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, send data to all workers in group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :broadcast_to_group, {group_id, data}, timeout)
   end
@@ -437,9 +438,9 @@ defmodule SuperWorker.Supervisor do
   @spec send_to_group_worker(atom(), any(), any(), any(), non_neg_integer()) ::
           :ok | {:error, any()}
   def send_to_group_worker(sup_id, group_id, worker_id, data, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, send data to group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :send_to_group, {group_id, worker_id, data}, timeout)
   end
@@ -508,9 +509,9 @@ defmodule SuperWorker.Supervisor do
   @spec remove_group_worker(atom(), any(), any(), non_neg_integer()) ::
           :ok | {:error, any()}
   def remove_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, remove worker from group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :remove_group_worker, {worker_id, group_id}, timeout)
   end
@@ -521,9 +522,9 @@ defmodule SuperWorker.Supervisor do
   @spec remove_group(atom(), any(), non_neg_integer()) ::
           :ok | {:error, any()}
   def remove_group(sup_id, group_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, remove group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :remove_group, group_id, timeout)
   end
@@ -534,9 +535,9 @@ defmodule SuperWorker.Supervisor do
   @spec count_workers_in_group(atom(), any(), non_neg_integer()) ::
           :ok | {:error, any()}
   def count_workers_in_group(sup_id, group_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, count workers in group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :count_workers_in_group, group_id, timeout)
   end
@@ -547,9 +548,9 @@ defmodule SuperWorker.Supervisor do
   @spec group_exists?(atom(), any(), non_neg_integer()) ::
           boolean() | {:error, any()}
   def group_exists?(sup_id, group_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, check group is existed, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :group_exists, group_id, timeout)
   end
@@ -560,9 +561,9 @@ defmodule SuperWorker.Supervisor do
   @spec get_pid_group_worker(atom(), any(), any(), non_neg_integer()) ::
           pid() | {:error, any()}
   def get_pid_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, get pid of group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :get_worker_pid, {worker_id, {:group, group_id}}, timeout)
   end
@@ -573,9 +574,9 @@ defmodule SuperWorker.Supervisor do
   @spec restart_group_worker(atom(), any, any, non_neg_integer()) ::
           {:ok, atom()} | {:error, any()}
   def restart_group_worker(sup_id, group_id, worker_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, restart group worker, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}, worker id: #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :restart_group_worker, {group_id, worker_id}, timeout)
   end
@@ -585,9 +586,9 @@ defmodule SuperWorker.Supervisor do
   """
   @spec restart_group(atom(), any, non_neg_integer()) :: {:ok, atom()} | {:error, any()}
   def restart_group(sup_id, group_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, restart group , supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :restart_group, group_id, timeout)
   end
@@ -632,9 +633,9 @@ defmodule SuperWorker.Supervisor do
   @spec add_chain(atom(), list(), non_neg_integer()) ::
           {:ok, atom()} | {:error, any()}
   def add_chain(sup_id, options, timeout \\ 5_000) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, add chain to supervisor , supervisor: #{inspect(sup_id)},  chain options: #{inspect(options)}"
-    )
+    end)
 
     with {:ok, chain} <- Chain.check_options(options) do
       %Chain{} = chain
@@ -651,9 +652,9 @@ defmodule SuperWorker.Supervisor do
   @spec send_to_chain(atom(), any(), any(), non_neg_integer()) ::
           {:ok, any()} | {:error, any()}
   def send_to_chain(sup_id, chain_id, data, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, send data to chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :add_data_to_chain, {chain_id, data}, timeout)
   end
@@ -662,11 +663,11 @@ defmodule SuperWorker.Supervisor do
   count workers in chain
   """
   @spec count_workers_in_chain(atom(), any(), non_neg_integer()) ::
-          :ok | {:error, any()}
+          {:ok, pos_integer} | {:error, any()}
   def count_workers_in_chain(sup_id, chain_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, count workers in chain, supervisor: #{inspect(sup_id)},  chain id: #{inspect(chain_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :count_workers_in_chain, chain_id, timeout)
   end
@@ -677,9 +678,9 @@ defmodule SuperWorker.Supervisor do
   @spec remove_chain_worker(atom(), any(), any(), non_neg_integer()) ::
           {:ok, any()} | {:error, any()}
   def remove_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, remove worker in chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}, worker: #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :remove_chain_worker, {worker_id, chain_id}, timeout)
   end
@@ -690,9 +691,9 @@ defmodule SuperWorker.Supervisor do
   @spec remove_chain(atom(), any(), non_neg_integer()) ::
           {:ok, any()} | {:error, any()}
   def remove_chain(sup_id, chain_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, remove chain, #{inspect(sup_id)}, #{inspect(chain_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :remove_chain, chain_id, timeout)
   end
@@ -703,9 +704,9 @@ defmodule SuperWorker.Supervisor do
   @spec get_pid_chain_worker(atom(), any(), any(), non_neg_integer()) ::
           {:ok, any()} | {:error, any()}
   def get_pid_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, get pid of chain worker, #{inspect(sup_id)}, #{inspect(chain_id)}, #{inspect(worker_id)}"
-    )
+    end)
 
     get_partition_and_send(sup_id, :get_worker_pid, {worker_id, {:chain, chain_id}}, timeout)
   end
@@ -720,7 +721,9 @@ defmodule SuperWorker.Supervisor do
 
       supervisor = %{supervisor | table: table}
 
-      Logger.debug("SuperWorker, Supervisor, create table for #{inspect(supervisor.id)} done}")
+      SuperWorker.Log.debug(fn ->
+        "SuperWorker, Supervisor, create table for #{inspect(supervisor.id)} done}"
+      end)
 
       Db.put_sup_info(supervisor.table, :master, supervisor)
 
@@ -762,13 +765,13 @@ defmodule SuperWorker.Supervisor do
 
   @impl true
   def handle_info({:partition_started, partition_id}, state) do
-    Logger.debug("SuperWorker, Supervisor, Partition started: #{partition_id}")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, Partition started: #{partition_id}" end)
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:partition_stopped, partition_id}, state) do
-    Logger.debug("SuperWorker, Supervisor, Partition stopped: #{partition_id}")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, Partition stopped: #{partition_id}" end)
 
     stopped_partitions =
       [partition_id | Map.get(state, :stopped_partitions, [])]
@@ -822,17 +825,22 @@ defmodule SuperWorker.Supervisor do
 
   # Start the supervisor main processes.
   defp do_start_supervisor(opts = %Supervisor{}) do
-    Logger.debug("SuperWorker, Supervisor, starting supervisor with options: #{inspect(opts)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, starting supervisor with options: #{inspect(opts)}"
+    end)
 
     # Start main process of the supervisor
     case opts.link do
       true ->
-        Logger.debug("SuperWorker, Supervisor, starting supervisor with link.")
+        SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, starting supervisor with link." end)
         opts = Map.put(opts, :linked_pids, self())
         start_link(opts)
 
       _ ->
-        Logger.debug("SuperWorker, Supervisor, starting supervisor without link.")
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Supervisor, starting supervisor without link."
+        end)
+
         start(opts)
     end
   end
@@ -867,9 +875,9 @@ defmodule SuperWorker.Supervisor do
   defp get_partition_and_send(sup_id, api, params, partition_info, timeout) do
     with true <- running?(sup_id),
          {:ok, pid} <- query_target_partition(sup_id, partition_info) do
-      Logger.debug(
+      SuperWorker.Log.debug(fn ->
         "SuperWorker, Supervisor, sending api #{inspect(api)} to partition #{inspect(pid)}"
-      )
+      end)
 
       ApiHelper.call_api(pid, api, params, timeout)
     else
@@ -889,7 +897,8 @@ defmodule SuperWorker.Supervisor do
   @spec do_add_worker(atom(), list(), non_neg_integer()) ::
           {:ok, any()} | {:error, any()}
   defp do_add_worker(sup_id, options, timeout) do
-    Logger.debug("SuperWorker, Supervisor, starting worker with options: #{inspect(options)}")
+    SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, starting worker with options: #{inspect(options)}" end)
+
 
     with {:ok, worker} <- Worker.from_config(options) do
       get_partition_and_send(sup_id, :start_worker, worker, {worker.parent, worker.id}, timeout)

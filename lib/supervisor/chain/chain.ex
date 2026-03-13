@@ -33,6 +33,7 @@ defmodule SuperWorker.Supervisor.Chain do
   alias Chain.Messaging
 
   require Logger
+  require SuperWorker.Log
 
   ## Public functions
 
@@ -47,9 +48,9 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec get_worker(Chain.t(), any()) :: {:error, :worker_not_found} | {:ok, Worker.t()}
   def get_worker(chain = %Chain{}, worker_id) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Chain, get_worker: #{inspect(chain.supervisor)}, #{inspect(worker_id)}"
-    )
+    end)
 
     Db.get_worker_info(chain.table, worker_id, {:chain, chain.id})
   end
@@ -64,7 +65,9 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec get_all_workers(Chain.t()) :: {:ok, list(Worker.t())}
   def get_all_workers(chain = %Chain{}) do
-    Logger.debug("SuperWorker, Chain, get_all_workers: #{inspect(chain.supervisor)}")
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Chain, get_all_workers: #{inspect(chain.supervisor)}"
+    end)
 
     Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id})
   end
@@ -90,9 +93,9 @@ defmodule SuperWorker.Supervisor.Chain do
             chain
           end)
 
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, added multi workers (#{inspect(worker.id)}) to the chain #{inspect(chain.id)}"
-        )
+        end)
 
         {:ok, chain}
       end
@@ -101,9 +104,9 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec do_add_worker(Chain.t(), Worker.t()) :: {:error, :already_exists} | {:ok, Chain.t()}
   defp do_add_worker(chain = %Chain{}, %Worker{} = worker) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Chain, adding worker #{inspect(worker.id)} to the chain #{inspect(chain.id)}"
-    )
+    end)
 
     if worker_exists?(chain, worker.id) do
       {:error, :already_exists}
@@ -169,9 +172,9 @@ defmodule SuperWorker.Supervisor.Chain do
   ## Private functions
 
   defp spawn_worker(chain = %Chain{}, worker = %Worker{}) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Chain, spawning worker #{inspect(worker.id)} in chain #{inspect(chain.id)}"
-    )
+    end)
 
     worker =
       worker
@@ -214,9 +217,9 @@ defmodule SuperWorker.Supervisor.Chain do
   defp loop_chain(table, queue, worker = %Worker{id: id, parent: chain_id}) do
     receive do
       {:processed, msg_id, worker_id} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{inspect(worker_id)} processed the data, msg_id: #{msg_id}"
-        )
+        end)
 
         {:ok, queue} = MapQueue.remove(queue, msg_id)
         loop_chain(table, queue, worker)
@@ -224,17 +227,26 @@ defmodule SuperWorker.Supervisor.Chain do
       {:new_data, msg = %Message{}} ->
         # TO-DO: catch throw, error from outside.
         result =
-          case worker.fun do
-            {:fun, f} ->
-              f.(msg.data)
+          try do
+            case worker.fun do
+              {:fun, f} ->
+                f.(msg.data)
 
-            {m, f, a} ->
-              apply(m, f, [msg.data | a])
+              {m, f, a} ->
+                apply(m, f, [msg.data | a])
+            end
+          catch
+            e ->
+              Logger.error(
+                "SuperWorker, Chain, faill to call function in chain, worker_id: #{inspect(id)}, reason: #{inspect(e)}"
+              )
+
+              {:error, :fail_to_execute_func}
           end
 
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{inspect(worker.id)} processed the data, result: #{inspect(result)}"
-        )
+        end)
 
         with {:ok, {first_id, _}} <- Db.get_chain_order(table, chain_id, 1) do
           if first_id != id do
@@ -245,16 +257,16 @@ defmodule SuperWorker.Supervisor.Chain do
         case result do
           {:next, new_data} ->
             if MapQueue.is_full?(queue) do
-              Logger.debug(
+              SuperWorker.Log.debug(fn ->
                 "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
-              )
+              end)
 
               loop_send(queue, worker)
             end
 
-            Logger.debug(
+            SuperWorker.Log.debug(fn ->
               "SuperWorker, Chain, worker #{inspect(id)}, passing data to the next process, chain: #{inspect(chain_id)}"
-            )
+            end)
 
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
             {:ok, chain} = Db.get_chain(table, chain_id)
@@ -287,14 +299,14 @@ defmodule SuperWorker.Supervisor.Chain do
             exit(reason)
 
           data ->
-            Logger.debug(
+            SuperWorker.Log.debug(fn ->
               "SuperWorker, Chain, worker #{inspect(id)}, passing data (default) to the next process, chain: #{inspect(chain_id)}"
-            )
+            end)
 
             if MapQueue.is_full?(queue) do
-              Logger.debug(
+              SuperWorker.Log.debug(fn ->
                 "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
-              )
+              end)
 
               loop_send(queue, worker)
             end
@@ -311,39 +323,39 @@ defmodule SuperWorker.Supervisor.Chain do
         end
 
       {:kill, reason} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{inspect(id)}, killing chain, chain: #{inspect(chain_id)}"
-        )
+        end)
 
         exit(reason)
 
       {:stop, ^chain_id} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{inspect(id)}, stopping chain, chain: #{inspect(chain_id)}"
-        )
+        end)
     end
   end
 
   defp loop_send(queue, %Worker{id: id, parent: chain_id} = _worker) do
     receive do
       {:processed, msg_id, worker_id} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{worker_id} processed the data, msg_id: #{msg_id}"
-        )
+        end)
 
         {:ok, MapQueue.remove(queue, msg_id)}
 
       {:kill, reason} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{id}, killing chain, chain: #{inspect(chain_id)}"
-        )
+        end)
 
         exit(reason)
 
       {:stop, ^chain_id} ->
-        Logger.debug(
+        SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{id}, stopping chain process, chain: #{inspect(chain_id)}"
-        )
+        end)
 
         :stop
     end

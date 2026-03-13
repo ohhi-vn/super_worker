@@ -28,6 +28,7 @@ defmodule SuperWorker.Supervisor.ApiHelper do
   alias SuperWorker.Supervisor.Message
 
   require Logger
+  require SuperWorker.Log
 
   # ============================================================================
   # API Communication Helpers
@@ -91,9 +92,9 @@ defmodule SuperWorker.Supervisor.ApiHelper do
   @spec call_api(atom() | pid(), atom(), any(), timeout_ms()) :: any()
   def call_api(target, api, params, timeout)
       when (is_atom(target) or is_pid(target)) and is_atom(api) do
-    Logger.debug(
+    SuperWorker.Log.debug(fn ->
       "SuperWorker, Utils, call API: #{inspect(api)}, params: #{inspect(params)}, target: #{inspect(target)}"
-    )
+    end)
 
     message = Message.new(api, target, params)
 
