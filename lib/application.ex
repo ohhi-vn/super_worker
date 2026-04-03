@@ -7,15 +7,25 @@ defmodule SuperWorker.Application do
   require Logger
   require SuperWorker.Log
 
-  alias SuperWorker.ConfigLoader.ConfigParser, as: Cfg
+  alias SuperWorker.ConfigLoader.ConfigParser
 
   @impl true
-  @spec start(any, any) :: {:error, any} | {:ok, pid}
+  @spec start(any, any) :: {:error, any} | {:ok, pid} | {:ok, pid, any}
   def start(_type, _args) do
     SuperWorker.Log.debug(fn -> "SuperWorker, Application, start app" end)
 
-    # Load supervisors' configuration
-    Cfg.load()
+    # Load supervisors' configuration and log results
+    case ConfigParser.load() do
+      :ok ->
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Application, supervisor configurations loaded successfully"
+        end)
+
+      {:error, reason} ->
+        Logger.error(
+          "SuperWorker, Application, failed to load supervisor configurations: #{inspect(reason)}"
+        )
+    end
 
     children = []
 

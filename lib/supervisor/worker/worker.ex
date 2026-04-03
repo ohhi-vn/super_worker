@@ -69,62 +69,56 @@ defmodule SuperWorker.Supervisor.Worker do
     if opts.restart_strategy in Constants.Strategies.standalone_restart_strategies() do
       {:ok, opts}
     else
-      {:error, "Invalid group restart strategy, #{inspect(opts.restart_strategy)}"}
+      {:error, "Invalid standalone restart strategy, #{inspect(opts.restart_strategy)}"}
     end
   end
 
   defp validate_options(options) do
     errors =
-      Enum.reduce(options, [], fn {key, value}, acc ->
-        case key do
-          :order ->
-            if not is_integer(value) or value < 0 do
-              {:error, {:invalid, {:order, value}}}
-            else
-              acc
-            end
-
-          :name ->
-            if is_atom(value) do
-              acc
-            else
-              {:error, {:invalid, {:name, value}}}
-            end
-
-          :fun ->
-            case value do
-              {module, function, args}
-              when is_atom(module) and is_atom(function) and is_list(args) ->
-                acc
-
-              {:fun, fun} when is_function(fun) ->
-                acc
-
-              {:gen_server, {module, function, args}}
-              when is_atom(module) and is_atom(function) and is_list(args) ->
-                acc
-
-              _ ->
-                {:error, {:invalid, {:fun, value}}}
-            end
-
-          _ ->
+      Enum.reduce(options, [], fn
+        {:order, value}, acc ->
+          if not is_integer(value) or value < 0 do
+            [{:error, {:invalid, {:order, value}}} | acc]
+          else
             acc
-        end
+          end
+
+        {:name, value}, acc ->
+          if is_atom(value) do
+            acc
+          else
+            [{:error, {:invalid, {:name, value}}} | acc]
+          end
+
+        {:fun, value}, acc ->
+          case value do
+            {module, function, args}
+            when is_atom(module) and is_atom(function) and is_list(args) ->
+              acc
+
+            {:fun, fun} when is_function(fun) ->
+              acc
+
+            {:gen_server, {module, function, args}}
+            when is_atom(module) and is_atom(function) and is_list(args) ->
+              acc
+
+            _ ->
+              [{:error, {:invalid, {:fun, value}}} | acc]
+          end
+
+        _other, acc ->
+          acc
       end)
 
     if length(errors) > 0 do
-      {:error, errors}
+      {:error, Enum.reverse(errors)}
     else
       {:ok, options}
     end
   end
 
   defp default_options(options) do
-    options =
-      options
-      |> Map.put(:start_time, DateTime.utc_now())
-
     options =
       if Map.has_key?(options, :id) do
         options

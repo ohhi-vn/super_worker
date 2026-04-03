@@ -5,22 +5,30 @@ defmodule SuperWorker.Supervisor.DbTest do
 
   doctest Db
 
-  @supervisor :db_test
-
-  setup_all do
-    :ok
-  end
+  @moduletag :capture_log
 
   setup do
-    :ok
+    # Use a unique table name per test to avoid ETS conflicts with async: true
+    table_name = :"db_test_#{System.unique_integer([:positive])}"
+    table = Db.init(table_name)
+
+    on_exit(fn ->
+      # Safely delete ETS table, ignoring errors if already deleted
+      try do
+        :ets.delete(table)
+      catch
+        :error, _ -> :ok
+      end
+    end)
+
+    %{table: table}
   end
 
   @doc """
   Test for put/get worker.
   """
   @tag :db_test_add_data
-  test "put/get worker" do
-    table = Db.init(@supervisor)
+  test "put/get worker", %{table: table} do
     ref = make_ref()
     worker_id = ref
 
@@ -33,9 +41,8 @@ defmodule SuperWorker.Supervisor.DbTest do
   @doc """
   Test for get by worker id
   """
-  @tag :db_test_add_data2
-  test "get worker by id" do
-    table = Db.init(@supervisor)
+  @tag :db_test_get_worker_by_id
+  test "get worker by id", %{table: table} do
     ref = make_ref()
     worker_id = ref
     parent = {:standalone, nil}
@@ -47,11 +54,10 @@ defmodule SuperWorker.Supervisor.DbTest do
   end
 
   @doc """
-  Test for get by workers by parent
+  Test for get workers by parent
   """
   @tag :db_get_workers_by_parent
-  test "get workers by parent" do
-    table = Db.init(@supervisor)
+  test "get workers by parent", %{table: table} do
     ref = make_ref()
     worker_id = ref
     parent = {:group, make_ref()}
@@ -63,11 +69,10 @@ defmodule SuperWorker.Supervisor.DbTest do
   end
 
   @doc """
-  Test for get by worker id
+  Test for get worker by id with multiple entries
   """
-  @tag :db_test_add_data2
-  test "get worker by id 2" do
-    table = Db.init(@supervisor)
+  @tag :db_test_get_worker_by_id_2
+  test "get worker by id 2", %{table: table} do
     ref = make_ref()
     worker_id = ref
     parent = {:standalone, nil}
@@ -82,8 +87,7 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test delete worker
   """
   @tag :db_test_delete
-  test "delete worker " do
-    table = Db.init(@supervisor)
+  test "delete worker", %{table: table} do
     ref = make_ref()
     worker_id = ref
     parent = {:standalone, nil}
@@ -101,8 +105,7 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test delete worker by id
   """
   @tag :db_test_delete_by_id
-  test "delete worker by id" do
-    table = Db.init(@supervisor)
+  test "delete worker by id", %{table: table} do
     ref = make_ref()
     worker_id = ref
     parent = {:standalone, nil}
@@ -120,15 +123,14 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test put/delete/get group
   """
   @tag :db_test_group
-  test "test put/get/delete group" do
-    table = Db.init(@supervisor)
+  test "test put/get/delete group", %{table: table} do
     id = make_ref()
     group = %Group{id: id}
 
     Db.put_group(table, group)
 
     {:ok, result} = Db.get_group(table, id)
-    assert(result.id == id)
+    assert result.id == id
     Db.delete_group(table, id)
     result = Db.get_group(table, id)
 
@@ -139,8 +141,7 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test put/delete/get group
   """
   @tag :db_test_get_all_groups
-  test "test get all groups" do
-    table = Db.init(@supervisor)
+  test "test get all groups", %{table: table} do
     group1 = %Group{id: make_ref()}
     group2 = %Group{id: make_ref()}
 
@@ -159,15 +160,14 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test put/delete/get chain
   """
   @tag :db_test_chain
-  test "test put/get/delete chain" do
-    table = Db.init(@supervisor)
+  test "test put/get/delete chain", %{table: table} do
     id = make_ref()
     chain = %Chain{id: id}
 
     Db.put_chain(table, chain)
 
     {:ok, result} = Db.get_chain(table, id)
-    assert(result.id == id)
+    assert result.id == id
     Db.delete_chain(table, id)
     result = Db.get_chain(table, id)
 
@@ -178,8 +178,7 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test get all chains
   """
   @tag :db_test_get_all_chains
-  test "test get all chains" do
-    table = Db.init(@supervisor)
+  test "test get all chains", %{table: table} do
     chain1 = %Chain{id: make_ref()}
     chain2 = %Chain{id: make_ref()}
 
@@ -198,8 +197,7 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test get/put sup info
   """
   @tag :db_test_put_get_delete_sup_info
-  test "test get/put/delete sup info" do
-    table = Db.init(@supervisor)
+  test "test get/put/delete sup info", %{table: table} do
     options = [test: 1]
     partition_id = make_ref()
 
@@ -218,9 +216,7 @@ defmodule SuperWorker.Supervisor.DbTest do
   Test get/put sup pid
   """
   @tag :db_test_put_get_delete_sup_pid
-  test "test get/put/delete sup pid" do
-    table = Db.init(@supervisor)
-    options = [test: 1]
+  test "test get/put/delete sup pid", %{table: table} do
     partition_id = make_ref()
 
     Db.put_sup_pid(table, partition_id, self())

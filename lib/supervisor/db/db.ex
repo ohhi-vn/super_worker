@@ -111,10 +111,11 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def put_worker_info(table, %Worker{} = worker_info) do
-    Ets.insert_new(
-      table,
-      {{:worker, worker_info.id, {worker_info.type, worker_info.parent}}, worker_info}
-    )
+    key = {:worker, worker_info.id, {worker_info.type, worker_info.parent}}
+
+    # Use insert (upsert) instead of insert_new to handle restart scenarios
+    # where worker info may already exist from a previous lifecycle.
+    Ets.insert(table, {key, worker_info})
   end
 
   def get_worker_info(table, worker_id, parent) do
@@ -152,7 +153,14 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def put_group(table, %Group{} = group) do
-    Ets.insert_new(table, {{:group, group.id}, group})
+    key = {:group, group.id}
+
+    if Ets.insert_new(table, {key, group}) do
+      :ok
+    else
+      Logger.warning("SuperWorker, Db, group #{inspect(group.id)} already exists in table")
+      {:error, :already_exists}
+    end
   end
 
   def delete_group(table, group_id) do
@@ -174,7 +182,10 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def put_chain_order(table, worker_id, chain_id, order, pid) do
-    Ets.insert_new(table, {{:chain_order, chain_id, order}, {worker_id, pid}})
+    key = {:chain_order, chain_id, order}
+
+    # Use insert (upsert) to handle chain worker restarts
+    Ets.insert(table, {key, {worker_id, pid}})
   end
 
   def get_chain_order(table, chain_id, order) do
@@ -188,7 +199,14 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def put_chain(table, %Chain{} = chain) do
-    Ets.insert_new(table, {{:chain, chain.id}, chain})
+    key = {:chain, chain.id}
+
+    if Ets.insert_new(table, {key, chain}) do
+      :ok
+    else
+      Logger.warning("SuperWorker, Db, chain #{inspect(chain.id)} already exists in table")
+      {:error, :already_exists}
+    end
   end
 
   def get_chain(table, chain_id) do
@@ -210,7 +228,10 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def put_sup_info(table, partition_id, opts) do
-    Ets.insert_new(table, {{:supervisor, partition_id}, opts})
+    key = {:supervisor, partition_id}
+
+    # Use insert (upsert) to handle supervisor restart scenarios
+    Ets.insert(table, {key, opts})
   end
 
   def get_sup_info(table, partition_id) do
@@ -224,7 +245,10 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def put_sup_pid(table, partition_id, pid) do
-    Ets.insert_new(table, {{:supervisor_pid, partition_id}, pid})
+    key = {:supervisor_pid, partition_id}
+
+    # Use insert (upsert) to handle supervisor restart scenarios
+    Ets.insert(table, {key, pid})
   end
 
   def get_sup_pid(table, partition_id) do

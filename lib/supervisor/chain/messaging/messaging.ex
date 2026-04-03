@@ -35,7 +35,7 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   @spec send_next(Chain.t(), non_neg_integer(), Message.t()) ::
           {:ok, atom()} | {:error, atom()}
   def send_next(chain = %Chain{}, order, msg = %Message{}) do
-    with {:ok, {worker_id, pid}} <-
+    with {:ok, {_worker_id, pid}} <-
            Db.get_chain_order(chain.table, chain.id, order) do
       SuperWorker.Log.debug(fn ->
         "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker: #{inspect(worker_id)}. Sending message."
@@ -46,69 +46,19 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
     else
       {:error, :not_found} ->
         handle_finished_callback(chain, msg)
+
+      other ->
+        Logger.error(
+          "SuperWorker, Chain.Messaging, send_next/3 failed unexpectedly: #{inspect(other)}"
+        )
+
+        {:error, :send_failed}
     end
   end
 
   # ============================================================================
   # Private Helpers
   # ============================================================================
-
-  defp route_to_multiple_workers(chain, workers, msg) do
-    case chain.send_type do
-      :broadcast ->
-        Enum.each(workers, fn {pid, worker_id} ->
-          SuperWorker.Log.debug(fn ->
-            "Chain.Messaging: Broadcasting to worker #{inspect(worker_id)}"
-          end)
-
-          send(pid, {:new_data, msg})
-        end)
-
-        {:ok, :sent_broadcast}
-
-      :random ->
-        {pid, worker_id} = Enum.random(workers)
-
-        SuperWorker.Log.debug(fn ->
-          "Chain.Messaging: Sending randomly to worker #{inspect(worker_id)}"
-        end)
-
-        send(pid, {:new_data, msg})
-        {:ok, :sent_random}
-
-      :partition ->
-        index = :erlang.phash2(msg.data, length(workers))
-        {pid, worker_id} = Enum.at(workers, index)
-
-        SuperWorker.Log.debug(fn ->
-          "Chain.Messaging: Sending via partition to worker #{inspect(worker_id)} at index #{index}"
-        end)
-
-        send(pid, {:new_data, msg})
-        {:ok, :sent_partition}
-
-      :round_robin ->
-        [{_, {:multi_workers, worker_id, _}} | _] = workers
-        index = get_next_round_robin_order(chain, worker_id, length(workers))
-        {pid, _} = Enum.at(workers, index)
-
-        SuperWorker.Log.debug(fn ->
-          "Chain.Messaging: Sending round-robin to worker at index #{index}"
-        end)
-
-        send(pid, {:new_data, msg})
-        {:ok, :sent_round_robin}
-    end
-  end
-
-  defp get_next_round_robin_order(chain, worker_id, max_order) do
-    key = {:round_robin, {:chain, chain.id}, worker_id}
-    # {pos_to_update, increment, threshold, set_on_threshold}
-    # This will increment field 2. If it reaches max_order, it resets to 0.
-    # The initial value is {key, 0}.
-    # The return value is the value *before* the update.
-    :ets.update_counter(chain.data_table, key, {2, 1, max_order, 0}, {key, 0})
-  end
 
   defp handle_finished_callback(chain, msg) do
     case chain.finished_callback do

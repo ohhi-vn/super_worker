@@ -9,6 +9,7 @@ defmodule SuperWorker.Supervisor.Chain do
     :id,
     restart_strategy: :one_for_one,
     supervisor: nil,
+    # partition_pid is deprecated and unused.
     partition_pid: nil,
     finished_callback: nil,
     queue_length: 50,
@@ -118,32 +119,59 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec restart_worker(Chain.t(), any()) :: {:error, any} | {:ok, Chain.t()}
   def restart_worker(chain = %Chain{}, worker_id) do
-    if worker_exists?(chain, worker_id) do
-      kill_worker(chain, worker_id)
-      spawn_worker(chain, worker_id)
-    else
-      {:error, "Worker not found"}
+    case get_worker(chain, worker_id) do
+      {:ok, worker} ->
+        case kill_worker(chain, worker_id) do
+          {:ok, _chain} ->
+            spawn_worker(chain, worker)
+
+          error ->
+            Logger.error(
+              "SuperWorker, Chain, failed to kill worker #{inspect(worker_id)} before restart: #{inspect(error)}"
+            )
+
+            error
+        end
+
+      {:error, _} ->
+        {:error, :worker_not_found}
     end
   end
 
   @spec restart_all_workers(Chain.t()) :: {:ok, Chain.t()}
   # TO-DO: support restart workers depend on host partition.
   def restart_all_workers(chain = %Chain{}) do
-    Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id})
-    |> Enum.map(fn worker ->
-      Logger.info("SuperWorker, Chain, restarting worker #{worker.id}, pid: #{worker.pid}")
-      Process.exit(worker.pid, :kill)
-      worker = do_spawn_worker(chain, worker)
-      worker.id
-    end)
+    {:ok, workers} = Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id})
+
+    results =
+      Enum.map(workers, fn worker ->
+        Logger.info(
+          "SuperWorker, Chain, restarting worker #{inspect(worker.id)}, pid: #{inspect(worker.pid)}"
+        )
+
+        Process.exit(worker.pid, :kill)
+        do_spawn_worker(chain, worker)
+      end)
+
+    {failures, _successes} =
+      Enum.split_with(results, fn
+        {:ok, _} -> false
+        _ -> true
+      end)
+
+    if Enum.any?(failures) do
+      Logger.error(
+        "SuperWorker, Chain, failed to restart #{Enum.count(failures)} workers in chain #{inspect(chain.id)}: #{inspect(failures)}"
+      )
+    end
 
     {:ok, chain}
   end
 
+  @spec count_workers(Chain.t()) :: non_neg_integer()
   def count_workers(chain = %Chain{}) do
-    with {:ok, workers} <- Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id}) do
-      Enum.count(workers)
-    end
+    {:ok, workers} = Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id})
+    Enum.count(workers)
   end
 
   @spec remove_worker(Chain.t(), any()) :: true
@@ -203,11 +231,14 @@ defmodule SuperWorker.Supervisor.Chain do
 
     try do
       Process.link(pid)
-    rescue
-      error ->
+    catch
+      :exit, reason ->
         Logger.error(
-          "SuperWorker, Chain, failed to link worker #{inspect(worker.id)}: #{inspect(error)}"
+          "SuperWorker, Chain, failed to link worker #{inspect(worker.id)}: #{inspect(reason)}"
         )
+
+        Process.exit(pid, :kill)
+        exit(reason)
     end
 
     worker
@@ -216,9 +247,9 @@ defmodule SuperWorker.Supervisor.Chain do
   # Support receive data from the previous process in the chain and pass it to the next process.
   defp loop_chain(table, queue, worker = %Worker{id: id, parent: chain_id}) do
     receive do
-      {:processed, msg_id, worker_id} ->
+      {:processed, msg_id, _worker_id} ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Chain, worker #{inspect(worker_id)} processed the data, msg_id: #{msg_id}"
+          "SuperWorker, Chain, worker processed the data, msg_id: #{msg_id}"
         end)
 
         {:ok, queue} = MapQueue.remove(queue, msg_id)
@@ -238,7 +269,7 @@ defmodule SuperWorker.Supervisor.Chain do
           catch
             e ->
               Logger.error(
-                "SuperWorker, Chain, faill to call function in chain, worker_id: #{inspect(id)}, reason: #{inspect(e)}"
+                "SuperWorker, Chain, fail to call function in chain, worker_id: #{inspect(id)}, reason: #{inspect(e)}"
               )
 
               {:error, :fail_to_execute_func}
@@ -256,13 +287,26 @@ defmodule SuperWorker.Supervisor.Chain do
 
         case result do
           {:next, new_data} ->
-            if MapQueue.is_full?(queue) do
-              SuperWorker.Log.debug(fn ->
-                "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
-              end)
+            queue =
+              if MapQueue.is_full?(queue) do
+                SuperWorker.Log.debug(fn ->
+                  "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
+                end)
 
-              loop_send(queue, worker)
-            end
+                case loop_send(queue, worker) do
+                  {:ok, updated_queue} ->
+                    updated_queue
+
+                  :stop ->
+                    Logger.error(
+                      "SuperWorker, Chain, worker #{inspect(id)}, queue full, exiting chain process"
+                    )
+
+                    exit(:queue_full)
+                end
+              else
+                queue
+              end
 
             SuperWorker.Log.debug(fn ->
               "SuperWorker, Chain, worker #{inspect(id)}, passing data to the next process, chain: #{inspect(chain_id)}"
@@ -282,6 +326,8 @@ defmodule SuperWorker.Supervisor.Chain do
             Logger.error(
               "SuperWorker, Chain, worker #{inspect(id)}, error in chain process, chain: #{inspect(chain_id)}: #{inspect(reason)}"
             )
+
+            loop_chain(table, queue, worker)
 
           # TO-DO: decide to ignore or stop the chain.
           {:drop, reason} ->
@@ -303,13 +349,26 @@ defmodule SuperWorker.Supervisor.Chain do
               "SuperWorker, Chain, worker #{inspect(id)}, passing data (default) to the next process, chain: #{inspect(chain_id)}"
             end)
 
-            if MapQueue.is_full?(queue) do
-              SuperWorker.Log.debug(fn ->
-                "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
-              end)
+            queue =
+              if MapQueue.is_full?(queue) do
+                SuperWorker.Log.debug(fn ->
+                  "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
+                end)
 
-              loop_send(queue, worker)
-            end
+                case loop_send(queue, worker) do
+                  {:ok, updated_queue} ->
+                    updated_queue
+
+                  :stop ->
+                    Logger.error(
+                      "SuperWorker, Chain, worker #{inspect(id)}, queue full, exiting chain process"
+                    )
+
+                    exit(:queue_full)
+                end
+              else
+                queue
+              end
 
             {:ok, queue, msg_id} = MapQueue.add(queue, data)
             {:ok, chain} = Db.get_chain(table, chain_id)
@@ -333,14 +392,16 @@ defmodule SuperWorker.Supervisor.Chain do
         SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker #{inspect(id)}, stopping chain, chain: #{inspect(chain_id)}"
         end)
+
+        exit(:normal)
     end
   end
 
-  defp loop_send(queue, %Worker{id: id, parent: chain_id} = _worker) do
+  defp loop_send(queue, %Worker{id: _id, parent: chain_id} = _worker) do
     receive do
-      {:processed, msg_id, worker_id} ->
+      {:processed, msg_id, _worker_id} ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Chain, worker #{worker_id} processed the data, msg_id: #{msg_id}"
+          "SuperWorker, Chain, worker processed the data, msg_id: #{msg_id}"
         end)
 
         {:ok, MapQueue.remove(queue, msg_id)}
@@ -365,7 +426,7 @@ defmodule SuperWorker.Supervisor.Chain do
     if opts.restart_strategy in Constants.Strategies.chain_restart_strategies() do
       {:ok, opts}
     else
-      {:error, "Invalid group restart strategy, #{inspect(opts.restart_strategy)}"}
+      {:error, "Invalid chain restart strategy, #{inspect(opts.restart_strategy)}"}
     end
   end
 
@@ -400,10 +461,6 @@ defmodule SuperWorker.Supervisor.Chain do
          {:ok, chain} <- validate_queue_length(chain) do
       {:ok, chain}
     end
-  end
-
-  defp get_my_supervisor() do
-    Process.get({:supervisor, :sup_id})
   end
 
   defp get_chain_order(chain) do

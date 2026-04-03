@@ -18,7 +18,6 @@ defmodule SuperWorker.Supervisor.ApiHelper do
     :send_to_group_random,
     :add_data_to_chain,
     :send_to_standalone_worker,
-    :remove_group_worker,
     :count_workers_in_group,
     :add_group,
     :add_chain,

@@ -186,9 +186,9 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
       end
 
     case Supervisor.add_standalone_worker(sup_id, mfa, options_with_defaults) do
-      {:ok, worker_id} ->
+      {:ok, _worker_id} ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Bootstrap, successfully added standalone worker: #{inspect(worker_id)}"
+          "SuperWorker, Bootstrap, successfully added standalone worker"
         end)
 
         :ok
@@ -238,15 +238,15 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
     end
   end
 
-  defp add_group_worker(sup_id, group_id, %{mfa: mfa, options: options}, index) do
+  defp add_group_worker(sup_id, group_id, %{mfa: mfa, options: options}, _index) do
     SuperWorker.Log.debug(fn ->
-      "SuperWorker, Bootstrap, adding worker at index #{index} to group #{inspect(group_id)}, mfa: #{inspect(mfa)}, options: #{inspect(options)}"
+      "SuperWorker, Bootstrap, adding worker to group #{inspect(group_id)}, mfa: #{inspect(mfa)}, options: #{inspect(options)}"
     end)
 
     case Supervisor.add_group_worker(sup_id, group_id, mfa, options) do
-      {:ok, worker_id} ->
+      {:ok, _worker_id} ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Bootstrap, successfully added worker #{inspect(worker_id)} to group #{inspect(group_id)}"
+          "SuperWorker, Bootstrap, successfully added worker to group #{inspect(group_id)}"
         end)
 
         :ok
@@ -291,15 +291,15 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
     end
   end
 
-  defp add_chain_worker(sup_id, chain_id, %{mfa: mfa, options: options}, index) do
+  defp add_chain_worker(sup_id, chain_id, %{mfa: mfa, options: options}, _index) do
     SuperWorker.Log.debug(fn ->
-      "SuperWorker, Bootstrap, adding worker at index #{index} to chain #{inspect(chain_id)}"
+      "SuperWorker, Bootstrap, adding worker to chain #{inspect(chain_id)}"
     end)
 
     case Supervisor.add_chain_worker(sup_id, chain_id, mfa, options) do
-      {:ok, worker_id} ->
+      {:ok, _worker_id} ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Bootstrap, successfully added worker #{inspect(worker_id)} to chain #{inspect(chain_id)}"
+          "SuperWorker, Bootstrap, successfully added worker to chain #{inspect(chain_id)}"
         end)
 
         :ok

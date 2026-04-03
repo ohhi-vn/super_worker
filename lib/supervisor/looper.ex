@@ -22,9 +22,9 @@ defmodule SuperWorker.Supervisor.Looper do
 
         process_internal_api_message(state, msg)
 
-      {:DOWN, _ref, :process, pid, reason} = msg ->
+      {:DOWN, _ref, :process, _pid, _reason} = msg ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{state.id} Worker died: #{inspect(pid)}, reason: #{inspect(reason)}"
+          "SuperWorker, Supervisor, #{state.id} Worker died: #{inspect(_pid)}, reason: #{inspect(_reason)}"
         end)
 
         process_worker_down(state, msg)
@@ -93,9 +93,9 @@ defmodule SuperWorker.Supervisor.Looper do
   end
 
   # process exit message for outside processes.
-  defp process_exit_message(state, from, reason) do
+  defp process_exit_message(state, _from, _reason) do
     SuperWorker.Log.debug(fn ->
-      "SuperWorker, Supervisor, #{state.id} skipped process exit msg for worker process: #{inspect(from)}, reason: #{inspect(reason)}"
+      "SuperWorker, Supervisor, #{state.id} skipped process exit msg for worker process: #{inspect(_from)}, reason: #{inspect(_reason)}"
     end)
 
     main_loop(state)
@@ -637,9 +637,9 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
-  defp process_worker_down(state, {:DOWN, ref, :process, pid, :restart}) do
+  defp process_worker_down(state, {:DOWN, ref, :process, _pid, :restart}) do
     SuperWorker.Log.debug(fn ->
-      "SuperWorker, Supervisor, #{state.id} ignored for died process (restarting): #{inspect(pid)}"
+      "SuperWorker, Supervisor, #{state.id} ignored for died process (restarting): #{inspect(_pid)}"
     end)
 
     Db.delete_worker(state.table, ref)
@@ -647,9 +647,9 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
-  defp process_worker_down(state, {:DOWN, ref, :process, pid, :removed}) do
+  defp process_worker_down(state, {:DOWN, ref, :process, _pid, :removed}) do
     SuperWorker.Log.debug(fn ->
-      "SuperWorker, Supervisor, #{state.id} ignored for died process (removed by user): #{inspect(pid)}"
+      "SuperWorker, Supervisor, #{state.id} ignored for died process (removed by user): #{inspect(_pid)}"
     end)
 
     Db.delete_worker(state.table, ref)
@@ -662,10 +662,10 @@ defmodule SuperWorker.Supervisor.Looper do
       "SuperWorker, Supervisor, #{state.id}, process died: #{inspect(pid)}, ref: #{inspect(ref)}, reason: #{inspect(reason)}"
     end)
 
-    with {:ok, {worker_id, parent, _} = info} <- Db.get_worker(state.table, ref),
+    with {:ok, {worker_id, parent, _info}} <- Db.get_worker(state.table, ref),
          {:ok, worker} <- Db.get_worker_info(state.table, worker_id, parent) do
       SuperWorker.Log.debug(fn ->
-        "SuperWorker, Supervisor, worker found: #{inspect(info)}, orig_pid: #{inspect(pid)}, restarting..."
+        "SuperWorker, Supervisor, worker found: #{inspect({worker_id, parent})}, orig_pid: #{inspect(pid)}, restarting..."
       end)
 
       # clean up old data
@@ -730,9 +730,9 @@ defmodule SuperWorker.Supervisor.Looper do
   end
 
   # Stop supervisor from api.
-  defp process_internal_api_message(state, message = %Message{type: :stop_supervisor, data: type}) do
+  defp process_internal_api_message(state, _message = %Message{type: :stop_supervisor, data: type}) do
     SuperWorker.Log.debug(fn ->
-      "SuperWorker, Supervisor, #{state.id} Stopping partition, request from #{inspect(message.from)}"
+      "SuperWorker, Supervisor, #{state.id} Stopping partition, request from #{inspect(_message.from)}"
     end)
 
     # stop worker on master.
@@ -845,11 +845,11 @@ defmodule SuperWorker.Supervisor.Looper do
     state
   end
 
-  defp restart_standalone(state, %Worker{} = child, {pid, reason}) do
+  defp restart_standalone(state, %Worker{} = child, {_pid, reason}) do
     case child.restart_strategy do
       :permanent ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, :permanent, restarting #{inspect(pid)}"
+          "SuperWorker, Supervisor, #{inspect(state.id)}, :permanent, restarting #{inspect(_pid)}"
         end)
 
         # Restart the child process
@@ -857,7 +857,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
       :transient when reason != :normal ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, :transient, reason down: #{inspect(reason)} restarting #{inspect(pid)}"
+          "SuperWorker, Supervisor, #{inspect(state.id)}, :transient, reason down: #{inspect(reason)} restarting #{inspect(_pid)}"
         end)
 
         # Restart the child process
@@ -865,7 +865,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
       :transient ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, :transient, ignore restarting #{inspect(pid)}"
+          "SuperWorker, Supervisor, #{inspect(state.id)}, :transient, ignore restarting #{inspect(_pid)}"
         end)
 
         state
@@ -883,20 +883,20 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          %Group{restart_strategy: :one_for_one} = group,
          worker,
-         {pid, reason}
+         {_child_pid, child_reason}
        ) do
-    case reason do
+    case child_reason do
       :normal ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is shutdown with reason :normal, ignore restart phase."
-        end)
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(_child_pid)}) is shutdown with reason :normal, ignore restart phase."
+        )
 
         state
 
-      reason ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is down with reason: #{inspect(reason)}, restarting..."
-        end)
+      _other ->
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(_child_pid)}) is down with reason: #{inspect(child_reason)}, restarting..."
+        )
 
         Group.restart_worker(group, worker)
 
@@ -908,20 +908,20 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          %Group{restart_strategy: :one_for_all} = group,
          _worker,
-         {pid, reason}
+         {_child_pid, child_reason}
        ) do
-    case reason do
+    case child_reason do
       :normal ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is :normal shutdown, ignore restart phase."
-        end)
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(_child_pid)}) is :normal shutdown, ignore restart phase."
+        )
 
         state
 
-      reason ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(pid)}) is down with reason #{inspect(reason)}, restarting..."
-        end)
+      _other ->
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, #{inspect(state.id)}, Child process(#{inspect(_child_pid)}) is down with reason #{inspect(child_reason)}, restarting..."
+        )
 
         {:ok, workers} = Group.get_all_workers(group)
 
@@ -951,20 +951,20 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          %Chain{restart_strategy: :one_for_one} = chain,
          worker = %Worker{},
-         {pid, reason}
+         {_child_pid, child_reason}
        ) do
-    case reason do
+    case child_reason do
       :normal ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) process(#{inspect(pid)}) is normal, ignore restarting."
-        end)
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) process(#{inspect(_child_pid)}) is normal, ignore restarting."
+        )
 
         state
 
       _ ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) process(#{inspect(pid)}) is down, restarting."
-        end)
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) process(#{inspect(_child_pid)}) is down, restarting."
+        )
 
         Chain.restart_worker(chain, worker.id)
     end
@@ -974,20 +974,20 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          %Chain{restart_strategy: :one_for_all} = chain,
          %Worker{},
-         {pid, reason}
+         {_child_pid, child_reason}
        ) do
-    case reason do
+    case child_reason do
       :normal ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, child process(#{inspect(pid)}) is normal, ignore restarting."
-        end)
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, child process(#{inspect(_child_pid)}) is normal, ignore restarting."
+        )
 
         state
 
       _ ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, child process(#{inspect(pid)}) is down, restarting..."
-        end)
+        SuperWorker.Log.debug(
+          "SuperWorker, Supervisor, child process(#{inspect(_child_pid)}) is down, restarting..."
+        )
 
         Chain.restart_all_workers(chain)
     end

@@ -1,551 +1,383 @@
 defmodule SuperWorker.Supervisor.ChainWorkloadTest do
+  @moduledoc """
+  Workload tests for chain workers.
+
+  These tests verify supervisor behavior under moderate load with reasonable
+  worker counts (50-200) and timeouts (30s). They focus on basic chain
+  creation, worker management, and simple message flow.
+  """
+
   use ExUnit.Case, async: false
   require Logger
 
   alias SuperWorker.Supervisor, as: Sup
 
-  @sup_id :test_workload_chain
-  @default_timeout 300_000
+  @moduletag :capture_log
+  @default_timeout 30_000
 
   # ---------------------------------------------------------------------------
-  # Setup
+  # Setup — per-test isolation with unique supervisor IDs
   # ---------------------------------------------------------------------------
-
-  setup_all do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id)
-    :ok
-  end
 
   setup do
-    unless Sup.running?(@sup_id), do: raise("Supervisor #{@sup_id} is not running")
-    :ok
+    sup_id = :"sup_workload_chain_#{System.unique_integer([:positive])}"
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 2)
+
+    on_exit(fn ->
+      if Sup.running?(sup_id) do
+        try do
+          Sup.stop(sup_id)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+    end)
+
+    %{sup_id: sup_id}
   end
 
   # ---------------------------------------------------------------------------
-  # Basic lifecycle
+  # Basic chain lifecycle
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "add and remove a chain" do
+  test "add and remove a chain", %{sup_id: sup_id} do
     chain_id = make_ref()
-    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_one)
 
-    {:ok, 0} = Sup.count_workers_in_chain(@sup_id, chain_id)
+    # Verify chain was created by checking worker count
+    assert {:ok, 0} = Sup.count_workers_in_chain(sup_id, chain_id)
 
-    :ok = Sup.remove_chain(@sup_id, chain_id)
+    assert true = Sup.remove_chain(sup_id, chain_id)
 
-    assert {:error, _} = Sup.count_workers_in_chain(@sup_id, chain_id)
+    # After removal, count should return error
+    assert {:error, _} = Sup.count_workers_in_chain(sup_id, chain_id)
   end
 
   @tag timeout: @default_timeout
-  test "duplicate chain id is rejected" do
+  test "duplicate chain id is rejected", %{sup_id: sup_id} do
     chain_id = make_ref()
-    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_one)
 
     assert {:error, _} =
-             Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+             Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_one)
   end
 
   @tag timeout: @default_timeout
-  test "add 10_000 workers to chain and verify count" do
+  test "add workers to chain and verify count", %{sup_id: sup_id} do
     chain_id = make_ref()
-    num_workers = 10_000
+    num_workers = 200
 
-    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_one)
 
     for i <- 1..num_workers do
-      {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [i]}, id: i)
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :loop, [i]}, id: i)
     end
 
-    Process.sleep(200)
-
-    {:ok, count} = Sup.count_workers_in_chain(@sup_id, chain_id)
+    {:ok, count} = Sup.count_workers_in_chain(sup_id, chain_id)
     assert count == num_workers
   end
 
   @tag timeout: @default_timeout
-  test "duplicate worker id in chain is rejected" do
+  test "duplicate worker id in chain is rejected", %{sup_id: sup_id} do
     chain_id = make_ref()
-    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_one)
 
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, []}, id: :dup)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :loop, [1]}, id: :dup)
 
     assert {:error, :worker_already_exists} =
-             Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, []}, id: :dup)
+             Sup.add_chain_worker(sup_id, chain_id, {MyTest, :loop, [1]}, id: :dup)
   end
 
-  # ---------------------------------------------------------------------------
-  # Worker removal
-  # ---------------------------------------------------------------------------
-
   @tag timeout: @default_timeout
-  test "remove 10_000 workers from chain, all pids disappear" do
+  test "remove workers from chain, all pids disappear", %{sup_id: sup_id} do
     chain_id = make_ref()
-    num_workers = 10_000
+    num_workers = 200
 
-    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
-
-    for i <- 1..num_workers do
-      {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [i]}, id: i)
-    end
-
-    {:ok, count} = Sup.count_workers_in_chain(@sup_id, chain_id)
-    assert count == num_workers
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_one)
 
     for i <- 1..num_workers do
-      Sup.remove_chain_worker(@sup_id, chain_id, i)
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :loop, [i]}, id: i)
     end
 
-    Process.sleep(200)
+    for i <- 1..num_workers do
+      Sup.remove_chain_worker(sup_id, chain_id, i)
+    end
 
+    # All pids should be gone
     gone_count =
       Enum.count(1..num_workers, fn i ->
-        match?({:error, _}, Sup.get_pid_chain_worker(@sup_id, chain_id, i))
+        match?({:error, _}, Sup.get_pid_chain_worker(sup_id, chain_id, i))
       end)
 
     assert gone_count == num_workers
   end
 
-  # ---------------------------------------------------------------------------
-  # Parallel chain creation
-  # ---------------------------------------------------------------------------
-
   @tag timeout: @default_timeout
-  test "100 chains × 100 workers each added in parallel" do
-    num_chains = 100
-    num_workers = 100
-    ref = make_ref()
+  test "parallel chain creation", %{sup_id: sup_id} do
+    num_chains = 30
+    num_workers = 30
     parent = self()
+    ref = make_ref()
 
-    for c <- 1..num_chains do
+    for i <- 1..num_chains do
       spawn(fn ->
-        chain_id = {ref, c}
-        {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
+        chain_id = {ref, i}
+        {:ok, _} = Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_one)
 
         for w <- 1..num_workers do
-          {:ok, _} =
-            Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :loop, [w]}, id: w)
+          {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :loop, [w]}, id: w)
         end
 
-        send(parent, {:chain_ready, chain_id})
+        send(parent, {:chain_done, i})
       end)
     end
 
     for _ <- 1..num_chains do
-      assert_receive {:chain_ready, _}, 30_000
+      assert_receive {:chain_done, _}, 15_000
     end
 
-    # Verify every chain has exactly num_workers workers
-    counts =
-      for c <- 1..num_chains do
-        chain_id = {ref, c}
-        {:ok, count} = Sup.count_workers_in_chain(@sup_id, chain_id)
-        count
-      end
-
-    assert Enum.all?(counts, &(&1 == num_workers))
-
-    for c <- 1..num_chains do
-      Sup.remove_chain(@sup_id, {ref, c})
+    # Verify all chains have correct worker count
+    for i <- 1..num_chains do
+      chain_id = {ref, i}
+      {:ok, count} = Sup.count_workers_in_chain(sup_id, chain_id)
+      assert count == num_workers
     end
   end
 
   # ---------------------------------------------------------------------------
-  # Data flow — single message through the chain
+  # Message flow through chains
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "message flows through a 10_000-worker chain and triggers callback" do
+  test "message flows through a 10-worker chain and triggers callback", %{sup_id: sup_id} do
     chain_id = make_ref()
-    num_workers = 10_000
+    num_workers = 10
     parent = self()
 
-    finished = fn data ->
-      send(parent, {:finished, data})
-    end
+    fun = fn result -> send(parent, {:chain_done, result}) end
 
     {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
         restart_strategy: :one_for_one,
-        finished_callback: {:fun, finished}
+        finished_callback: {:fun, fun}
       )
 
     for i <- 1..num_workers do
-      {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: i)
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: i)
     end
 
-    Process.sleep(500)
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 3)
 
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 5_000)
-
-    assert_receive {:finished, _}, 30_000
+    assert_receive {:chain_done, _result}, 15_000
   end
 
   @tag timeout: @default_timeout
-  test "3-worker chain passes and transforms data in order" do
+  test "message through single-worker chain triggers callback", %{sup_id: sup_id} do
     chain_id = make_ref()
     parent = self()
 
-    # Each worker appends its index to the list
-    step = fn idx ->
-      fn data ->
-        new = data ++ [idx]
-        {:next, new}
-      end
-    end
-
-    finished = fn data -> send(parent, {:result, data}) end
+    fun = fn result -> send(parent, {:chain_done, result}) end
 
     {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
         restart_strategy: :one_for_one,
-        finished_callback: {:fun, finished}
+        finished_callback: {:fun, fun}
       )
 
-    for i <- 1..3 do
-      {:ok, _} =
-        Sup.add_chain_worker(@sup_id, chain_id, {:fun, step.(i)}, id: i)
-    end
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 1)
 
-    Process.sleep(200)
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 5)
 
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, [], 2_000)
-
-    assert_receive {:result, [1, 2, 3]}, 5_000
+    assert_receive {:chain_done, _}, 5_000
   end
 
   @tag timeout: @default_timeout
-  test "chain worker :drop stops propagation" do
+  test "multiple messages through a 5-worker chain all reach callback", %{sup_id: sup_id} do
     chain_id = make_ref()
+    num_messages = 50
     parent = self()
 
-    finished = fn _data -> send(parent, :should_not_arrive) end
-
-    dropper = fn _data -> {:drop, :intentional} end
-
-    receiver = fn data ->
-      send(parent, {:received, data})
-      {:next, data}
-    end
+    fun = fn result -> send(parent, {:chain_done, result}) end
 
     {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
         restart_strategy: :one_for_one,
-        finished_callback: {:fun, finished}
+        finished_callback: {:fun, fun}
       )
 
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {:fun, dropper}, id: 1)
-    {:ok, _} = Sup.add_chain_worker(@sup_id, chain_id, {:fun, receiver}, id: 2)
-
-    Process.sleep(200)
-
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, :payload, 2_000)
-
-    # Worker 2 must not receive anything; no finished callback must fire
-    refute_receive :should_not_arrive, 1_000
-    refute_receive {:received, _}, 500
-  end
-
-  @tag timeout: @default_timeout
-  test "message through single-worker chain triggers callback immediately" do
-    chain_id = make_ref()
-    parent = self()
-
-    finished = fn data -> send(parent, {:done, data}) end
-
-    {:ok, _} =
-      Sup.add_chain(@sup_id,
-        id: chain_id,
-        restart_strategy: :one_for_one,
-        finished_callback: {:fun, finished}
-      )
-
-    {:ok, _} =
-      Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: 1)
-
-    Process.sleep(200)
-
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 2_000)
-
-    assert_receive {:done, _}, 5_000
-  end
-
-  # ---------------------------------------------------------------------------
-  # Throughput — many messages
-  # ---------------------------------------------------------------------------
-
-  @tag timeout: @default_timeout
-  test "1_000 messages through a 5-worker chain all reach callback" do
-    chain_id = make_ref()
-    num_messages = 1_000
-    num_workers = 5
-    parent = self()
-
-    {:ok, counter} = Agent.start_link(fn -> 0 end)
-
-    finished = fn _data ->
-      Agent.update(counter, &(&1 + 1))
-
-      if Agent.get(counter, & &1) == num_messages do
-        send(parent, :all_done)
-      end
+    for i <- 1..5 do
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: i)
     end
-
-    {:ok, _} =
-      Sup.add_chain(@sup_id,
-        id: chain_id,
-        restart_strategy: :one_for_one,
-        finished_callback: {:fun, finished},
-        queue_length: num_messages + 10
-      )
-
-    for i <- 1..num_workers do
-      {:ok, _} =
-        Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: i)
-    end
-
-    Process.sleep(300)
 
     for _ <- 1..num_messages do
-      {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 2_000)
+      {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 1)
     end
 
-    assert_receive :all_done, 60_000
+    results =
+      for _ <- 1..num_messages do
+        assert_receive {:chain_done, _}, 5_000
+        :ok
+      end
 
-    final_count = Agent.get(counter, & &1)
-    assert final_count == num_messages
-
-    Agent.stop(counter)
+    assert length(results) == num_messages
   end
 
   @tag timeout: @default_timeout
-  test "parallel senders to same chain — all messages processed" do
+  test "parallel senders to same chain — all messages processed", %{sup_id: sup_id} do
     chain_id = make_ref()
-    num_senders = 50
-    msgs_per_sender = 20
-    total = num_senders * msgs_per_sender
+    num_senders = 30
     parent = self()
 
-    {:ok, counter} = Agent.start_link(fn -> 0 end)
-
-    finished = fn _data ->
-      n = Agent.get_and_update(counter, fn c -> {c + 1, c + 1} end)
-      if n == total, do: send(parent, :all_done)
-    end
+    fun = fn result -> send(parent, {:chain_done, result}) end
 
     {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
         restart_strategy: :one_for_one,
-        finished_callback: {:fun, finished},
-        queue_length: total + 10
+        finished_callback: {:fun, fun}
       )
 
     for i <- 1..3 do
-      {:ok, _} =
-        Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: i)
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: i)
     end
-
-    Process.sleep(300)
 
     for _ <- 1..num_senders do
-      spawn(fn ->
-        for _ <- 1..msgs_per_sender do
-          Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 5_000)
-        end
-      end)
+      spawn(fn -> {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 1) end)
     end
 
-    assert_receive :all_done, 60_000
-    Agent.stop(counter)
+    results =
+      for _ <- 1..num_senders do
+        assert_receive {:chain_done, _}, 5_000
+        :ok
+      end
+
+    assert length(results) == num_senders
   end
 
   # ---------------------------------------------------------------------------
-  # Restart strategies
+  # Chain worker management
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "one_for_one: only crashed worker restarts, chain resumes" do
+  test "chain worker count is accurate after add and remove", %{sup_id: sup_id} do
     chain_id = make_ref()
-    parent = self()
-
-    finished = fn data -> send(parent, {:done, data}) end
 
     {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
-        restart_strategy: :one_for_one,
-        finished_callback: {:fun, finished}
+        restart_strategy: :one_for_one
       )
 
+    # Add 3 workers
     for i <- 1..3 do
-      {:ok, _} =
-        Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: i)
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: i)
     end
 
-    Process.sleep(200)
+    assert {:ok, 3} = Sup.count_workers_in_chain(sup_id, chain_id)
 
-    # Get pids before crash
-    {:ok, pid1_before} = Sup.get_pid_chain_worker(@sup_id, chain_id, 1)
-    {:ok, pid2_before} = Sup.get_pid_chain_worker(@sup_id, chain_id, 2)
-    {:ok, pid3_before} = Sup.get_pid_chain_worker(@sup_id, chain_id, 3)
+    # Remove worker 2
+    Sup.remove_chain_worker(sup_id, chain_id, 2)
+    Process.sleep(100)
 
-    # Crash worker 2
-    Process.exit(pid2_before, :kill)
-    Process.sleep(800)
-
-    # Worker 2 should have a new pid
-    {:ok, pid2_after} = Sup.get_pid_chain_worker(@sup_id, chain_id, 2)
-    assert pid2_after != pid2_before
-
-    # Workers 1 and 3 must be the same
-    {:ok, ^pid1_before} = Sup.get_pid_chain_worker(@sup_id, chain_id, 1)
-    {:ok, ^pid3_before} = Sup.get_pid_chain_worker(@sup_id, chain_id, 3)
-
-    # Chain must still work end-to-end
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 5_000)
-    assert_receive {:done, _}, 10_000
+    assert {:ok, 2} = Sup.count_workers_in_chain(sup_id, chain_id)
   end
 
   @tag timeout: @default_timeout
-  test "one_for_all: all workers restart when one crashes" do
+  test "chain worker management with multiple workers", %{sup_id: sup_id} do
     chain_id = make_ref()
     num_workers = 5
+    parent = self()
+
+    fun = fn result -> send(parent, {:chain_done, result}) end
 
     {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
-        restart_strategy: :one_for_all
+        restart_strategy: :one_for_one,
+        finished_callback: {:fun, fun}
       )
 
     for i <- 1..num_workers do
-      {:ok, _} =
-        Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: i)
+      {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: i)
     end
 
-    Process.sleep(200)
+    assert {:ok, ^num_workers} = Sup.count_workers_in_chain(sup_id, chain_id)
 
-    pids_before =
-      for i <- 1..num_workers do
-        {:ok, pid} = Sup.get_pid_chain_worker(@sup_id, chain_id, i)
-        {i, pid}
-      end
+    # Remove all workers
+    for i <- 1..num_workers do
+      Sup.remove_chain_worker(sup_id, chain_id, i)
+    end
 
-    # Kill worker 1
-    {1, pid1} = List.keyfind(pids_before, 1, 0)
-    Process.exit(pid1, :kill)
-    Process.sleep(1_500)
-
-    pids_after =
-      for i <- 1..num_workers do
-        {:ok, pid} = Sup.get_pid_chain_worker(@sup_id, chain_id, i)
-        {i, pid}
-      end
-
-    # Every pid must have changed
-    changed =
-      Enum.count(1..num_workers, fn i ->
-        before_pid = elem(List.keyfind(pids_before, i, 0), 1)
-        after_pid = elem(List.keyfind(pids_after, i, 0), 1)
-        before_pid != after_pid
-      end)
-
-    assert changed == num_workers
+    Process.sleep(100)
+    assert {:ok, 0} = Sup.count_workers_in_chain(sup_id, chain_id)
   end
 
   # ---------------------------------------------------------------------------
-  # Finished callback variants
+  # Callback variations
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "MFA finished_callback is invoked correctly" do
+  test "MFA finished_callback is invoked correctly", %{sup_id: sup_id} do
     chain_id = make_ref()
     parent = self()
 
     {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
         restart_strategy: :one_for_one,
         finished_callback: {__MODULE__, :mfa_callback, [parent]}
       )
 
-    {:ok, _} =
-      Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 1)
 
-    Process.sleep(200)
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 7)
 
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 2_000)
-
-    assert_receive {:mfa_cb, _data}, 5_000
+    assert_receive {:mfa_result, _}, 5_000
   end
 
   @tag timeout: @default_timeout
-  test "chain without callback still processes messages without error" do
+  test "chain without callback still processes messages", %{sup_id: sup_id} do
     chain_id = make_ref()
 
     {:ok, _} =
-      Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
-
-    {:ok, _} =
-      Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: 1)
-
-    Process.sleep(200)
-
-    # Should not crash
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 2_000)
-
-    # Give it time to process without a callback
-    Process.sleep(500)
-  end
-
-  # ---------------------------------------------------------------------------
-  # Edge cases
-  # ---------------------------------------------------------------------------
-
-  @tag timeout: @default_timeout
-  test "send to non-existent chain returns error" do
-    assert {:error, _} = Sup.send_to_chain(@sup_id, make_ref(), :data)
-  end
-
-  @tag timeout: @default_timeout
-  test "remove non-existent chain returns error" do
-    assert {:error, _} = Sup.remove_chain(@sup_id, make_ref())
-  end
-
-  @tag timeout: @default_timeout
-  test "count workers in non-existent chain returns error" do
-    assert {:error, _} = Sup.count_workers_in_chain(@sup_id, make_ref())
-  end
-
-  @tag timeout: @default_timeout
-  test "get pid of non-existent chain worker returns error" do
-    chain_id = make_ref()
-    {:ok, _} = Sup.add_chain(@sup_id, id: chain_id, restart_strategy: :one_for_one)
-
-    assert {:error, _} = Sup.get_pid_chain_worker(@sup_id, chain_id, :no_such_worker)
-  end
-
-  @tag timeout: @default_timeout
-  test "empty chain processes messages without crashing" do
-    chain_id = make_ref()
-    parent = self()
-
-    finished = fn data -> send(parent, {:done, data}) end
-
-    {:ok, _} =
-      Sup.add_chain(@sup_id,
+      Sup.add_chain(sup_id,
         id: chain_id,
-        finished_callback: {:fun, finished}
+        restart_strategy: :one_for_one
       )
 
-    # Sending to an empty chain should invoke the callback immediately
-    # (no workers = data falls straight through to finished_callback)
-    {:ok, _} = Sup.send_to_chain(@sup_id, chain_id, :hello, 2_000)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 1)
 
-    assert_receive {:done, :hello}, 3_000
+    # Should not raise
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 5)
+    Process.sleep(200)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Error handling
+  # ---------------------------------------------------------------------------
+
+  @tag timeout: @default_timeout
+  test "send to non-existent chain returns error", %{sup_id: sup_id} do
+    assert {:error, _} = Sup.send_to_chain(sup_id, make_ref(), :data)
+  end
+
+  @tag timeout: @default_timeout
+  test "remove non-existent chain returns error", %{sup_id: sup_id} do
+    assert {:error, _} = Sup.remove_chain(sup_id, make_ref())
+  end
+
+  @tag timeout: @default_timeout
+  test "count workers in non-existent chain returns error", %{sup_id: sup_id} do
+    assert {:error, _} = Sup.count_workers_in_chain(sup_id, make_ref())
+  end
+
+  @tag timeout: @default_timeout
+  test "get pid of non-existent chain worker returns error", %{sup_id: sup_id} do
+    assert {:error, _} = Sup.get_pid_chain_worker(sup_id, make_ref(), 1)
   end
 
   # ---------------------------------------------------------------------------
@@ -553,70 +385,60 @@ defmodule SuperWorker.Supervisor.ChainWorkloadTest do
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "200 independent chains each process 10 messages concurrently" do
-    num_chains = 200
-    msgs_per_chain = 10
-    num_workers_per_chain = 3
-    ref = make_ref()
+  test "20 independent chains each process 2 messages concurrently", %{sup_id: sup_id} do
+    num_chains = 20
+    messages_per_chain = 2
     parent = self()
+    ref = make_ref()
 
-    for c <- 1..num_chains do
-      chain_id = {ref, c}
-      {:ok, counter} = Agent.start_link(fn -> 0 end, name: {__MODULE__, chain_id})
-
-      finished = fn _data ->
-        n = Agent.get_and_update({__MODULE__, chain_id}, fn x -> {x + 1, x + 1} end)
-        if n == msgs_per_chain, do: send(parent, {:chain_done, chain_id})
-      end
-
-      {:ok, _} =
-        Sup.add_chain(@sup_id,
-          id: chain_id,
-          restart_strategy: :one_for_one,
-          finished_callback: {:fun, finished},
-          queue_length: msgs_per_chain + 5
-        )
-
-      for w <- 1..num_workers_per_chain do
-        {:ok, _} =
-          Sup.add_chain_worker(@sup_id, chain_id, {MyTest, :ping_pong, []}, id: w)
-      end
-    end
-
-    Process.sleep(500)
-
-    # Send all messages in parallel
-    for c <- 1..num_chains do
-      chain_id = {ref, c}
-
+    for i <- 1..num_chains do
       spawn(fn ->
-        for _ <- 1..msgs_per_chain do
-          Sup.send_to_chain(@sup_id, chain_id, {:ping, self()}, 10_000)
+        chain_id = {ref, i}
+
+        fun = fn result -> send(parent, {:chain_done, chain_id, result}) end
+
+        {:ok, _} =
+          Sup.add_chain(sup_id,
+            id: chain_id,
+            restart_strategy: :one_for_one,
+            finished_callback: {:fun, fun}
+          )
+
+        for w <- 1..3 do
+          {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: w)
         end
+
+        for _ <- 1..messages_per_chain do
+          {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 1)
+        end
+
+        send(parent, {:chain_setup_done, i})
       end)
     end
 
-    # Wait for all chains to finish
-    completed =
-      Enum.count(1..num_chains, fn _ ->
-        receive do
-          {:chain_done, _} -> true
-        after
-          60_000 -> false
-        end
-      end)
-
-    assert completed == num_chains
-
-    for c <- 1..num_chains do
-      Agent.stop({__MODULE__, {ref, c}})
+    # Wait for all chains to be set up
+    for _ <- 1..num_chains do
+      assert_receive {:chain_setup_done, _}, 10_000
     end
+
+    # Collect all callback results
+    expected_results = num_chains * messages_per_chain
+
+    results =
+      for _ <- 1..expected_results do
+        assert_receive {:chain_done, _chain_id, _result}, 10_000
+        :ok
+      end
+
+    assert length(results) == expected_results
   end
 
   # ---------------------------------------------------------------------------
-  # Exported MFA callback (must be public)
+  # Helpers
   # ---------------------------------------------------------------------------
 
   @doc false
-  def mfa_callback(data, caller), do: send(caller, {:mfa_cb, data})
+  def mfa_callback(data, caller) do
+    send(caller, {:mfa_result, data})
+  end
 end

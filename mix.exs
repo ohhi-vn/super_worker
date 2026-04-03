@@ -4,7 +4,7 @@ defmodule SuperWorker.MixProject do
   def project do
     [
       app: :super_worker,
-      version: "0.3.7",
+      version: "0.4.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -122,7 +122,4 @@ defmodule SuperWorker.MixProject do
       ]
     ]
   end
-
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
-  defp elixirc_paths(_), do: ["lib"]
 end

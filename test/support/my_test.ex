@@ -1,93 +1,107 @@
 defmodule MyTest do
-  # Basic loop, receive messages and print them.
-  def loop(id) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
+  @moduledoc """
+  Test support module providing worker functions for SuperWorker tests.
 
+  This module provides simple loop workers, chain task workers, and utility
+  functions used across the test suite. All IO output has been minimized
+  to improve test performance.
+  """
+
+  # Basic loop, receive messages and handle them.
+  def loop(id) do
     receive do
       {:ping, sender} ->
-        IO.puts(prefix <> " Pong to #{inspect(sender)}")
         send(sender, {:pong, self()})
 
       {:store, key, data} ->
-        IO.puts(prefix <> " Store data: #{inspect(data)}")
         Process.put(key, data)
 
       {:get, key, from} ->
-        IO.puts(prefix <> " Get data: #{inspect(Process.get(key))}")
         send(from, {:result, Process.get(key)})
 
       {:raise, reason} ->
-        IO.puts(prefix <> " Raise an error: #{inspect(reason)}")
         raise reason
 
       {:get_pid, from} ->
-        IO.puts(prefix <> " Get pid from: #{inspect(from)}")
         send(from, {:pid, self()})
 
-      msg ->
-        IO.puts(prefix <> " task received: #{inspect(msg)}")
+      _msg ->
+        :ok
     end
 
     loop(id)
   end
 
-  def task(n, sleep \\ 100) when is_integer(n) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{inspect(n)}")
+  @doc """
+  A task function for chain workers. Processes numbers 1..n and returns {:next, n + 1}.
 
+  ## Parameters
+
+    * `n` - The upper bound of the range to process
+    * `sleep` - Milliseconds to sleep per iteration (default: 1ms for fast tests)
+
+  """
+  def task(n, sleep \\ 1) when is_integer(n) do
     sum =
       Enum.reduce(1..n, 0, fn i, acc ->
-        :timer.sleep(sleep)
+        if sleep > 0, do: :timer.sleep(sleep)
         acc + i
       end)
-
-    IO.puts(IO.puts(prefix <> " Task done, #{sum}"))
 
     {:next, n + 1}
   end
 
-  def task_crash(n, at, sleep \\ 100) do
-    prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-    IO.puts(prefix <> " Task is started, param: #{n}")
+  @doc """
+  A task function that crashes at a specific iteration.
 
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        if i == at,
-          do:
-            raise(
-              "Task #{inspect(Process.get({:supervisor, :worker_id}))} raised an error at #{i}"
-            )
+  ## Parameters
 
-        :timer.sleep(sleep)
-        acc + i
-      end)
+    * `n` - The upper bound of the range
+    * `at` - The iteration number at which to crash
+    * `sleep` - Milliseconds to sleep per iteration (default: 1ms)
 
-    IO.puts(prefix <> " Task done, #{sum}")
+  """
+  def task_crash(n, at, sleep \\ 1) do
+    Enum.reduce(1..n, 0, fn i, acc ->
+      if i == at,
+        do: raise("Task raised an error at #{i}")
+
+      if sleep > 0, do: :timer.sleep(sleep)
+      acc + i
+    end)
 
     {:next, n + 1}
   end
 
+  @doc """
+  Sends data to a chain worker.
+  """
   def send_to_chain(sup_id, chain_id, data \\ 10) do
     SuperWorker.Supervisor.send_to_chain(sup_id, chain_id, data)
   end
 
-  # return a anonymous function.
-  def anonymous do
-    fn ->
-      prefix = "[#{inspect(Process.get({:supervisor, :worker_id}))}, #{inspect(self())}]"
-      IO.puts(prefix <> " Anonymous function")
+  @doc """
+  Returns an anonymous function that simulates work.
 
-      for i <- 1..5 do
-        IO.puts(prefix <> " Task #{i}")
-        :timer.sleep(100)
+  ## Parameters
+
+    * `sleep` - Milliseconds to sleep per iteration (default: 1ms)
+
+  """
+  def anonymous(sleep \\ 1) do
+    fn ->
+      for _i <- 1..5 do
+        if sleep > 0, do: :timer.sleep(sleep)
       end
+
+      :done
     end
   end
 
+  @doc """
+  A simple ping-pong handler for testing message passing.
+  """
   def ping_pong({:ping, sender}) do
-    IO.puts("ping_pong(#{inspect(self())}), new task")
-
-    IO.puts(" Pong to #{inspect(sender)}")
     send(sender, {:pong, self()})
   end
 end

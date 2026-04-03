@@ -210,7 +210,9 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       Application.put_env(@app, sup_id_valid, valid_config)
       Application.put_env(@app, sup_id_invalid, invalid_config)
 
-      assert :ok = ConfigParser.load()
+      # load/0 now returns {:error, [...]} when any supervisor fails,
+      # but it still continues loading other valid supervisors.
+      assert {:error, _errors} = ConfigParser.load()
 
       # Valid supervisor should have started
       assert Supervisor.running?(sup_id_valid)
@@ -323,8 +325,12 @@ defmodule SuperWorker.ConfigLoader.ConfigParserTest do
       assert {:ok, _pid} = ConfigParser.load_one(sup_id)
       assert {:error, :already_running} = ConfigParser.load_one(sup_id)
 
-      # Cleanup
-      Supervisor.stop(sup_id)
+      # Cleanup - safely stop supervisor, handling race conditions
+      try do
+        Supervisor.stop(sup_id)
+      catch
+        :exit, _ -> :ok
+      end
     end
   end
 

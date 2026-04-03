@@ -1,26 +1,26 @@
 defmodule SuperWorker.Supervisor.StandaloneTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SuperWorker.Supervisor, as: Sup
-  alias Sup.Db
 
-  @sup_id :sup_group_test
-
-  setup_all do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 2)
-    :ok
-  end
+  @moduletag :capture_log
 
   setup do
-    if Sup.running?(@sup_id) do
-      :ok
-    else
-      raise "Supervisor is not running"
-    end
+    # Use a unique supervisor ID per test to avoid conflicts
+    sup_id = :"sup_standalone_#{System.unique_integer([:positive])}"
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 1)
+
+    on_exit(fn ->
+      if Sup.running?(sup_id) do
+        Sup.stop(sup_id)
+      end
+    end)
+
+    %{sup_id: sup_id}
   end
 
   @tag :standalone_add_workers
-  test "add standalone workers to supervisor" do
+  test "add standalone workers to supervisor", %{sup_id: sup_id} do
     ref = make_ref()
     num_workers = 5
 
@@ -29,7 +29,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
         id = {ref, index}
 
         {:ok, _} =
-          Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [index]},
+          Sup.add_standalone_worker(sup_id, {MyTest, :loop, [index]},
             id: id,
             restart_strategy: :permanent
           )
@@ -38,373 +38,216 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
       end
 
     Enum.each(ids, fn id ->
-      result = Sup.get_pid_standalone_worker(@sup_id, id)
-      assert match?({:ok, _}, result)
+      assert {:ok, _pid} = Sup.get_pid_standalone_worker(sup_id, id)
     end)
   end
 
   @tag :standalone_send_data
-  test "send data to worker in supervisor" do
+  test "send data to worker in supervisor", %{sup_id: sup_id} do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
 
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
 
-    result =
-      receive do
-        {:pong, _sender} -> true
-      after
-        1_000 -> false
-      end
-
-    assert(true == result)
+    assert_receive {:pong, _sender}, 1_000
   end
 
   @tag :standalone_get_pid
-  test "get pid from worker in supervisor" do
+  test "get pid from worker in supervisor", %{sup_id: sup_id} do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
 
-    Process.sleep(100)
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:store, :test, :hello})
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:get, :test, self()})
 
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:store, :test, :hello})
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:get, :test, self()})
+    assert_receive {:result, :hello}, 1_000
 
-    result =
-      receive do
-        {:result, :hello} ->
-          true
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:get_pid, self()})
 
-        other ->
-          other
-      after
-        1_000 -> "incorrect result from worker 2"
-      end
-
-    assert(true == result)
-
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:get_pid, self()})
-
-    pid =
-      receive do
-        {:pid, pid} -> pid
-      after
-        1_000 -> raise "cannot get pid of worker"
-      end
+    assert_receive {:pid, pid}, 1_000
+    assert is_pid(pid)
 
     send(pid, {:get, :test, self()})
-
-    result =
-      receive do
-        {:result, :hello} ->
-          true
-
-        other ->
-          other
-      after
-        1_000 -> "incorrect result from worker"
-      end
-
-    assert(true == result)
+    assert_receive {:result, :hello}, 1_000
   end
 
   @tag :standalone_send_data_gen_server
-  test "send data to genserver worker in supervisor" do
+  test "send data to genserver worker in supervisor", %{sup_id: sup_id} do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id)
+      Sup.add_standalone_worker(sup_id, MyGenServer, id: worker_id)
 
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    result =
-      receive do
-        {:pong, _sender} -> true
-      after
-        1_000 -> false
-      end
-
-    assert(true == result)
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    assert_receive {:pong, _sender}, 1_000
   end
 
   @tag :standalone_restart_gen_server_worker
-  test "restart genserver worker in supervisor" do
+  test "restart genserver worker in supervisor", %{sup_id: sup_id} do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :permanent)
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    pid1 =
-      receive do
-        {:pong, sender} -> sender
-      after
-        1_000 -> raise "no data return from worker"
-      end
-
-    Sup.send_to_standalone_worker(@sup_id, worker_id, :crash)
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    result =
-      receive do
-        {:pong, pid2} -> pid1 != pid2
-      after
-        1_000 -> false
-      end
-
-    assert(true == result)
-  end
-
-  @tag :standalone_restart_gen_server_worker_2
-  test "restart genserver worker in supervisor 2" do
-    worker_id = make_ref()
-
-    {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :transient)
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    pid1 =
-      receive do
-        {:pong, sender} -> sender
-      after
-        1_000 -> raise "no data return from worker"
-      end
-
-    Sup.send_to_standalone_worker(@sup_id, worker_id, :crash)
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    result =
-      receive do
-        {:pong, pid2} -> pid1 != pid2
-      after
-        1_000 -> false
-      end
-
-    assert(true == result)
-  end
-
-  @tag :standalone_doesnt_restart_gen_server_worker
-  test "doesnt restart genserver worker in supervisor 2" do
-    worker_id = make_ref()
-
-    {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: worker_id, restart_strategy: :temporary)
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    pid1 =
-      receive do
-        {:pong, sender} -> sender
-      after
-        1_000 -> raise "no data return from worker"
-      end
-
-    Sup.send_to_standalone_worker(@sup_id, worker_id, :crash)
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    result =
-      receive do
-        {:pong, pid2} -> false
-      after
-        1_000 -> true
-      end
-
-    assert(true == result)
-  end
-
-  @tag :standalone_remove_worker
-  test "remove standalone worker from supervisor" do
-    worker_id = make_ref()
-
-    {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, MyGenServer,
         id: worker_id,
         restart_strategy: :permanent
       )
 
-    {:ok, _} = Sup.remove_standalone_worker(@sup_id, worker_id)
-    result = Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    assert_receive {:pong, pid1}, 1_000
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, :crash)
+    Process.sleep(200)
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    assert_receive {:pong, pid2}, 1_000
+    assert pid1 != pid2
+  end
+
+  @tag :standalone_restart_gen_server_worker_2
+  test "restart transient genserver worker in supervisor", %{sup_id: sup_id} do
+    worker_id = make_ref()
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, MyGenServer,
+        id: worker_id,
+        restart_strategy: :transient
+      )
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    assert_receive {:pong, pid1}, 1_000
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, :crash)
+    Process.sleep(200)
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    assert_receive {:pong, pid2}, 1_000
+    assert pid1 != pid2
+  end
+
+  @tag :standalone_doesnt_restart_gen_server_worker
+  test "doesnt restart temporary genserver worker in supervisor", %{sup_id: sup_id} do
+    worker_id = make_ref()
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, MyGenServer,
+        id: worker_id,
+        restart_strategy: :temporary
+      )
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    assert_receive {:pong, _pid1}, 1_000
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, :crash)
+    Process.sleep(200)
+
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+
+    refute_receive {:pong, _pid2}, 1_000
+  end
+
+  @tag :standalone_remove_worker
+  test "remove standalone worker from supervisor", %{sup_id: sup_id} do
+    worker_id = make_ref()
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
+        id: worker_id,
+        restart_strategy: :permanent
+      )
+
+    {:ok, _} = Sup.remove_standalone_worker(sup_id, worker_id)
+    result = Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
 
     assert result == {:error, :not_found}
   end
 
   @tag :standalone_reuse_id_worker
-  test "reuse standalone worker id from supervisor" do
+  test "reuse standalone worker id from supervisor", %{sup_id: sup_id} do
     worker_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
 
-    {:ok, _} = Sup.remove_standalone_worker(@sup_id, worker_id)
-    result = Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
+    {:ok, _} = Sup.remove_standalone_worker(sup_id, worker_id)
 
-    assert result == {:error, :not_found}
+    assert {:error, :not_found} =
+             Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
         id: worker_id,
         restart_strategy: :permanent
       )
 
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker_id, {:ping, self()})
-
-    result =
-      receive do
-        {:pong, _sender} -> true
-      after
-        1_000 -> false
-      end
-
-    assert(true == result)
+    Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    assert_receive {:pong, _sender}, 1_000
   end
 
   @tag :standalone_restart_worker
-  test "restart a worker not affect to others" do
+  test "restart a worker does not affect others", %{sup_id: sup_id} do
     worker1_id = make_ref()
     worker2_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
         id: worker1_id,
         restart_strategy: :permanent
       )
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
         id: worker2_id,
         restart_strategy: :permanent
       )
 
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:ping, self()})
+    Sup.send_to_standalone_worker(sup_id, worker1_id, {:ping, self()})
+    assert_receive {:pong, _sender}, 1_000
 
-    result =
-      receive do
-        {:pong, _sender} -> true
-        other -> other
-      after
-        1_000 -> "verify the worker is started"
-      end
+    Sup.send_to_standalone_worker(sup_id, worker2_id, {:store, :test, :hello})
+    Sup.send_to_standalone_worker(sup_id, worker2_id, {:get, :test, self()})
+    assert_receive {:result, :hello}, 1_000
 
-    assert(true == result)
+    Sup.send_to_standalone_worker(sup_id, worker1_id, {:raise, "Restart worker"})
+    Process.sleep(200)
 
-    Sup.send_to_standalone_worker(@sup_id, worker2_id, {:store, :test, :hello})
-    Sup.send_to_standalone_worker(@sup_id, worker2_id, {:get, :test, self()})
-
-    result =
-      receive do
-        {:result, :hello} ->
-          true
-
-        other ->
-          other
-      after
-        1_000 -> "incorrect result from worker 2"
-      end
-
-    assert(true == result)
-
-    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:raise, "Restart all workers"})
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker2_id, {:get, :test, self()})
-
-    result =
-      receive do
-        {:result, :hello} ->
-          true
-
-        other ->
-          other
-      after
-        1_000 -> "get data failed, timeout"
-      end
-
-    assert(true == result)
+    Sup.send_to_standalone_worker(sup_id, worker2_id, {:get, :test, self()})
+    assert_receive {:result, :hello}, 1_000
   end
 
   @tag :standalone_restart_worker2
-  test "restart a worker " do
+  test "restart a worker clears its state", %{sup_id: sup_id} do
     worker1_id = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, {MyTest, :loop, [1]},
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
         id: worker1_id,
         restart_strategy: :permanent
       )
 
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:ping, self()})
+    Sup.send_to_standalone_worker(sup_id, worker1_id, {:ping, self()})
+    assert_receive {:pong, _sender}, 1_000
 
-    result =
-      receive do
-        {:pong, _sender} -> true
-        other -> other
-      after
-        1_000 -> "verify the worker is started"
-      end
+    Sup.send_to_standalone_worker(sup_id, worker1_id, {:store, :test, :hello})
+    Sup.send_to_standalone_worker(sup_id, worker1_id, {:get, :test, self()})
+    assert_receive {:result, :hello}, 1_000
 
-    assert(true == result)
+    Sup.send_to_standalone_worker(sup_id, worker1_id, {:raise, "Restart worker"})
+    Process.sleep(200)
 
-    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:store, :test, :hello})
-    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:get, :test, self()})
-
-    result =
-      receive do
-        {:result, :hello} ->
-          true
-
-        other ->
-          other
-      after
-        1_000 -> "incorrect result from worker"
-      end
-
-    assert(true == result)
-
-    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:raise, "Restart all workers"})
-
-    Process.sleep(100)
-    Sup.send_to_standalone_worker(@sup_id, worker1_id, {:get, :test, self()})
-
-    result =
-      receive do
-        {:result, nil} ->
-          true
-
-        other ->
-          other
-      after
-        1_000 -> "get data failed, timeout"
-      end
-
-    assert(true == result)
+    Sup.send_to_standalone_worker(sup_id, worker1_id, {:get, :test, self()})
+    assert_receive {:result, nil}, 1_000
   end
 end

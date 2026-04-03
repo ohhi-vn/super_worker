@@ -33,7 +33,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
     ]
   ```
   """
-  @spec load() :: :ok
+  @spec load() :: :ok | {:error, list()}
   def load() do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, ConfigParser, loading all supervisor configurations."
@@ -45,13 +45,35 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
 
     if Enum.empty?(configs) do
       Logger.info("SuperWorker, ConfigParser, no supervisor configurations found to load.")
+      :ok
     else
-      Enum.each(configs, fn {sup_id, sup_config} ->
-        load_and_start(sup_id, sup_config)
-      end)
-    end
+      results =
+        Enum.map(configs, fn {sup_id, sup_config} ->
+          case load_and_start(sup_id, sup_config) do
+            {:ok, _pid} ->
+              SuperWorker.Log.debug(fn ->
+                "SuperWorker, ConfigParser, started supervisor #{inspect(sup_id)}"
+              end)
 
-    :ok
+              :ok
+
+            {:error, reason} = error ->
+              Logger.error(
+                "SuperWorker, ConfigParser, failed to start supervisor #{inspect(sup_id)}: #{inspect(reason)}"
+              )
+
+              error
+          end
+        end)
+
+      errors = Enum.filter(results, &match?({:error, _}, &1))
+
+      if Enum.empty?(errors) do
+        :ok
+      else
+        {:error, errors}
+      end
+    end
   end
 
   @doc """

@@ -764,7 +764,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   @impl true
-  def handle_info({:partition_started, partition_id}, state) do
+  def handle_info({:partition_started, _partition_id}, state) do
     SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, Partition started: #{partition_id}" end)
     {:noreply, state}
   end

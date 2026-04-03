@@ -78,9 +78,9 @@ defmodule SuperWorker.Supervisor.Group do
     Db.get_worker_infos_by_parent(group.table, {:group, group.id})
   end
 
+  @spec count_workers(%Group{}) :: non_neg_integer()
   def count_workers(%Group{} = group) do
     {:ok, workers} = get_all_workers(group)
-
     length(workers)
   end
 
@@ -122,14 +122,42 @@ defmodule SuperWorker.Supervisor.Group do
   A internal function. Restart a worker in the group.
   """
   def restart_worker(group = %Group{}, worker = %Worker{}) do
-    SuperWorker.Log.debug(fn -> "SuperWoker, Group, restart worker #{inspect(worker)}" end)
-    kill_worker(group, worker, :restart)
-    spawn_worker(group, worker)
+    SuperWorker.Log.debug(fn -> "SuperWorker, Group, restart worker #{inspect(worker)}" end)
+
+    case kill_worker(group, worker, :restart) do
+      {:ok, _} ->
+        # Worker was alive and killed, now spawn a new one
+        spawn_worker(group, worker)
+
+      {:error, :not_alive} ->
+        # Worker process is already dead, clean up ETS and spawn new one
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Group, worker #{inspect(worker.id)} already dead, spawning new one"
+        end)
+
+        Db.delete_worker_info(group.table, worker.id, {:group, group.id})
+        spawn_worker(group, worker)
+
+      {:error, :not_found} ->
+        # Worker not in ETS, just spawn a new one
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Group, worker #{inspect(worker.id)} not found in ETS, spawning new one"
+        end)
+
+        spawn_worker(group, worker)
+
+      {:error, reason} ->
+        Logger.error(
+          "SuperWorker, Group, failed to kill worker #{inspect(worker.id)} before restart, reason: #{inspect(reason)}"
+        )
+
+        {:error, :kill_failed}
+    end
   end
 
   def restart_worker(group = %Group{}, worker_id) do
     SuperWorker.Log.debug(fn ->
-      "SuperWoker, Group, restart worker by id #{inspect(worker_id)}"
+      "SuperWorker, Group, restart worker by id #{inspect(worker_id)}"
     end)
 
     case get_worker(group, worker_id) do
@@ -199,36 +227,79 @@ defmodule SuperWorker.Supervisor.Group do
   def kill_all_workers(group = %Group{}, reason \\ :kill) do
     {:ok, list_worker} = get_all_workers(group)
 
-    Enum.each(list_worker, fn worker ->
-      kill_worker(group, worker, reason)
-    end)
+    results =
+      Enum.map(list_worker, fn worker ->
+        case kill_worker(group, worker, reason) do
+          {:ok, _} ->
+            :ok
+
+          {:error, kill_reason} ->
+            Logger.warning(
+              "SuperWorker, Group, failed to kill worker #{inspect(worker.id)} in group #{inspect(group.id)}, reason: #{inspect(kill_reason)}"
+            )
+
+            {:error, worker.id, kill_reason}
+        end
+      end)
+
+    errors = Enum.filter(results, &match?({:error, _, _}, &1))
+
+    if Enum.empty?(errors) do
+      :ok
+    else
+      {:error, errors}
+    end
   end
 
   defp spawn_worker(group = %Group{}, %Worker{} = worker) do
     SuperWorker.Log.debug(fn -> "SuperWorker, Group, spawn_worker: #{inspect(worker)}" end)
-    do_spawn_worker(group, worker)
 
-    {:ok, group}
+    try do
+      do_spawn_worker(group, worker)
+      {:ok, group}
+    catch
+      :exit, reason ->
+        Logger.error(
+          "SuperWorker, Group, failed to spawn worker #{inspect(worker.id)}: #{inspect(reason)}"
+        )
+
+        {:error, :spawn_failed}
+    end
   end
 
+  @spec broadcast(%Group{}, any()) :: :ok | {:error, list()}
   def broadcast(group = %Group{}, message) do
-    with {:ok, workers} <- Group.get_all_workers(group) do
-      Enum.each(
-        workers,
-        fn %Worker{id: worker_id} ->
-          with {:ok, {_ref, pid}} <-
-                 Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
-            send(pid, message)
-          else
-            other ->
-              Logger.error(
-                "SuperWorker, Group, cannot get worker pid for #{inspect(worker_id)} in group #{inspect(group.id)}, reason: #{inspect(other)}"
-              )
+    case Group.get_all_workers(group) do
+      {:ok, workers} ->
+        results =
+          Enum.map(
+            workers,
+            fn %Worker{id: worker_id} ->
+              case Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
+                {:ok, {_ref, pid}} ->
+                  send(pid, message)
+                  :ok
 
-              other
-          end
+                {:error, _reason} = error ->
+                  Logger.error(
+                    "SuperWorker, Group, cannot get worker pid for #{inspect(worker_id)} in group #{inspect(group.id)}, reason: #{inspect(error)}"
+                  )
+
+                  error
+              end
+            end
+          )
+
+        errors = Enum.filter(results, &match?({:error, _}, &1))
+
+        if Enum.empty?(errors) do
+          :ok
+        else
+          {:error, errors}
         end
-      )
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -295,11 +366,14 @@ defmodule SuperWorker.Supervisor.Group do
 
     try do
       Process.link(pid)
-    rescue
-      error ->
+    catch
+      :exit, reason ->
         Logger.error(
-          "SuperWorker, Group, failed to link worker #{inspect(worker.id)}: #{inspect(error)}"
+          "SuperWorker, Group, failed to link worker #{inspect(worker.id)}: #{inspect(reason)}"
         )
+
+        Process.exit(pid, :kill)
+        exit(reason)
     end
 
     worker

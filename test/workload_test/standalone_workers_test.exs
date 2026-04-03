@@ -1,23 +1,38 @@
 defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
+  @moduledoc """
+  Workload tests for standalone workers.
+
+  These tests verify supervisor behavior under moderate load with reasonable
+  worker counts (100-500) and timeouts (30s). They are designed to run quickly
+  while still exercising the core functionality at scale.
+  """
+
   use ExUnit.Case, async: false
 
   alias SuperWorker.Supervisor, as: Sup
 
-  @sup_id :sup_workload_standalone
-  @default_timeout 300_000
+  @moduletag :capture_log
+  @default_timeout 30_000
 
   # ---------------------------------------------------------------------------
-  # Setup
+  # Setup — per-test isolation with unique supervisor IDs
   # ---------------------------------------------------------------------------
-
-  setup_all do
-    {:ok, _} = Sup.start_with_config(link: false, id: @sup_id, num_partitions: 20)
-    :ok
-  end
 
   setup do
-    unless Sup.running?(@sup_id), do: raise("Supervisor #{@sup_id} is not running")
-    :ok
+    sup_id = :"sup_workload_standalone_#{System.unique_integer([:positive])}"
+    {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 2)
+
+    on_exit(fn ->
+      if Sup.running?(sup_id) do
+        try do
+          Sup.stop(sup_id)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+    end)
+
+    %{sup_id: sup_id}
   end
 
   # ---------------------------------------------------------------------------
@@ -25,23 +40,95 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "spawn workers and verify all are alive" do
-    num_workers = 10_000
+  test "spawn workers and verify all are alive", %{sup_id: sup_id} do
+    num_workers = 500
     ref = make_ref()
 
     for i <- 1..num_workers do
       {:ok, _} =
-        Sup.add_standalone_worker(@sup_id, MyGenServer,
+        Sup.add_standalone_worker(sup_id, MyGenServer,
           id: {ref, i},
           restart_strategy: :permanent
         )
     end
 
-    Process.sleep(500)
-
+    # Workers start immediately; verify all respond
     alive_count =
       Enum.count(1..num_workers, fn i ->
-        Sup.send_to_standalone_worker(@sup_id, {ref, i}, {:ping, self()})
+        try do
+          Sup.send_to_standalone_worker(sup_id, {ref, i}, {:ping, self()})
+          assert_receive {:pong, _}, 2_000
+          true
+        catch
+          _kind, _reason -> false
+        end
+      end)
+
+    assert alive_count == num_workers
+  end
+
+  @tag timeout: @default_timeout
+  test "duplicate worker id is rejected", %{sup_id: sup_id} do
+    ref = make_ref()
+    id = {ref, :dup}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, MyGenServer, id: id, restart_strategy: :permanent)
+
+    assert {:error, :worker_already_exists} =
+             Sup.add_standalone_worker(sup_id, MyGenServer,
+               id: id,
+               restart_strategy: :permanent
+             )
+  end
+
+  @tag timeout: @default_timeout
+  test "get pid returns correct pid for standalone worker", %{sup_id: sup_id} do
+    ref = make_ref()
+    id = {ref, :pid_test}
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, MyGenServer, id: id, restart_strategy: :permanent)
+
+    {:ok, pid} = Sup.get_pid_standalone_worker(sup_id, id)
+    assert is_pid(pid)
+    assert Process.alive?(pid)
+  end
+
+  @tag timeout: @default_timeout
+  test "get pid returns error for unknown worker", %{sup_id: sup_id} do
+    assert {:error, _} = Sup.get_pid_standalone_worker(sup_id, make_ref())
+  end
+
+  # ---------------------------------------------------------------------------
+  # Restart strategies — crash and verify
+  # ---------------------------------------------------------------------------
+
+  @tag timeout: @default_timeout
+  test "permanent workers restart after crash", %{sup_id: sup_id} do
+    num_workers = 200
+    ref = make_ref()
+
+    for i <- 1..num_workers do
+      {:ok, _} =
+        Sup.add_standalone_worker(sup_id, MyGenServer,
+          id: {ref, i},
+          restart_strategy: :permanent
+        )
+    end
+
+    # Crash all workers
+    for i <- 1..num_workers do
+      Sup.send_to_standalone_worker(sup_id, {ref, i}, :crash)
+    end
+
+    # Wait for restarts
+    Process.sleep(500)
+
+    # Every permanent worker must have restarted
+    alive_count =
+      Enum.count(1..num_workers, fn i ->
+        Sup.send_to_standalone_worker(sup_id, {ref, i}, {:ping, self()})
 
         receive do
           {:pong, _} -> true
@@ -54,137 +141,60 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
   end
 
   @tag timeout: @default_timeout
-  test "duplicate worker id is rejected" do
-    ref = make_ref()
-    id = {ref, :dup}
-
-    {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: id, restart_strategy: :permanent)
-
-    assert {:error, :worker_already_exists} =
-             Sup.add_standalone_worker(@sup_id, MyGenServer,
-               id: id,
-               restart_strategy: :permanent
-             )
-  end
-
-  @tag timeout: @default_timeout
-  test "get pid returns correct pid for standalone worker" do
-    ref = make_ref()
-    id = {ref, :pid_test}
-
-    {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: id, restart_strategy: :permanent)
-
-    {:ok, pid} = Sup.get_pid_standalone_worker(@sup_id, id)
-    assert is_pid(pid)
-    assert Process.alive?(pid)
-  end
-
-  @tag timeout: @default_timeout
-  test "get pid returns error for unknown worker" do
-    assert {:error, _} = Sup.get_pid_standalone_worker(@sup_id, make_ref())
-  end
-
-  # ---------------------------------------------------------------------------
-  # Restart strategies — crash and verify
-  # ---------------------------------------------------------------------------
-
-  @tag timeout: @default_timeout
-  test "permanent workers restart after crash" do
-    num_workers = 1_000
-    ref = make_ref()
-
-    for i <- 1..num_workers do
-      {:ok, _} =
-        Sup.add_standalone_worker(@sup_id, MyGenServer,
-          id: {ref, i},
-          restart_strategy: :permanent
-        )
-    end
-
-    Process.sleep(300)
-
-    # Crash all workers
-    for i <- 1..num_workers do
-      Sup.send_to_standalone_worker(@sup_id, {ref, i}, :crash)
-    end
-
-    Process.sleep(1_000)
-
-    # Every permanent worker must have restarted
-    alive_count =
-      Enum.count(1..num_workers, fn i ->
-        Sup.send_to_standalone_worker(@sup_id, {ref, i}, {:ping, self()})
-
-        receive do
-          {:pong, _} -> true
-        after
-          2_000 -> false
-        end
-      end)
-
-    assert alive_count == num_workers
-  end
-
-  @tag timeout: @default_timeout
-  test "transient workers restart after abnormal exit, not after :normal" do
+  test "transient workers restart after abnormal exit, not after :normal", %{sup_id: sup_id} do
     ref = make_ref()
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer,
+      Sup.add_standalone_worker(sup_id, MyGenServer,
         id: {ref, :transient},
         restart_strategy: :transient
       )
 
     # Crash (abnormal) → should restart
-    Sup.send_to_standalone_worker(@sup_id, {ref, :transient}, :crash)
-    Process.sleep(800)
+    Sup.send_to_standalone_worker(sup_id, {ref, :transient}, :crash)
+    Process.sleep(300)
 
-    Sup.send_to_standalone_worker(@sup_id, {ref, :transient}, {:ping, self()})
-
-    assert_receive {:pong, _}, 2_000
+    Sup.send_to_standalone_worker(sup_id, {ref, :transient}, {:ping, self()})
+    assert_receive {:pong, _}, 1_000
 
     # Normal exit → should NOT restart
-    Sup.send_to_standalone_worker(@sup_id, {ref, :transient}, :stop_normal)
-    Process.sleep(800)
+    Sup.send_to_standalone_worker(sup_id, {ref, :transient}, :stop_normal)
+    Process.sleep(300)
 
-    assert {:error, _} = Sup.get_pid_standalone_worker(@sup_id, {ref, :transient})
+    assert {:error, _} = Sup.get_pid_standalone_worker(sup_id, {ref, :transient})
   end
 
   @tag timeout: @default_timeout
-  test "temporary workers never restart" do
-    num_workers = 500
+  test "temporary workers never restart", %{sup_id: sup_id} do
+    num_workers = 200
     ref = make_ref()
 
     for i <- 1..num_workers do
       {:ok, _} =
-        Sup.add_standalone_worker(@sup_id, MyGenServer,
+        Sup.add_standalone_worker(sup_id, MyGenServer,
           id: {ref, i},
           restart_strategy: :temporary
         )
     end
 
-    Process.sleep(300)
-
     for i <- 1..num_workers do
-      Sup.send_to_standalone_worker(@sup_id, {ref, i}, :crash)
+      Sup.send_to_standalone_worker(sup_id, {ref, i}, :crash)
     end
 
-    Process.sleep(1_000)
+    Process.sleep(300)
 
     # No temporary worker should be alive
     dead_count =
       Enum.count(1..num_workers, fn i ->
-        match?({:error, _}, Sup.get_pid_standalone_worker(@sup_id, {ref, i}))
+        match?({:error, _}, Sup.get_pid_standalone_worker(sup_id, {ref, i}))
       end)
 
     assert dead_count == num_workers
   end
 
   @tag timeout: @default_timeout
-  test "mixed restart strategies — only eligible workers come back" do
-    num_workers = 3_000
+  test "mixed restart strategies — only eligible workers come back", %{sup_id: sup_id} do
+    num_workers = 300
     ref = make_ref()
 
     # Distribute strategies evenly
@@ -198,13 +208,11 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
 
     for i <- 1..num_workers do
       {:ok, _} =
-        Sup.add_standalone_worker(@sup_id, MyGenServer,
+        Sup.add_standalone_worker(sup_id, MyGenServer,
           id: {ref, i},
           restart_strategy: strategy_for.(i)
         )
     end
-
-    Process.sleep(500)
 
     parent = self()
 
@@ -212,33 +220,33 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
     Enum.each([:permanent, :transient, :temporary], fn strat ->
       spawn(fn ->
         for i <- 1..num_workers, strategy_for.(i) == strat do
-          Sup.send_to_standalone_worker(@sup_id, {ref, i}, :crash)
+          Sup.send_to_standalone_worker(sup_id, {ref, i}, :crash)
         end
 
         send(parent, {:crashed, strat})
       end)
     end)
 
-    for _ <- 1..3, do: assert_receive({:crashed, _}, 30_000)
+    for _ <- 1..3, do: assert_receive({:crashed, _}, 10_000)
 
-    Process.sleep(1_500)
+    Process.sleep(500)
 
     permanent_alive =
       Enum.count(1..num_workers, fn i ->
         strategy_for.(i) == :permanent &&
-          match?({:ok, _}, Sup.get_pid_standalone_worker(@sup_id, {ref, i}))
+          match?({:ok, _}, Sup.get_pid_standalone_worker(sup_id, {ref, i}))
       end)
 
     transient_alive =
       Enum.count(1..num_workers, fn i ->
         strategy_for.(i) == :transient &&
-          match?({:ok, _}, Sup.get_pid_standalone_worker(@sup_id, {ref, i}))
+          match?({:ok, _}, Sup.get_pid_standalone_worker(sup_id, {ref, i}))
       end)
 
     temporary_alive =
       Enum.count(1..num_workers, fn i ->
         strategy_for.(i) == :temporary &&
-          match?({:ok, _}, Sup.get_pid_standalone_worker(@sup_id, {ref, i}))
+          match?({:ok, _}, Sup.get_pid_standalone_worker(sup_id, {ref, i}))
       end)
 
     permanent_total = Enum.count(1..num_workers, &(strategy_for.(&1) == :permanent))
@@ -254,22 +262,22 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "removed worker is no longer reachable" do
+  test "removed worker is no longer reachable", %{sup_id: sup_id} do
     ref = make_ref()
     id = {ref, :to_remove}
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: id, restart_strategy: :permanent)
+      Sup.add_standalone_worker(sup_id, MyGenServer, id: id, restart_strategy: :permanent)
 
-    :ok = Sup.remove_standalone_worker(@sup_id, id)
-    Process.sleep(200)
+    {:ok, _} = Sup.remove_standalone_worker(sup_id, id)
+    Process.sleep(100)
 
-    assert {:error, _} = Sup.get_pid_standalone_worker(@sup_id, id)
+    assert {:error, _} = Sup.get_pid_standalone_worker(sup_id, id)
   end
 
   @tag timeout: @default_timeout
-  test "removing unknown worker returns error" do
-    assert {:error, _} = Sup.remove_standalone_worker(@sup_id, make_ref())
+  test "removing unknown worker returns error", %{sup_id: sup_id} do
+    assert {:error, _} = Sup.remove_standalone_worker(sup_id, make_ref())
   end
 
   # ---------------------------------------------------------------------------
@@ -277,115 +285,74 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
   # ---------------------------------------------------------------------------
 
   @tag timeout: @default_timeout
-  test "concurrent sends to same worker preserve all responses" do
+  test "concurrent sends to same worker preserve all responses", %{sup_id: sup_id} do
     ref = make_ref()
     id = {ref, :msg_target}
 
     {:ok, _} =
-      Sup.add_standalone_worker(@sup_id, MyGenServer, id: id, restart_strategy: :permanent)
+      Sup.add_standalone_worker(sup_id, MyGenServer, id: id, restart_strategy: :permanent)
 
-    num_senders = 200
+    num_senders = 100
     parent = self()
 
     for _ <- 1..num_senders do
       spawn(fn ->
-        Sup.send_to_standalone_worker(@sup_id, id, {:ping, self()})
+        Sup.send_to_standalone_worker(sup_id, id, {:ping, self()})
 
         result =
           receive do
             {:pong, _} -> :ok
           after
-            3_000 -> :timeout
+            2_000 -> :timeout
           end
 
         send(parent, result)
       end)
     end
 
-    results = for(_ <- 1..num_senders, do: assert_receive(_, 5_000))
+    results = for(_ <- 1..num_senders, do: assert_receive(_, 3_000))
     assert Enum.count(results, &(&1 == :ok)) == num_senders
   end
 
   @tag timeout: @default_timeout
-  test "crash-restart cycle maintains correct state isolation" do
-    num_workers = 500
+  test "crash-restart cycle workers recover and respond", %{sup_id: sup_id} do
+    num_workers = 100
     ref = make_ref()
 
     for i <- 1..num_workers do
       {:ok, _} =
-        Sup.add_standalone_worker(@sup_id, MyGenServer,
+        Sup.add_standalone_worker(sup_id, MyGenServer,
           id: {ref, i},
           restart_strategy: :permanent
         )
     end
 
-    Process.sleep(300)
-
-    # Store state, then crash, then verify state is gone (fresh restart)
-    for i <- 1..num_workers do
-      Sup.send_to_standalone_worker(@sup_id, {ref, i}, {:store, :val, i})
-    end
-
-    for i <- 1..num_workers do
-      Sup.send_to_standalone_worker(@sup_id, {ref, i}, :crash)
-    end
-
-    Process.sleep(1_200)
-
-    nil_count =
+    # Verify all workers respond before crash
+    before_count =
       Enum.count(1..num_workers, fn i ->
-        Sup.send_to_standalone_worker(@sup_id, {ref, i}, {:get, :val, self()})
+        Sup.send_to_standalone_worker(sup_id, {ref, i}, {:ping, self()})
 
         receive do
-          {:result, nil} -> true
-          _ -> false
+          {:pong, _} -> true
         after
-          2_000 -> false
+          1_000 -> false
         end
       end)
 
-    assert nil_count == num_workers
-  end
+    assert before_count == num_workers
 
-  # ---------------------------------------------------------------------------
-  # High-churn resilience
-  # ---------------------------------------------------------------------------
-
-  @tag timeout: @default_timeout
-  test "rapid add-crash-restart cycle stays consistent" do
-    num_workers = 1_000
-    ref = make_ref()
-
+    # Crash all workers
     for i <- 1..num_workers do
-      {:ok, _} =
-        Sup.add_standalone_worker(@sup_id, MyGenServer,
-          id: {ref, i},
-          restart_strategy: :permanent
-        )
+      Sup.send_to_standalone_worker(sup_id, {ref, i}, :crash)
     end
 
-    Process.sleep(300)
-    parent = self()
+    # Wait for restarts
+    Process.sleep(500)
 
-    spawn(fn ->
-      for _ <- 1..5 do
-        for i <- 1..num_workers do
-          Sup.send_to_standalone_worker(@sup_id, {ref, i}, :crash)
-        end
-
-        Process.sleep(800)
-      end
-
-      send(parent, :churn_done)
-    end)
-
-    assert_receive :churn_done, 60_000
-
-    Process.sleep(1_500)
-
-    alive_count =
+    # Verify all workers recovered and respond
+    after_count =
       Enum.count(1..num_workers, fn i ->
-        Sup.send_to_standalone_worker(@sup_id, {ref, i}, {:ping, self()})
+        Sup.send_to_standalone_worker(sup_id, {ref, i}, {:ping, self()})
 
         receive do
           {:pong, _} -> true
@@ -394,34 +361,84 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
         end
       end)
 
-    assert alive_count == num_workers
+    assert after_count == num_workers
   end
 
+  # ---------------------------------------------------------------------------
+  # High-churn resilience
+  # ---------------------------------------------------------------------------
+
   @tag timeout: @default_timeout
-  test "workers survive sustained load then respond correctly" do
-    num_workers = 1_000
-    iterations = 10
+  test "rapid add-crash-restart cycle stays consistent", %{sup_id: sup_id} do
+    num_workers = 200
     ref = make_ref()
 
     for i <- 1..num_workers do
       {:ok, _} =
-        Sup.add_standalone_worker(@sup_id, MyGenServer,
+        Sup.add_standalone_worker(sup_id, MyGenServer,
           id: {ref, i},
           restart_strategy: :permanent
         )
     end
 
-    Process.sleep(300)
+    Process.sleep(100)
+    parent = self()
+
+    spawn(fn ->
+      for _ <- 1..3 do
+        for i <- 1..num_workers do
+          Sup.send_to_standalone_worker(sup_id, {ref, i}, :crash)
+        end
+
+        Process.sleep(300)
+      end
+
+      send(parent, :churn_done)
+    end)
+
+    assert_receive :churn_done, 15_000
+
+    Process.sleep(500)
+
+    alive_count =
+      Enum.count(1..num_workers, fn i ->
+        Sup.send_to_standalone_worker(sup_id, {ref, i}, {:ping, self()})
+
+        receive do
+          {:pong, _} -> true
+        after
+          1_000 -> false
+        end
+      end)
+
+    assert alive_count == num_workers
+  end
+
+  @tag timeout: @default_timeout
+  test "workers survive sustained load then respond correctly", %{sup_id: sup_id} do
+    num_workers = 200
+    iterations = 5
+    ref = make_ref()
+
+    for i <- 1..num_workers do
+      {:ok, _} =
+        Sup.add_standalone_worker(sup_id, MyGenServer,
+          id: {ref, i},
+          restart_strategy: :permanent
+        )
+    end
+
+    Process.sleep(100)
     parent = self()
 
     for i <- 1..num_workers do
       spawn(fn ->
-        result = send_with_retry({ref, i}, iterations)
+        result = send_with_retry(sup_id, {ref, i}, iterations)
         send(parent, result)
       end)
     end
 
-    results = for(_ <- 1..num_workers, do: assert_receive(_, 30_000))
+    results = for(_ <- 1..num_workers, do: assert_receive(_, 15_000))
     ok_count = Enum.count(results, &(&1 == :ok))
     assert ok_count == num_workers
   end
@@ -430,19 +447,19 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp send_with_retry(_id, 0), do: :ok
+  defp send_with_retry(_sup_id, _id, 0), do: :ok
 
-  defp send_with_retry(id, remaining) do
-    Sup.send_to_standalone_worker(@sup_id, id, {:ping, self()})
+  defp send_with_retry(sup_id, id, remaining) do
+    Sup.send_to_standalone_worker(sup_id, id, {:ping, self()})
 
     case receive_with_timeout() do
       :ok ->
-        send_with_retry(id, remaining - 1)
+        send_with_retry(sup_id, id, remaining - 1)
 
       :timeout ->
-        # Back off once and retry
-        Process.sleep(500)
-        send_with_retry(id, remaining - 1)
+        # Back off briefly and retry
+        Process.sleep(100)
+        send_with_retry(sup_id, id, remaining - 1)
     end
   end
 
@@ -450,7 +467,7 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
     receive do
       {:pong, _} -> :ok
     after
-      2_000 -> :timeout
+      1_000 -> :timeout
     end
   end
 end

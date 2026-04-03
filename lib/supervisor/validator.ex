@@ -53,12 +53,12 @@ defmodule SuperWorker.Supervisor.Validator do
   @spec check_type(map(), atom(), (any() -> boolean())) :: api_result()
   def check_type(opts, key, validator_fun)
       when is_map(opts) and is_atom(key) and is_function(validator_fun, 1) do
-    case Map.get(opts, key) do
-      nil ->
+    case Map.fetch(opts, key) do
+      :error ->
         Logger.warning("SuperWorker, Utils, option #{inspect(key)} not found")
         {:error, :invalid_type}
 
-      value ->
+      {:ok, value} ->
         if validator_fun.(value) do
           {:ok, opts}
         else

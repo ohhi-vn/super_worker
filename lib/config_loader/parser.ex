@@ -192,10 +192,13 @@ defmodule SuperWorker.ConfigLoader.Parser do
       {success, errors} =
         Enum.reduce(parsed_groups, {[], []}, fn result, {ok, errors} ->
           case result do
-            {:ok, data} -> {ok ++ [data], errors}
-            {:error, _} -> {ok, errors ++ [result]}
+            {:ok, data} -> {[data | ok], errors}
+            {:error, _} -> {ok, [result | errors]}
           end
         end)
+
+      success = Enum.reverse(success)
+      errors = Enum.reverse(errors)
 
       if Enum.empty?(errors) do
         {:ok, success}
@@ -209,7 +212,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
 
   defp parse_group({id, group_config}, index) when is_list(group_config) do
     SuperWorker.Log.debug(fn ->
-      "Parsing group with id: #{id}, config: #{inspect(group_config)}"
+      "SuperWorker, Parser, parsing group with id: #{inspect(id)}, config: #{inspect(group_config)}"
     end)
 
     with {:ok, options} <- extract_group_options(group_config),
@@ -284,10 +287,13 @@ defmodule SuperWorker.ConfigLoader.Parser do
       {results, errors} =
         Enum.reduce(parsed_chains, {[], []}, fn result, {ok, errors} ->
           case result do
-            {:ok, data} -> {ok ++ [data], errors}
-            {:error, _} -> {ok, errors ++ [result]}
+            {:ok, data} -> {[data | ok], errors}
+            {:error, _} -> {ok, [result | errors]}
           end
         end)
+
+      results = Enum.reverse(results)
+      errors = Enum.reverse(errors)
 
       if Enum.empty?(errors) do
         {:ok, results}
@@ -426,23 +432,30 @@ defmodule SuperWorker.ConfigLoader.Parser do
           end)
 
           case worker do
-            {gen_server_worker, options} = gen_server
+            {gen_server_worker, options}
             when is_atom(gen_server_worker) and is_list(options) ->
-              parse_worker_spec(gen_server, index)
+              parse_worker_spec(worker, index)
 
-            {worker_id, worker_config} ->
-              Keyword.put(worker_config, :id, worker_id)
-              parse_worker_spec(worker_config, index)
+            {worker_id, worker_config} when is_list(worker_config) ->
+              worker_config_with_id = Keyword.put(worker_config, :id, worker_id)
+              parse_worker_spec(worker_config_with_id, index)
 
             worker_config ->
               parse_worker_spec(worker_config, index)
           end
         end)
 
-      errors = Enum.filter(parsed_workers, fn result -> match?({:error, _}, result) end)
+      {successful, errors} =
+        Enum.reduce(parsed_workers, {[], []}, fn
+          {:ok, worker}, {ok, errs} -> {[worker | ok], errs}
+          {:error, _} = err, {ok, errs} -> {ok, [err | errs]}
+        end)
+
+      successful = Enum.reverse(successful)
+      errors = Enum.reverse(errors)
 
       if Enum.empty?(errors) do
-        {:ok, Enum.map(parsed_workers, fn {:ok, worker} -> worker end)}
+        {:ok, successful}
       else
         {:error, {:workers_parsing_errors, errors}}
       end
@@ -533,20 +546,43 @@ defmodule SuperWorker.ConfigLoader.Parser do
     {:ok, options}
   end
 
-  def convert_regular_child_spec({module, keywords}) do
-    result =
-      module.child_spec(keywords)
-      |> add_default_options()
-      |> regular_child_spec_to_spec()
+  @doc """
+  Converts a regular child spec (module or {module, opts}) to the internal worker spec format.
 
-    {:ok, result}
+  This function is public because it's used by `SuperWorker.Supervisor` to convert
+  GenServer module references into worker specifications.
+
+  ## Parameters
+
+    * `{module, keywords}` - A module with keyword options
+    * `module` - A module atom (uses empty options)
+
+  ## Returns
+
+    * `{:ok, spec}` - Successfully converted spec
+    * `{:error, reason}` - If the module doesn't implement `child_spec/1`
+  """
+  def convert_regular_child_spec({module, keywords}) do
+    try do
+      result =
+        module.child_spec(keywords)
+        |> add_default_options()
+        |> regular_child_spec_to_spec()
+
+      {:ok, result}
+    rescue
+      UndefinedFunctionError ->
+        {:error,
+         {:invalid_child_spec, "Module #{inspect(module)} does not implement child_spec/1"}}
+    end
   end
 
+  @doc false
   def convert_regular_child_spec(module) do
     convert_regular_child_spec({module, []})
   end
 
-  def add_default_options(specs = %{}) do
+  defp add_default_options(specs = %{}) do
     if Map.has_key?(specs, :restart) do
       specs
     else
