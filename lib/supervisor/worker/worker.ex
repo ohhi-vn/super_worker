@@ -28,29 +28,43 @@ defmodule SuperWorker.Supervisor.Worker do
   ]
 
   @type t :: %__MODULE__{
-          id: any,
-          name: atom,
-          restart_strategy: atom,
+          id: any(),
+          name: atom() | nil,
+          restart_strategy: atom(),
           type: :standalone | :group | :chain,
-          fun: nil | {:fun, fun} | {module, atom, [any]} | {:gen_server, {module, atom, [any]}},
-          num_workers: non_neg_integer,
-          parent: :standalone | {atom, any},
-          order: non_neg_integer | nil
+          fun:
+            nil
+            | {:fun, fun()}
+            | {module(), atom(), [any()]}
+            | {:gen_server, {module(), atom(), [any()]}},
+          num_workers: non_neg_integer(),
+          parent: :standalone | {atom(), any()},
+          order: non_neg_integer() | nil
         }
 
+  @type from_config_result :: {:ok, t()} | {:error, term()}
+
+  @spec from_config(keyword()) :: from_config_result()
   def from_config(options) do
-    params =
-      case Keyword.get(options, :type) do
-        :standalone ->
-          Constants.Types.standalone_worker_params()
+    case Keyword.get(options, :type) do
+      :standalone ->
+        params = Constants.Types.standalone_worker_params()
+        validate_with_params(options, params)
 
-        :group ->
-          Constants.Types.group_worker_params()
+      :group ->
+        params = Constants.Types.group_worker_params()
+        validate_with_params(options, params)
 
-        :chain ->
-          Constants.Types.chain_worker_params()
-      end
+      :chain ->
+        params = Constants.Types.chain_worker_params()
+        validate_with_params(options, params)
 
+      invalid_type ->
+        {:error, "invalid type: #{inspect(invalid_type)}"}
+    end
+  end
+
+  defp validate_with_params(options, params) do
     with {:ok, options} <-
            Validator.normalize_options(options, params),
          {:ok, options} <- default_options(options),
@@ -61,6 +75,7 @@ defmodule SuperWorker.Supervisor.Worker do
     end
   end
 
+  @spec default_restart_strategy() :: atom()
   def default_restart_strategy() do
     @default_restart_strategy
   end
@@ -111,7 +126,7 @@ defmodule SuperWorker.Supervisor.Worker do
           acc
       end)
 
-    if length(errors) > 0 do
+    if errors != [] do
       {:error, Enum.reverse(errors)}
     else
       {:ok, options}

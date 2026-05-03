@@ -4,7 +4,7 @@ defmodule SuperWorker.MixProject do
   def project do
     [
       app: :super_worker,
-      version: "0.4.0",
+      version: "0.5.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -47,6 +47,7 @@ defmodule SuperWorker.MixProject do
     [
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:benchee, "~> 1.5", only: :dev},
+      {:stream_data, "~> 1.0", only: [:test, :dev]},
 
       # Support for AI agent
       {:tidewave, "~> 0.5", only: :dev},

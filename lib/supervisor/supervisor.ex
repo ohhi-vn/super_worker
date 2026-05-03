@@ -618,7 +618,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   def add_chain_worker(sup_id, chain_id, fun, options, timeout)
-      when is_list(options) and is_function(fun, 0) do
+      when is_list(options) and is_function(fun, 1) do
     do_add_worker(
       sup_id,
       [fun: {:fun, fun}, type: :chain, parent: chain_id] ++ options,
@@ -735,7 +735,13 @@ defmodule SuperWorker.Supervisor do
         send(pid, {:internal_api, msg})
       end)
 
-      {:ok, %{supervisor: supervisor, partitions: partitions, partition_ids: list_partition_ids}}
+      {:ok,
+       %{
+         supervisor: supervisor,
+         partitions: partitions,
+         partition_ids: list_partition_ids,
+         cache: %{}
+       }}
     else
       failed ->
         Logger.error(
@@ -749,9 +755,26 @@ defmodule SuperWorker.Supervisor do
   @impl true
   def handle_call({:query_target_partition, data}, _from, state) do
     order = Utils.get_hash_order(data, state.supervisor.num_partitions)
-    pid = Map.get(state.partitions, order, {:error, :not_found_partition})
 
-    {:reply, pid, state}
+    # Try cache first
+    cached_pid = get_from_cache(state, {:partition, order})
+
+    case cached_pid do
+      nil ->
+        # Not in cache, do lookup
+        pid = Map.get(state.partitions, order, {:error, :not_found_partition})
+
+        # Cache the result if it's a valid pid
+        case pid do
+          {:error, _} -> :ok
+          _ -> put_in_cache(state, {:partition, order}, pid)
+        end
+
+        {:reply, pid, state}
+
+      pid when is_pid(pid) ->
+        {:reply, pid, state}
+    end
   end
 
   def handle_call({:stop_supervisor, shutdown_type}, _from, state) do
@@ -759,6 +782,9 @@ defmodule SuperWorker.Supervisor do
       ApiHelper.internal_call_api_no_reply(pid, :stop_supervisor, shutdown_type)
       Logger.info("SuperWorker, Supervisor, sent stop signal to partition: #{id}")
     end)
+
+    # Clear cache on stop
+    state = clear_cache(state)
 
     {:reply, :ok, state}
   end
@@ -781,6 +807,21 @@ defmodule SuperWorker.Supervisor do
     else
       {:noreply, Map.put(state, :stopped_partitions, stopped_partitions)}
     end
+  end
+
+  # Cache helper functions
+  # Cache helper functions
+  defp get_from_cache(state, key) do
+    Map.get(state.cache || %{}, key)
+  end
+
+  defp put_in_cache(state, key, value) do
+    cache = Map.get(state, :cache, %{})
+    %{state | cache: Map.put(cache, key, value)}
+  end
+
+  defp clear_cache(state) do
+    %{state | cache: %{}}
   end
 
   ## Private Functions
@@ -897,8 +938,9 @@ defmodule SuperWorker.Supervisor do
   @spec do_add_worker(atom(), list(), non_neg_integer()) ::
           {:ok, any()} | {:error, any()}
   defp do_add_worker(sup_id, options, timeout) do
-    SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, starting worker with options: #{inspect(options)}" end)
-
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, starting worker with options: #{inspect(options)}"
+    end)
 
     with {:ok, worker} <- Worker.from_config(options) do
       get_partition_and_send(sup_id, :start_worker, worker, {worker.parent, worker.id}, timeout)

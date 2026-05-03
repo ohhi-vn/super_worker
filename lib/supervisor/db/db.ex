@@ -49,6 +49,7 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def get_worker_by_id(table, worker_id, parent) do
+    # Using match_object to find entries matching worker_id and parent
     case Ets.match_object(table, {{:ref, :_}, worker_id, parent, :_}) do
       # Happy path – exactly one entry.
       [{{_, ref}, _, _, pid}] ->
@@ -77,7 +78,14 @@ defmodule SuperWorker.Supervisor.Db do
         case alive do
           # Exactly one alive pid — also drop any extra alive duplicates to be safe.
           [{{_, ref}, _, _, pid} | extras] ->
-            Enum.each(extras, fn {{_, r}, _, _, _} -> Ets.delete(table, {:ref, r}) end)
+            if extras != [] do
+              Logger.warning(
+                "SuperWorker, Db, found duplicate alive entries for worker #{inspect(worker_id)}, cleaning up"
+              )
+
+              Enum.each(extras, fn {{_, r}, _, _, _} -> Ets.delete(table, {:ref, r}) end)
+            end
+
             {:ok, {ref, pid}}
 
           [] ->
@@ -96,10 +104,20 @@ defmodule SuperWorker.Supervisor.Db do
     end
   end
 
+  def get_worker_pids_by_parent(table, parent) do
+    result =
+      Ets.match_object(table, {{:ref, :_}, :_, parent, :_})
+      |> Enum.map(fn {_, worker_id, _, pid} -> {worker_id, pid} end)
+
+    {:ok, result}
+  end
+
   def get_workers_by_parent(table, parent) do
     result =
       Ets.match_object(table, {{:ref, :_}, :_, parent, :_})
       |> Enum.map(fn {_, worker_id, _, pid} -> {worker_id, pid} end)
+      # Remove duplicates efficiently
+      |> :lists.usort()
 
     {:ok, result}
   end
@@ -129,8 +147,12 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def get_worker_infos_by_parent(table, parent) do
+    # The ETS table stores: {{:worker, worker_id, {type, parent_value}}, worker_info}
+    # The parent parameter is {type, parent_value}, e.g. {:group, reference}
+    # We need to match all entries where the parent matches
     result =
-      Ets.match_object(table, {{:worker, :_, parent}, :_})
+      Ets.match_object(table, {{:worker, :_, {:_, :_}}, :_})
+      |> Enum.filter(fn {{_, _, {type, p}}, _} -> {type, p} == parent end)
       |> Enum.map(fn {_, worker} -> worker end)
 
     {:ok, result}
@@ -145,6 +167,15 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def get_all_workers(table) do
+    result =
+      Ets.match_object(table, {{:worker, :_, :_}, :_})
+      |> Enum.map(fn {_, worker_info} -> worker_info end)
+
+    {:ok, result}
+  end
+
+  # Optimized version using select for better performance on large datasets
+  def get_all_workers_select(table) do
     result =
       Ets.match_object(table, {{:worker, :_, :_}, :_})
       |> Enum.map(fn {_, worker_info} -> worker_info end)

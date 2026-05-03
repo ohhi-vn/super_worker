@@ -19,14 +19,17 @@ defmodule SuperWorker.Supervisor.Chain do
   ]
 
   @type t :: %__MODULE__{
-          id: any,
-          restart_strategy: atom,
-          supervisor: atom,
-          finished_callback: nil | {:fun, fun} | {module, atom, [any]},
-          queue_length: non_neg_integer,
+          id: any(),
+          restart_strategy: atom(),
+          supervisor: atom() | nil,
+          finished_callback: nil | {:fun, fun()} | {module(), atom(), [any()]},
+          queue_length: non_neg_integer(),
           send_type: :broadcast | :random | :partition | :round_robin,
-          table: atom
+          table: atom() | nil
         }
+
+  @type check_options_result :: {:error, atom() | {atom(), any()}} | {:ok, t()}
+  @type worker_operation_result :: {:error, atom()} | {:ok, t()}
 
   alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue, Constants}
 
@@ -39,6 +42,7 @@ defmodule SuperWorker.Supervisor.Chain do
   ## Public functions
 
   @spec check_options([atom() | keyword()]) :: {:error, atom | {atom, any}} | {:ok, Chain.t()}
+  @spec check_options([atom() | keyword()]) :: check_options_result()
   def check_options(options) do
     with {:ok, options} <- Validator.normalize_options(options, Constants.Types.chain_params()),
          {:ok, chain} <- to_struct(options),
@@ -48,6 +52,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   @spec get_worker(Chain.t(), any()) :: {:error, :worker_not_found} | {:ok, Worker.t()}
+  @spec get_worker(t(), any()) :: {:error, :worker_not_found} | {:ok, Worker.t()}
   def get_worker(chain = %Chain{}, worker_id) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Chain, get_worker: #{inspect(chain.supervisor)}, #{inspect(worker_id)}"
@@ -57,6 +62,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   @spec worker_exists?(Chain.t(), any()) :: boolean()
+  @spec worker_exists?(t(), any()) :: boolean()
   def worker_exists?(chain = %Chain{}, worker_id) do
     case get_worker(chain, worker_id) do
       {:ok, _} -> true
@@ -65,6 +71,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   @spec get_all_workers(Chain.t()) :: {:ok, list(Worker.t())}
+  @spec get_all_workers(t()) :: {:ok, list(Worker.t())}
   def get_all_workers(chain = %Chain{}) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Chain, get_all_workers: #{inspect(chain.supervisor)}"
@@ -74,6 +81,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   @spec add_worker(Chain.t(), Worker.t()) :: {:error, :already_exists} | {:ok, Chain.t()}
+  @spec add_worker(t(), Worker.t()) :: {:error, :already_exists} | {:ok, t()}
   def add_worker(chain = %Chain{}, worker = %Worker{}) do
     if worker_exists?(chain, worker.id) do
       {:error, :already_exists}
@@ -118,6 +126,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   @spec restart_worker(Chain.t(), any()) :: {:error, any} | {:ok, Chain.t()}
+  @spec restart_worker(t(), any()) :: {:error, any()} | {:ok, t()}
   def restart_worker(chain = %Chain{}, worker_id) do
     case get_worker(chain, worker_id) do
       {:ok, worker} ->
@@ -169,6 +178,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   @spec count_workers(Chain.t()) :: non_neg_integer()
+  @spec count_workers(t()) :: non_neg_integer()
   def count_workers(chain = %Chain{}) do
     {:ok, workers} = Db.get_worker_infos_by_parent(chain.table, {:chain, chain.id})
     Enum.count(workers)
@@ -293,7 +303,7 @@ defmodule SuperWorker.Supervisor.Chain do
                   "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
                 end)
 
-                case loop_send(queue, worker) do
+                case loop_send(queue, worker, 5_000) do
                   {:ok, updated_queue} ->
                     updated_queue
 
@@ -315,7 +325,6 @@ defmodule SuperWorker.Supervisor.Chain do
             {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
             {:ok, chain} = Db.get_chain(table, chain_id)
 
-            # msg = Message.new(:new_data, nil, new_data)
             msg = %Message{id: msg_id, data: new_data, type: :new_data, from: self()}
 
             Messaging.send_next(chain, worker.order + 1, msg)
@@ -329,7 +338,6 @@ defmodule SuperWorker.Supervisor.Chain do
 
             loop_chain(table, queue, worker)
 
-          # TO-DO: decide to ignore or stop the chain.
           {:drop, reason} ->
             Logger.info(
               "SuperWorker, Chain, worker #{inspect(id)}, dropping chain process, chain: #{inspect(chain_id)}: #{inspect(reason)}"
@@ -355,7 +363,7 @@ defmodule SuperWorker.Supervisor.Chain do
                   "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
                 end)
 
-                case loop_send(queue, worker) do
+                case loop_send(queue, worker, 5_000) do
                   {:ok, updated_queue} ->
                     updated_queue
 
@@ -373,8 +381,7 @@ defmodule SuperWorker.Supervisor.Chain do
             {:ok, queue, msg_id} = MapQueue.add(queue, data)
             {:ok, chain} = Db.get_chain(table, chain_id)
 
-            msg =
-              Message.new(:chain_message, nil, {msg_id, data})
+            msg = Message.new(:chain_message, nil, {msg_id, data})
 
             Messaging.send_next(chain, worker.order + 1, msg)
 
@@ -394,10 +401,21 @@ defmodule SuperWorker.Supervisor.Chain do
         end)
 
         exit(:normal)
+
+      unknown ->
+        Logger.warning(
+          "SuperWorker, Chain, worker #{inspect(id)} received unknown message: #{inspect(unknown)}"
+        )
+
+        loop_chain(table, queue, worker)
+    after
+      30_000 ->
+        Logger.warning("SuperWorker, Chain, worker #{inspect(id)} timed out waiting for messages")
+        exit(:timeout)
     end
   end
 
-  defp loop_send(queue, %Worker{id: _id, parent: chain_id} = _worker) do
+  defp loop_send(queue, %Worker{id: id, parent: chain_id} = worker, timeout) do
     receive do
       {:processed, msg_id, _worker_id} ->
         SuperWorker.Log.debug(fn ->
@@ -418,6 +436,17 @@ defmodule SuperWorker.Supervisor.Chain do
           "SuperWorker, Chain, worker #{id}, stopping chain process, chain: #{inspect(chain_id)}"
         end)
 
+        :stop
+
+      unknown ->
+        Logger.warning(
+          "SuperWorker, Chain, worker #{id} received unknown message in loop_send: #{inspect(unknown)}"
+        )
+
+        loop_send(queue, worker, timeout)
+    after
+      timeout ->
+        Logger.error("SuperWorker, Chain, worker #{id} timed out in loop_send after #{timeout}ms")
         :stop
     end
   end

@@ -251,6 +251,8 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
     Sup.restart_group(@sup_id, group_id)
 
+    Process.sleep(2000)
+
     for i <- 1..num_workers do
       Sup.send_to_group_worker(@sup_id, group_id, i, {:get, :test, self()})
 
@@ -262,7 +264,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
           other ->
             other
         after
-          1_000 -> "incorrect result from worker"
+          1000 -> "incorrect result from worker"
         end
 
       assert(true == result)

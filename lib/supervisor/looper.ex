@@ -287,7 +287,7 @@ defmodule SuperWorker.Supervisor.Looper do
     result =
       with {:ok, group} <- Db.get_group(state.table, group_id),
            {:ok, workers} <- Db.get_workers_by_parent(state.table, {:group, group_id}) do
-        if length(workers) > 0 do
+        if workers != [] do
           {worker_id, _} = Enum.random(workers)
 
           Group.send_message(group, worker_id, data)

@@ -20,11 +20,14 @@ defmodule SuperWorker.Supervisor.Group do
   ]
 
   @type t :: %__MODULE__{
-          id: any,
-          restart_strategy: atom,
-          supervisor: atom,
-          table: atom
+          id: any(),
+          restart_strategy: atom(),
+          supervisor: atom() | nil,
+          table: atom() | nil
         }
+
+  @type check_options_result :: {:ok, t()} | {:error, atom() | {atom(), any()}}
+  @type worker_operation_result :: {:ok, t()} | {:error, atom()}
 
   alias __MODULE__
   alias SuperWorker.Supervisor.{Worker, Db, Validator, Constants}
@@ -38,6 +41,7 @@ defmodule SuperWorker.Supervisor.Group do
   Check, validate and convert key-value pairs to struct.
   """
   @spec check_options([keyword]) :: {:ok, %Group{}} | {:error, atom | {atom, any}}
+  @spec check_options([atom() | keyword()]) :: check_options_result()
   def check_options(options) do
     with {:ok, options} <- Validator.normalize_options(options, @group_params),
          {:ok, options} <- validate_options(options),
@@ -53,6 +57,7 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Get worker from the group.
   """
+  @spec get_worker(t(), any()) :: {:ok, Worker.t()} | {:error, atom()}
   def get_worker(%Group{} = group, worker_id) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, supervisor #{inspect(group.supervisor)}, group #{inspect(group.id)}, get_worker: #{inspect(worker_id)}"
@@ -70,6 +75,7 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Get all workers from the group.
   """
+  @spec get_all_workers(t()) :: {:ok, [Worker.t()]}
   def get_all_workers(%Group{} = group) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, get_all_workers for supervisor #{inspect(group.supervisor)}"
@@ -79,14 +85,16 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   @spec count_workers(%Group{}) :: non_neg_integer()
+  @spec count_workers(t()) :: non_neg_integer()
   def count_workers(%Group{} = group) do
     {:ok, workers} = get_all_workers(group)
-    length(workers)
+    Enum.count(workers)
   end
 
   @doc """
   Check if worker exists in the group.
   """
+  @spec worker_exists?(t(), any()) :: boolean()
   def worker_exists?(group, worker_id) do
     case get_worker(group, worker_id) do
       {:ok, _} -> true
@@ -97,6 +105,7 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   A internal function. Add a worker to the group.
   """
+  @spec add_worker(t(), Worker.t()) :: worker_operation_result()
   def add_worker(group = %Group{}, %Worker{} = worker) do
     case get_worker(group, worker.id) do
       {:ok, _} ->
@@ -114,13 +123,17 @@ defmodule SuperWorker.Supervisor.Group do
 
         Db.put_worker_info(group.table, worker)
 
-        spawn_worker(group, worker)
+        case spawn_worker(group, worker) do
+          {:ok, _} = ok -> ok
+          {:error, _} = error -> error
+        end
     end
   end
 
   @doc """
   A internal function. Restart a worker in the group.
   """
+  @spec restart_worker(t(), Worker.t() | any()) :: worker_operation_result()
   def restart_worker(group = %Group{}, worker = %Worker{}) do
     SuperWorker.Log.debug(fn -> "SuperWorker, Group, restart worker #{inspect(worker)}" end)
 
@@ -255,12 +268,20 @@ defmodule SuperWorker.Supervisor.Group do
     SuperWorker.Log.debug(fn -> "SuperWorker, Group, spawn_worker: #{inspect(worker)}" end)
 
     try do
-      do_spawn_worker(group, worker)
-      {:ok, group}
+      case do_spawn_worker(group, worker) do
+        {:ok, _worker} -> {:ok, group}
+      end
     catch
       :exit, reason ->
         Logger.error(
           "SuperWorker, Group, failed to spawn worker #{inspect(worker.id)}: #{inspect(reason)}"
+        )
+
+        {:error, :spawn_failed}
+
+      error, reason ->
+        Logger.error(
+          "SuperWorker, Group, unexpected error spawning worker #{inspect(worker.id)}: #{inspect(error)}: #{inspect(reason)}"
         )
 
         {:error, :spawn_failed}
@@ -269,28 +290,23 @@ defmodule SuperWorker.Supervisor.Group do
 
   @spec broadcast(%Group{}, any()) :: :ok | {:error, list()}
   def broadcast(group = %Group{}, message) do
-    case Group.get_all_workers(group) do
-      {:ok, workers} ->
-        results =
-          Enum.map(
-            workers,
-            fn %Worker{id: worker_id} ->
-              case Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
-                {:ok, {_ref, pid}} ->
-                  send(pid, message)
-                  :ok
-
-                {:error, _reason} = error ->
-                  Logger.error(
-                    "SuperWorker, Group, cannot get worker pid for #{inspect(worker_id)} in group #{inspect(group.id)}, reason: #{inspect(error)}"
-                  )
-
-                  error
-              end
+    case Db.get_worker_pids_by_parent(group.table, {:group, group.id}) do
+      {:ok, worker_pids} ->
+        # Use Enum.each for side effects (sending messages)
+        errors =
+          Enum.map(worker_pids, fn {_worker_id, pid} ->
+            try do
+              send(pid, message)
+              :ok
+            catch
+              :exit, reason ->
+                Logger.error(
+                  "SuperWorker, Group, failed to send to pid #{inspect(pid)}: #{inspect(reason)}"
+                )
+                {:error, pid, reason}
             end
-          )
-
-        errors = Enum.filter(results, &match?({:error, _}, &1))
+          end)
+          |> Enum.filter(&match?({:error, _, _}, &1))
 
         if Enum.empty?(errors) do
           :ok
@@ -298,8 +314,8 @@ defmodule SuperWorker.Supervisor.Group do
           {:error, errors}
         end
 
-      {:error, reason} ->
-        {:error, reason}
+      error ->
+        error
     end
   end
 
@@ -322,11 +338,15 @@ defmodule SuperWorker.Supervisor.Group do
     {pid, ref} =
       case worker.fun do
         {:gen_server, {m, f, a}} ->
-          {:ok, pid} = apply(m, f, a)
+          case apply(m, f, a) do
+            {:ok, pid} ->
+              ref = Process.monitor(pid)
+              {pid, ref}
 
-          ref = Process.monitor(pid)
-
-          {pid, ref}
+            error ->
+              Logger.error("SuperWorker, Group, GenServer start failed: #{inspect(error)}")
+              throw({:spawn_failed, error})
+          end
 
         _ ->
           spawn_monitor(fn ->
@@ -373,12 +393,10 @@ defmodule SuperWorker.Supervisor.Group do
         )
 
         Process.exit(pid, :kill)
-        exit(reason)
+        throw({:link_failed, reason})
     end
 
-    worker
-    |> Map.put(:pid, pid)
-    |> Map.put(:ref, ref)
+    {:ok, worker}
   end
 
   defp validate_restart_strategy(options) do
