@@ -27,6 +27,7 @@ erl_crash.dump
 
 # Temporary files, for example, from tests.
 /tmp
+.dexter.db*
 
 mix.lock
 .DS_Store
