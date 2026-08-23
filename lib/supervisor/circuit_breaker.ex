@@ -7,6 +7,10 @@ defmodule SuperWorker.CircuitBreaker do
   - `:open` - Requests are short-circuited (fail fast)
   - `:half_open` - Testing if the service has recovered
 
+  The protected function is executed **in the caller process**, so slow calls
+  never block the breaker process itself and concurrent calls are not
+  serialized through a single process.
+
   ## Usage
 
       # Protect an API call
@@ -20,6 +24,10 @@ defmodule SuperWorker.CircuitBreaker do
         {:error, :circuit_open} -> # Handle circuit open
         {:error, reason} -> # Handle other errors
       end
+
+  When the call that trips the threshold fails, the real error is returned;
+  all subsequent calls fail fast with `{:error, :circuit_open}` until the
+  reset timeout elapses.
   """
 
   use GenServer, restart: :temporary
@@ -38,7 +46,9 @@ defmodule SuperWorker.CircuitBreaker do
     :last_failure_time,
     :failure_threshold,
     :reset_timeout,
-    :half_open_max_calls
+    :half_open_max_calls,
+    # number of probes currently running in :half_open state
+    in_flight: 0
   ]
 
   @type t :: %__MODULE__{
@@ -49,13 +59,16 @@ defmodule SuperWorker.CircuitBreaker do
           last_failure_time: integer() | nil,
           failure_threshold: pos_integer(),
           reset_timeout: pos_integer(),
-          half_open_max_calls: pos_integer()
+          half_open_max_calls: pos_integer(),
+          in_flight: non_neg_integer()
         }
 
   ## Public API
 
   @doc """
   Start a circuit breaker for a named service.
+
+  The breaker process is linked to the caller.
   """
   @spec start(atom(), keyword()) :: {:ok, pid()} | {:error, term()}
   def start(name, opts \\ []) when is_atom(name) do
@@ -79,11 +92,18 @@ defmodule SuperWorker.CircuitBreaker do
 
   @doc """
   Call a function protected by the circuit breaker.
+
+  The function runs in the caller process; the breaker only tracks the
+  outcome. Exceptions and exits inside `fun` are converted to error tuples.
   """
   @spec call(atom(), (-> {:ok, any()} | {:error, any()})) ::
           {:ok, any()} | {:error, term()}
   def call(name, fun) when is_atom(name) and is_function(fun, 0) do
-    GenServer.call(name, {:execute, fun})
+    with {:ok, :execute} <- GenServer.call(name, :acquire) do
+      result = execute_function(fun)
+      GenServer.call(name, {:report, result})
+      result
+    end
   catch
     :exit, {:noproc, _} ->
       {:error, :circuit_not_started}
@@ -122,16 +142,72 @@ defmodule SuperWorker.CircuitBreaker do
   end
 
   @impl true
-  def handle_call({:execute, fun}, _from, state) do
+  def handle_call(:acquire, _from, state) do
     case state.state do
       :closed ->
-        handle_closed(state, fun)
+        {:reply, {:ok, :execute}, state}
 
       :open ->
-        handle_open(state, fun)
+        if should_attempt_reset(state) do
+          Logger.info("SuperWorker.CircuitBreaker: Attempting reset for #{inspect(state.name)}")
+
+          state = %{state | state: :half_open, success_count: 0, in_flight: 1}
+          {:reply, {:ok, :execute}, state}
+        else
+          {:reply, {:error, :circuit_open}, state}
+        end
 
       :half_open ->
-        handle_half_open(state, fun)
+        if state.in_flight < state.half_open_max_calls do
+          {:reply, {:ok, :execute}, %{state | in_flight: state.in_flight + 1}}
+        else
+          # Too many probes already running, fail fast.
+          {:reply, {:error, :circuit_open}, state}
+        end
+    end
+  end
+
+  def handle_call({:report, result}, _from, state) do
+    case {state.state, result} do
+      {:half_open, {:ok, _}} ->
+        state = record_success(%{state | in_flight: max(state.in_flight - 1, 0)})
+
+        if state.success_count >= state.half_open_max_calls do
+          Logger.info(
+            "SuperWorker.CircuitBreaker: Circuit closed for #{inspect(state.name)} after #{state.success_count} successes"
+          )
+
+          {:reply, result, close_circuit(state)}
+        else
+          {:reply, result, state}
+        end
+
+      {:half_open, {:error, reason}} ->
+        Logger.warning(
+          "SuperWorker.CircuitBreaker: Circuit re-opened for #{inspect(state.name)}, reason: #{inspect(reason)}"
+        )
+
+        {:reply, result, reopen_circuit(state)}
+
+      {:closed, {:ok, _result}} ->
+        {:reply, result, reset_failure_count(state)}
+
+      {:closed, {:error, _reason}} ->
+        state = record_failure(state)
+
+        if state.failure_count >= state.failure_threshold do
+          Logger.warning(
+            "SuperWorker.CircuitBreaker: Circuit opened for #{inspect(state.name)} after #{state.failure_count} failures"
+          )
+
+          {:reply, result, open_circuit(state)}
+        else
+          {:reply, result, state}
+        end
+
+      # Late report after another probe already re-opened the circuit.
+      _ ->
+        {:reply, result, state}
     end
   end
 
@@ -140,83 +216,10 @@ defmodule SuperWorker.CircuitBreaker do
   end
 
   def handle_call(:reset, _from, state) do
-    state =
-      state
-      |> Map.put(:state, :closed)
-      |> Map.put(:failure_count, 0)
-      |> Map.put(:success_count, 0)
-      |> Map.put(:last_failure_time, nil)
-
-    {:reply, :ok, state}
+    {:reply, :ok, close_circuit(state)}
   end
 
   ## Private Functions
-
-  defp handle_closed(state, fun) do
-    case execute_function(fun) do
-      {:ok, result} ->
-        state = reset_failure_count(state)
-        {:reply, {:ok, result}, state}
-
-      {:error, reason} ->
-        state = record_failure(state, reason)
-
-        if state.failure_count >= state.failure_threshold do
-          Logger.warning(
-            "SuperWorker.CircuitBreaker: Circuit opened for #{inspect(state.name)} after #{state.failure_count} failures"
-          )
-
-          state = open_circuit(state)
-          {:reply, {:error, :circuit_open}, state}
-        else
-          {:reply, {:error, reason}, state}
-        end
-    end
-  end
-
-  defp handle_open(state, fun) do
-    if should_attempt_reset(state) do
-      Logger.info("SuperWorker.CircuitBreaker: Attempting reset for #{inspect(state.name)}")
-
-      state = %{state | state: :half_open, success_count: 0}
-      handle_half_open(state, fun)
-    else
-      {:reply, {:error, :circuit_open}, state}
-    end
-  end
-
-  defp handle_half_open(state, fun) do
-    case execute_function(fun) do
-      {:ok, result} ->
-        state = record_success(state)
-
-        if state.success_count >= state.half_open_max_calls do
-          Logger.info(
-            "SuperWorker.CircuitBreaker: Circuit closed for #{inspect(state.name)} after #{state.success_count} successes"
-          )
-
-          state =
-            state
-            |> Map.put(:state, :closed)
-            |> Map.put(:failure_count, 0)
-            |> Map.put(:success_count, 0)
-
-          {:reply, {:ok, result}, state}
-        else
-          {:reply, {:ok, result}, state}
-        end
-
-      {:error, reason} ->
-        Logger.warning("SuperWorker.CircuitBreaker: Circuit re-opened for #{inspect(state.name)}")
-
-        state =
-          state
-          |> Map.put(:state, :open)
-          |> Map.put(:last_failure_time, System.monotonic_time(:millisecond))
-
-        {:reply, {:error, reason}, state}
-    end
-  end
 
   defp execute_function(fun) do
     try do
@@ -227,7 +230,7 @@ defmodule SuperWorker.CircuitBreaker do
     end
   end
 
-  defp record_failure(state, _reason) do
+  defp record_failure(state) do
     %{
       state
       | failure_count: state.failure_count + 1,
@@ -247,8 +250,25 @@ defmodule SuperWorker.CircuitBreaker do
     %{
       state
       | state: :open,
+        in_flight: 0,
         last_failure_time: System.monotonic_time(:millisecond)
     }
+  end
+
+  defp reopen_circuit(state) do
+    %{
+      state
+      | state: :open,
+        in_flight: 0,
+        success_count: 0,
+        last_failure_time: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp close_circuit(%__MODULE__{} = state) do
+    %__MODULE__{state | state: :closed, in_flight: 0}
+    |> reset_failure_count()
+    |> Map.put(:success_count, 0)
   end
 
   defp should_attempt_reset(state) do

@@ -139,7 +139,10 @@ defmodule Dev do
           receive do
             msg -> IO.puts("Standalone worker received: #{inspect(msg)}")
           end
-        end, id: :w3, restart_strategy: :temporary)
+        end,
+        id: :w3,
+        restart_strategy: :temporary
+      )
   end
 
   # function to add a worker to the supervisor.

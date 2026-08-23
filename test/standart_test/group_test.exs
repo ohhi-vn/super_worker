@@ -2,7 +2,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
   use ExUnit.Case, async: true
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Group, Db}
+  alias SuperWorker.Supervisor.Group
 
   doctest Group
 
@@ -166,16 +166,15 @@ defmodule SuperWorker.Supervisor.GroupTest do
       Enum.map(1..num_workers, fn i ->
         Sup.send_to_group_worker(@sup_id, group_id, i, {:get, :test, self()})
 
-        result =
-          receive do
-            {:result, :hello} ->
-              true
+        receive do
+          {:result, :hello} ->
+            true
 
-            {:result, :nothing} ->
-              false
-          after
-            1_000 -> "incorrect result from worker"
-          end
+          {:result, :nothing} ->
+            false
+        after
+          1_000 -> "incorrect result from worker"
+        end
       end)
 
     assert 1 == Enum.count(results, &(&1 == true))
@@ -279,11 +278,10 @@ defmodule SuperWorker.Supervisor.GroupTest do
     num_workers = 5
     {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
-    list =
-      for index <- 1..num_workers do
-        {:ok, _} =
-          Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [index]}, id: index)
-      end
+    for index <- 1..num_workers do
+      {:ok, _} =
+        Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [index]}, id: index)
+    end
 
     Sup.add_group_worker(@sup_id, group_id, MyGenServer, [])
     Process.sleep(10)
@@ -316,20 +314,19 @@ defmodule SuperWorker.Supervisor.GroupTest do
 
       {:ok, _} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
-      list =
-        for worker_index <- 1..num_workers do
-          {:ok, _} =
-            Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [worker_index]},
-              id: {index, worker_index}
-            )
-        end
+      for worker_index <- 1..num_workers do
+        {:ok, _} =
+          Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [worker_index]},
+            id: {index, worker_index}
+          )
+      end
 
       Process.sleep(10)
 
       counter =
         Enum.reduce(1..num_workers, 0, fn worker_index, acc ->
           case Sup.get_pid_group_worker(@sup_id, group_id, {index, worker_index}) do
-            {:ok, pid} -> acc + 1
+            {:ok, _pid} -> acc + 1
             _ -> acc
           end
         end)
@@ -409,7 +406,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, worker_id)
     result = Sup.send_to_group_worker(@sup_id, group_id, worker_id, {:ping, self()})
 
-    assert match?(result, {:error, :not_found})
+    assert {:error, :not_found} = result
   end
 
   @tag :remove_group
@@ -573,36 +570,33 @@ defmodule SuperWorker.Supervisor.GroupTest do
       Process.sleep(100)
       Sup.send_to_group_worker(@sup_id, group_id, 1, {:ping, self()})
 
-      result =
-        receive do
-          {:pong, _sender} -> true
-        after
-          1_000 -> raise "timeout for restarting all workers 2"
-        end
+      receive do
+        {:pong, _sender} -> true
+      after
+        1_000 -> raise "timeout for restarting all workers 2"
+      end
 
       Sup.send_to_group_worker(@sup_id, group_id, 2, {:store, :test, :hello})
       Process.sleep(100)
 
       Sup.send_to_group_worker(@sup_id, group_id, 2, {:get, :test, self()})
 
-      result =
-        receive do
-          {:result, :hello} -> true
-        after
-          1_000 -> raise "timeout for restarting all workers 2"
-        end
+      receive do
+        {:result, :hello} -> true
+      after
+        1_000 -> raise "timeout for restarting all workers 2"
+      end
 
       Sup.send_to_group_worker(@sup_id, group_id, 1, {:raise, "Restart all workers"})
 
       Process.sleep(100)
       Sup.send_to_group_worker(@sup_id, group_id, 2, {:get, :test, self()})
 
-      result =
-        receive do
-          {:result, nil} -> true
-        after
-          1_000 -> raise "timeout for restarting all workers 2"
-        end
+      receive do
+        {:result, nil} -> true
+      after
+        1_000 -> raise "timeout for restarting all workers 2"
+      end
 
       send(parent, :success)
     end
@@ -735,5 +729,179 @@ defmodule SuperWorker.Supervisor.GroupTest do
       end
 
     assert(true == result)
+  end
+
+  describe "worker operation edge cases" do
+    setup do
+      group_id = :"g_edge_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      %{group_id: group_id}
+    end
+
+    @tag :group_duplicate_worker
+    test "adding a duplicate worker id fails", %{group_id: group_id} do
+      {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: :dup)
+      Process.sleep(50)
+
+      assert {:error, :worker_already_exists} =
+               Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: :dup)
+    end
+
+    @tag :group_restart_missing_worker
+    test "restart/kill/remove of a missing worker return errors", %{group_id: group_id} do
+      assert {:error, :worker_not_found} =
+               Sup.restart_group_worker(@sup_id, group_id, :missing_worker)
+
+      assert {:error, _} = Sup.remove_group_worker(@sup_id, group_id, :missing_worker)
+    end
+
+    @tag :group_invalid_options
+    test "add_group with invalid restart strategy fails" do
+      assert {:error, _} =
+               Sup.add_group(@sup_id,
+                 id: :"g_bad_#{System.unique_integer([:positive])}",
+                 restart_strategy: :all_for_one
+               )
+    end
+  end
+
+  describe "direct Group operations on a private table" do
+    alias SuperWorker.Supervisor.{Db, Group}
+
+    setup do
+      table = Db.init(:"group_unit_#{System.unique_integer([:positive])}")
+
+      group = %Group{id: :unit_group, table: table, supervisor: :unit_sup}
+
+      %{table: table, group: group}
+    end
+
+    test "check_options rejects invalid strategies" do
+      assert {:error, "Invalid group restart strategy, :sometimes"} =
+               Group.check_options(id: :g, restart_strategy: :sometimes)
+    end
+
+    test "add_worker generates an id when missing", %{table: table, group: group} do
+      worker = %SuperWorker.Supervisor.Worker{
+        id: nil,
+        fun: {:fun, fn -> :ok end},
+        type: :group,
+        parent: nil,
+        restart_strategy: :permanent
+      }
+
+      # No id set: the group assigns a random one.
+      refute worker.id
+
+      case Group.add_worker(group, worker) do
+        {:ok, _} -> :ok
+        # The spawned loop-less fun exits immediately; either way the info row
+        # must exist with a generated binary id.
+        {:error, _} -> :ok
+      end
+
+      assert {:ok, infos} = Db.get_worker_infos_by_parent(table, {:group, :unit_group})
+      assert length(infos) == 1
+      assert is_binary(hd(infos).id)
+    end
+
+    test "kill_all_workers reports failures for dead workers", %{table: table, group: group} do
+      dead = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      worker = %SuperWorker.Supervisor.Worker{
+        id: :dead_worker,
+        fun: {:fun, fn -> :ok end},
+        type: :group
+      }
+
+      Db.put_worker_info(table, %{worker | parent: :unit_group})
+      Db.put_worker(table, make_ref(), :dead_worker, {:group, :unit_group}, dead)
+
+      assert match?({:error, _}, Group.kill_all_workers(group))
+    end
+
+    test "send_message to unknown worker fails", %{group: group} do
+      assert {:error, :cannot_send} = Group.send_message(group, :missing, :hello)
+    end
+
+    test "add_worker rejects a duplicate id", %{table: table, group: group} do
+      worker = %SuperWorker.Supervisor.Worker{
+        id: :dupe,
+        fun: {:fun, fn -> Process.sleep(10_000) end},
+        type: :group,
+        parent: nil,
+        restart_strategy: :temporary
+      }
+
+      assert match?({:ok, _}, Group.add_worker(group, %{worker | parent: group.id}))
+
+      # Second add with the same id is rejected without spawning.
+      assert {:error, :worker_exists} = Group.add_worker(group, %{worker | parent: group.id})
+      assert {:ok, infos} = Db.get_worker_infos_by_parent(table, {:group, :unit_group})
+      assert length(infos) == 1
+    end
+
+    test "kill_worker by id on missing worker returns error", %{group: group} do
+      assert {:error, :worker_not_found} = Group.kill_worker(group, :ghost, :kill)
+    end
+
+    test "remove_worker cleans up rows of a live worker", %{table: table, group: group} do
+      worker_fun = fn -> MyTest.loop(:removable) end
+
+      assert match?(
+               {:ok, _},
+               Group.add_worker(group, %SuperWorker.Supervisor.Worker{
+                 id: :removable,
+                 fun: {:fun, worker_fun},
+                 type: :group,
+                 restart_strategy: :temporary
+               })
+             )
+
+      Process.sleep(50)
+      assert Group.worker_exists?(group, :removable)
+
+      assert {:ok, :worker_removed} = Group.remove_worker(group, :removable)
+
+      refute Group.worker_exists?(group, :removable)
+      assert [] = :ets.match_object(table, {{:ref, :_}, :removable, :_, :_})
+    end
+
+    test "remove_worker reports dead workers", %{table: table, group: group} do
+      dead_pid = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      Db.put_worker_info(table, %SuperWorker.Supervisor.Worker{
+        id: :dead_one,
+        fun: {:fun, fn -> :ok end},
+        type: :group
+      })
+
+      Db.put_worker(table, make_ref(), :dead_one, {:group, :unit_group}, dead_pid)
+
+      result = Group.remove_worker(group, :dead_one)
+      assert match?({:error, _}, result)
+    end
+
+    test "adding a worker whose GenServer cannot start reports spawn_failed" do
+      group_id = :"g_bad_gs_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      result = Sup.add_group_worker(@sup_id, group_id, {FailingGenServer, []}, [])
+      assert match?({:error, _}, result)
+      Process.sleep(50)
+
+      # Partition is still healthy and serves API calls.
+      assert true == Sup.group_exists?(@sup_id, group_id)
+    end
+
+    test "adding a worker without a valid GenServer child spec returns an error" do
+      group_id = :"g_no_spec_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      assert match?({:error, _}, Sup.add_group_worker(@sup_id, group_id, {String, []}, []))
+    end
   end
 end

@@ -30,6 +30,44 @@ defmodule SuperWorker.Supervisor do
 
   The restart strategy only works when the process is crashed, for normal exit, shutdown, or terminated it will be ignored.
 
+  ## Fault tolerance
+
+  Workers are spread over one or more partitions. Each partition is a plain
+  process monitored by the supervisor master:
+
+  - a crashing **worker** is restarted by its partition according to the
+    restart strategy of its parent (standalone/group/chain) — one bad worker
+    never affects workers on other partitions;
+  - a crashing **partition** is detected via a monitor and restarted
+    individually; the rest of the supervisor keeps serving requests;
+  - partitions monitor the master, so nothing survives the supervisor itself;
+  - link semantics with the process that started the supervisor are standard:
+    an abnormal exit of that process stops the supervisor, a `:normal` exit
+    does not.
+
+  ## Introspection
+
+  Running supervisors can be discovered and inspected at runtime:
+
+      Sup.running_supervisors()               # [{sup_id, pid}]
+      Sup.supervisor_info(:sup1)              # partitions health + counts
+      Sup.list_groups(:sup1)                  # groups with strategies & ids
+      Sup.list_chains(:sup1)                  # chains with config & ids
+      Sup.list_standalone_workers(:sup1)
+
+  ## Utilities
+
+  The library also ships small focused helpers:
+
+  - `SuperWorker.CircuitBreaker` — protect external calls with a
+    closed/open/half-open circuit (the protected function runs in the caller,
+    never inside the breaker process);
+  - `SuperWorker.TermStorage` — thin `:persistent_term` wrapper for rarely
+    changing node-wide data;
+  - `SuperWorker.Supervisor.Utils.safe_call/1,3` — invoke user functions
+    without letting exceptions escape (`{:ok, result}` /
+    `{:error, {kind, reason}}`).
+
   ## Examples
   ```elixir
   # Start a supervisor with 2 partitions & 2 groups:
@@ -80,6 +118,9 @@ defmodule SuperWorker.Supervisor do
     # list of pid or callback function, for reporting worker crashed or worker finished.
     # reserve for the future, not implemented.
     report_to: [],
+    # pid of the supervisor master process, used by partitions.
+    # for internal use only.
+    master_pid: nil,
     # for internal use only.
     partitions: %{},
     # storage data for supervisor, workers/groups/chains, for internal use only.
@@ -96,12 +137,15 @@ defmodule SuperWorker.Supervisor do
         }
 
   @default_time 3_000
+  # TermStorage key prefix for the running-instance registry.
+  @registry_prefix :super_worker_supervisor_registry
 
   alias __MODULE__
 
   alias SuperWorker.Supervisor.{Worker, Group, Chain}
 
   alias SuperWorker.Supervisor.{Utils, ApiHelper, Message, Validator, Db, Partition}
+  alias SuperWorker.TermStorage
 
   require Logger
   require SuperWorker.Log
@@ -198,13 +242,18 @@ defmodule SuperWorker.Supervisor do
   end
 
   @doc """
-  Stop supervisor. Type of shutdown is using for reason of exit in Process.exit function.
-  Type of shutdown:
-  - `:normal` supervisor will send a message to worker for graceful shutdown. Not support for spawn process by function.
-  - `:kill` supervisor will kill worker.
+  Stop supervisor.
+
+  Shutdown types:
+  - `:kill` (default) worker processes are killed with `Process.exit(pid, :kill)`.
+  - any other type (e.g. `:normal`) is not implemented yet; it currently falls
+    back to the same brutal kill, so workers cannot run cleanup code.
+
+  Returns `{:ok, sup_id}` when the stop signal was delivered (the supervisor
+  shuts down asynchronously shortly after) or `{:error, :not_running}`.
   """
   @spec stop(atom(), shutdown_type :: atom(), timeout :: non_neg_integer()) ::
-          {:ok, atom()} | {:error, any()}
+          {:ok, atom()} | {:error, :not_running}
   def stop(sup_id, shutdown_type \\ :kill, timeout \\ @default_time) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, stop supervisor: #{inspect(sup_id)},  shutdown type: #{inspect(shutdown_type)}"
@@ -216,6 +265,130 @@ defmodule SuperWorker.Supervisor do
       false ->
         {:error, :not_running}
     end
+  end
+
+  ## Introspection API ##
+
+  @doc """
+  Lists all supervisors started through this library on the current node.
+
+  Entries whose process died are filtered out (and cleaned up lazily).
+
+  ## Examples
+
+      iex> Sup.start_with_config(id: :doctest_sup)
+      iex> Sup.running_supervisors() |> Enum.any?(fn {id, pid} -> id == :doctest_sup and is_pid(pid) end)
+      true
+
+  """
+  @spec running_supervisors() :: [{atom(), pid()}]
+  def running_supervisors do
+    TermStorage.get_all()
+    |> Enum.flat_map(fn
+      {{@registry_prefix, id}, %{pid: pid} = entry} ->
+        if Process.alive?(pid) do
+          [{id, pid}]
+        else
+          # Lazy cleanup of dead instances.
+          TermStorage.delete({@registry_prefix, id})
+          _ = entry
+          []
+        end
+
+      _other ->
+        []
+    end)
+    |> Enum.sort()
+  end
+
+  @doc """
+  Returns an overview of a running supervisor: partition health and counts of
+  groups, chains and workers.
+
+  ## Examples
+
+      {:ok,
+       %{
+         id: :my_sup,
+         num_partitions: 4,
+         partitions: [%{id: 1, pid: pid, alive?: true, message_queue_len: 0}, ...],
+         num_groups: 2,
+         num_chains: 1,
+         num_standalone_workers: 3,
+         total_worker_processes: 9
+       }} = Sup.supervisor_info(:my_sup)
+
+  """
+  @spec supervisor_info(atom(), non_neg_integer()) :: {:ok, map()} | {:error, term()}
+  def supervisor_info(sup_id, timeout \\ @default_time) when is_atom(sup_id) do
+    call_master(sup_id, :supervisor_info, timeout)
+  end
+
+  @doc """
+  Lists the groups of a supervisor with their restart strategies and worker ids.
+
+  ## Examples
+
+      Sup.add_group(:sup1, id: :group1, restart_strategy: :one_for_all)
+      {:ok,
+       [
+         %{id: :group1, restart_strategy: :one_for_all, worker_ids: []}
+       ]} = Sup.list_groups(:sup1)
+  """
+  @spec list_groups(atom(), non_neg_integer()) ::
+          {:ok, [%{id: atom(), restart_strategy: atom(), worker_ids: [term()]}]}
+          | {:error, term()}
+  def list_groups(sup_id, timeout \\ @default_time) when is_atom(sup_id) do
+    call_master(sup_id, :list_groups, timeout)
+  end
+
+  @doc """
+  Lists the chains of a supervisor with their configuration and worker ids.
+
+  ## Examples
+
+      Sup.add_chain(:sup1, id: :chain1)
+      {:ok,
+       [
+         %{
+           id: :chain1,
+           restart_strategy: :one_for_one,
+           send_type: :random,
+           queue_length: 50,
+           worker_ids: []
+         }
+       ]} = Sup.list_chains(:sup1)
+  """
+  @spec list_chains(atom(), non_neg_integer()) ::
+          {:ok,
+           [
+             %{
+               id: atom(),
+               restart_strategy: atom(),
+               send_type: atom(),
+               queue_length: pos_integer(),
+               worker_ids: [term()]
+             }
+           ]}
+          | {:error, term()}
+  def list_chains(sup_id, timeout \\ @default_time) when is_atom(sup_id) do
+    call_master(sup_id, :list_chains, timeout)
+  end
+
+  @doc """
+  Lists the standalone workers of a supervisor.
+
+  ## Examples
+
+      Sup.add_standalone_worker(:sup1, {MyGenServer, []}, id: :sa1)
+      {:ok, [%{id: :sa1, name: nil, restart_strategy: :transient}]} =
+        Sup.list_standalone_workers(:sup1)
+  """
+  @spec list_standalone_workers(atom(), non_neg_integer()) ::
+          {:ok, [%{id: term(), name: atom() | nil, restart_strategy: atom()}]}
+          | {:error, term()}
+  def list_standalone_workers(sup_id, timeout \\ @default_time) when is_atom(sup_id) do
+    call_master(sup_id, :list_standalone_workers, timeout)
   end
 
   @doc """
@@ -268,13 +441,21 @@ defmodule SuperWorker.Supervisor do
 
   def add_standalone_worker(sup_id, {genserver_module, _} = f, options, timeout)
       when is_list(options) and is_atom(genserver_module) do
-    options = convert_gen_server_specs(f, options)
+    case convert_gen_server_specs(f, options) do
+      {:error, reason} = error ->
+        Logger.error(
+          "SuperWorker, Supervisor, invalid GenServer worker spec #{inspect(f)}, reason: #{inspect(reason)}"
+        )
 
-    do_add_worker(
-      sup_id,
-      [type: :standalone, parent: nil] ++ options,
-      timeout
-    )
+        error
+
+      options ->
+        do_add_worker(
+          sup_id,
+          [type: :standalone, parent: nil] ++ options,
+          timeout
+        )
+    end
   end
 
   def add_standalone_worker(sup_id, genserver_module, opts, timeout)
@@ -363,13 +544,21 @@ defmodule SuperWorker.Supervisor do
 
   def add_group_worker(sup_id, group_id, {module, _init_arg} = worker, options, timeout)
       when is_atom(module) and group_id != nil do
-    options = convert_gen_server_specs(worker, options)
+    case convert_gen_server_specs(worker, options) do
+      {:error, reason} = error ->
+        Logger.error(
+          "SuperWorker, Supervisor, invalid GenServer worker spec #{inspect(worker)}, reason: #{inspect(reason)}"
+        )
 
-    do_add_worker(
-      sup_id,
-      [type: :group, parent: group_id] ++ options,
-      timeout
-    )
+        error
+
+      options ->
+        do_add_worker(
+          sup_id,
+          [type: :group, parent: group_id] ++ options,
+          timeout
+        )
+    end
   end
 
   @doc """
@@ -533,7 +722,7 @@ defmodule SuperWorker.Supervisor do
   count workers in group
   """
   @spec count_workers_in_group(atom(), any(), non_neg_integer()) ::
-          :ok | {:error, any()}
+          {:ok, non_neg_integer()} | {:error, term()}
   def count_workers_in_group(sup_id, group_id, timeout \\ @default_time) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, count workers in group, supervisor: #{inspect(sup_id)},  group id: #{inspect(group_id)}"
@@ -676,7 +865,7 @@ defmodule SuperWorker.Supervisor do
   remove a worker from chain.
   """
   @spec remove_chain_worker(atom(), any(), any(), non_neg_integer()) ::
-          {:ok, any()} | {:error, any()}
+          :ok | {:error, term()}
   def remove_chain_worker(sup_id, chain_id, worker_id, timeout \\ @default_time) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, remove worker in chain, supervisor: #{inspect(sup_id)},  chain: #{inspect(chain_id)}, worker: #{inspect(worker_id)}"
@@ -689,7 +878,7 @@ defmodule SuperWorker.Supervisor do
   remove chain.
   """
   @spec remove_chain(atom(), any(), non_neg_integer()) ::
-          {:ok, any()} | {:error, any()}
+          :ok | {:error, term()}
   def remove_chain(sup_id, chain_id, timeout \\ @default_time) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, remove chain, #{inspect(sup_id)}, #{inspect(chain_id)}"
@@ -722,25 +911,30 @@ defmodule SuperWorker.Supervisor do
       supervisor = %{supervisor | table: table}
 
       SuperWorker.Log.debug(fn ->
-        "SuperWorker, Supervisor, create table for #{inspect(supervisor.id)} done}"
+        "SuperWorker, Supervisor, created table for #{inspect(supervisor.id)}"
       end)
 
       Db.put_sup_info(supervisor.table, :master, supervisor)
 
-      partitions = Partition.init_additional_partitions(supervisor)
+      {partitions, partition_refs} = Partition.init_additional_partitions(supervisor)
       list_partition_ids = Map.keys(partitions)
 
-      Enum.each(partitions, fn {_, pid} ->
-        msg = Message.new(:partition_list, pid, partitions)
-        send(pid, {:internal_api, msg})
-      end)
+      notify_partitions(partitions)
+
+      # Publish this instance for running_supervisors/0.
+      TermStorage.put(registry_key(supervisor.id), %{
+        pid: self(),
+        started_at: System.system_time(:millisecond)
+      })
 
       {:ok,
        %{
          supervisor: supervisor,
          partitions: partitions,
+         partition_refs: partition_refs,
          partition_ids: list_partition_ids,
-         cache: %{}
+         cache: %{},
+         stopping: false
        }}
     else
       failed ->
@@ -777,6 +971,105 @@ defmodule SuperWorker.Supervisor do
     end
   end
 
+  def handle_call(:supervisor_info, _from, state) do
+    table = state.supervisor.table
+
+    {:ok, groups} = Db.get_all_groups(table)
+    {:ok, chains} = Db.get_all_chains(table)
+    {:ok, standalone} = Db.get_all_standalone_worker_infos(table)
+    {:ok, workers} = Db.get_all_workers(table)
+
+    partitions =
+      state.partitions
+      |> Enum.map(fn {id, pid} ->
+        %{
+          id: id,
+          pid: pid,
+          alive?: Process.alive?(pid),
+          message_queue_len: Utils.count_msgs(pid)
+        }
+      end)
+      |> Enum.sort_by(& &1.id)
+
+    info = %{
+      id: state.supervisor.id,
+      num_partitions: state.supervisor.num_partitions,
+      partitions: partitions,
+      num_groups: length(groups),
+      num_chains: length(chains),
+      num_standalone_workers: length(standalone),
+      total_worker_processes: length(workers)
+    }
+
+    {:reply, {:ok, info}, state}
+  end
+
+  def handle_call(:list_groups, _from, state) do
+    table = state.supervisor.table
+
+    groups =
+      case Db.get_all_groups(table) do
+        {:ok, groups} ->
+          Enum.map(groups, fn group ->
+            %{
+              id: group.id,
+              restart_strategy: group.restart_strategy,
+              worker_ids: worker_ids_for(table, {:group, group.id})
+            }
+          end)
+
+        _ ->
+          []
+      end
+
+    {:reply, {:ok, groups}, state}
+  end
+
+  def handle_call(:list_chains, _from, state) do
+    table = state.supervisor.table
+
+    chains =
+      case Db.get_all_chains(table) do
+        {:ok, chains} ->
+          Enum.map(chains, fn chain ->
+            %{
+              id: chain.id,
+              restart_strategy: chain.restart_strategy,
+              send_type: chain.send_type,
+              queue_length: chain.queue_length,
+              worker_ids: worker_ids_for(table, {:chain, chain.id})
+            }
+          end)
+
+        _ ->
+          []
+      end
+
+    {:reply, {:ok, chains}, state}
+  end
+
+  def handle_call(:list_standalone_workers, _from, state) do
+    table = state.supervisor.table
+
+    workers =
+      case Db.get_all_standalone_worker_infos(table) do
+        {:ok, workers} ->
+          Enum.map(workers, fn worker ->
+            %{
+              id: worker.id,
+              name: worker.name,
+              restart_strategy: worker.restart_strategy
+            }
+          end)
+          |> Enum.sort_by(& &1.id)
+
+        _ ->
+          []
+      end
+
+    {:reply, {:ok, workers}, state}
+  end
+
   def handle_call({:stop_supervisor, shutdown_type}, _from, state) do
     Enum.each(state.partitions, fn {id, pid} ->
       ApiHelper.internal_call_api_no_reply(pid, :stop_supervisor, shutdown_type)
@@ -784,32 +1077,109 @@ defmodule SuperWorker.Supervisor do
     end)
 
     # Clear cache on stop
-    state = clear_cache(state)
+    state =
+      state
+      |> clear_cache()
+      |> Map.put(:stopping, true)
 
     {:reply, :ok, state}
   end
 
   @impl true
   def handle_info({:partition_started, _partition_id}, state) do
-    SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, Partition started: #{partition_id}" end)
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, Partition started."
+    end)
+
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:partition_stopped, partition_id}, state) do
-    SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, Partition stopped: #{partition_id}" end)
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, Partition stopped: #{inspect(partition_id)}"
+    end)
 
-    stopped_partitions =
-      [partition_id | Map.get(state, :stopped_partitions, [])]
+    count_stopped_partition(state, partition_id)
+  end
 
-    if length(stopped_partitions) == state.supervisor.num_partitions do
-      {:stop, :normal, state}
-    else
-      {:noreply, Map.put(state, :stopped_partitions, stopped_partitions)}
+  # A monitored partition died:
+  # - while stopping: it exited as part of deliberate shutdown;
+  # - otherwise: restart it so one bad partition cannot take down the whole
+  #   supervisor.
+  # Partitions are monitored (not linked) so this never changes the link
+  # semantics between the supervisor and its owner process.
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Map.get(state.partition_refs, ref) do
+      nil ->
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Supervisor, unknown process down, ref: #{inspect(ref)}"
+        end)
+
+        {:noreply, state}
+
+      partition_id ->
+        if state.stopping do
+          count_stopped_partition(state, partition_id)
+        else
+          Logger.error(
+            "SuperWorker, Supervisor, partition #{inspect(partition_id)} crashed, restarting it, reason: #{inspect(reason)}"
+          )
+
+          {:noreply, restart_partition(state, partition_id)}
+        end
     end
   end
 
-  # Cache helper functions
+  defp count_stopped_partition(state, partition_id) do
+    stopped = MapSet.put(Map.get(state, :stopped_partitions, MapSet.new()), partition_id)
+
+    if MapSet.size(stopped) == state.supervisor.num_partitions do
+      {:stop, :normal, state}
+    else
+      {:noreply, Map.put(state, :stopped_partitions, stopped)}
+    end
+  end
+
+  defp restart_partition(state, partition_id) do
+    # Guard against spawn failures (e.g. badarg) crashing the master.
+    info =
+      try do
+        Partition.restart_partition(state.supervisor, partition_id)
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    case info do
+      {:ok, ^partition_id, pid, ref} ->
+        partitions = Map.put(state.partitions, partition_id, pid)
+        partition_refs = Map.put(state.partition_refs, ref, partition_id)
+
+        notify_partitions(partitions)
+
+        # Cached partition pids may point to the crashed process.
+        state
+        |> Map.put(:partitions, partitions)
+        |> Map.put(:partition_refs, partition_refs)
+        |> clear_cache()
+
+      {:error, reason} ->
+        Logger.error(
+          "SuperWorker, Supervisor, failed to restart partition #{inspect(partition_id)}, it stays down, reason: #{inspect(reason)}"
+        )
+
+        state
+    end
+  end
+
+  defp notify_partitions(partitions) do
+    Enum.each(partitions, fn {_, pid} ->
+      msg = Message.new(:partition_list, pid, partitions)
+      send(pid, {:internal_api, msg})
+    end)
+  end
+
   # Cache helper functions
   defp get_from_cache(state, key) do
     Map.get(state.cache || %{}, key)
@@ -822,6 +1192,42 @@ defmodule SuperWorker.Supervisor do
 
   defp clear_cache(state) do
     %{state | cache: %{}}
+  end
+
+  # Introspection helpers
+
+  defp registry_key(sup_id), do: {@registry_prefix, sup_id}
+
+  defp worker_ids_for(table, parent) do
+    case Db.get_worker_infos_by_parent(table, parent) do
+      {:ok, infos} -> Enum.map(infos, & &1.id)
+      _ -> []
+    end
+  end
+
+  defp call_master(sup_id, call, timeout) do
+    if running?(sup_id) do
+      try do
+        GenServer.call(sup_id, call, timeout)
+      catch
+        :exit, reason ->
+          Logger.error(
+            "SuperWorker, Supervisor, call #{inspect(call)} on supervisor #{inspect(sup_id)} failed, reason: #{inspect(reason)}"
+          )
+
+          {:error, :supervisor_not_responding}
+      end
+    else
+      {:error, :not_running}
+    end
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    # Best-effort deregistration; dead entries are also cleaned lazily by
+    # running_supervisors/0 (e.g. after a hard kill).
+    TermStorage.delete(registry_key(state.supervisor.id))
+    :ok
   end
 
   ## Private Functions
@@ -897,16 +1303,19 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp convert_gen_server_specs(f, opts) do
-    {:ok, gen_sever_options = %{mfa: mfa}} =
-      SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(f)
+    case SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(f) do
+      {:ok, gen_sever_options = %{mfa: mfa}} ->
+        default_options =
+          gen_sever_options
+          |> Map.delete(:mfa)
+          |> Map.delete(:options)
+          |> Map.to_list()
 
-    default_options =
-      gen_sever_options
-      |> Map.delete(:mfa)
-      |> Map.delete(:options)
-      |> Map.to_list()
+        Keyword.merge([{:fun, mfa} | default_options], opts)
 
-    Keyword.merge([{:fun, mfa} | default_options], opts)
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp get_partition_and_send(sup_id, api, params, timeout) do

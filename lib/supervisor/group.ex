@@ -272,6 +272,15 @@ defmodule SuperWorker.Supervisor.Group do
         {:ok, _worker} -> {:ok, group}
       end
     catch
+      # A failed GenServer start throws {:spawn_failed, reason}; convert it to
+      # an error tuple instead of crashing the partition process.
+      :throw, {:spawn_failed, reason} ->
+        Logger.error(
+          "SuperWorker, Group, failed to spawn worker #{inspect(worker.id)}: #{inspect(reason)}"
+        )
+
+        {:error, :spawn_failed}
+
       :exit, reason ->
         Logger.error(
           "SuperWorker, Group, failed to spawn worker #{inspect(worker.id)}: #{inspect(reason)}"
@@ -303,6 +312,7 @@ defmodule SuperWorker.Supervisor.Group do
                 Logger.error(
                   "SuperWorker, Group, failed to send to pid #{inspect(pid)}: #{inspect(reason)}"
                 )
+
                 {:error, pid, reason}
             end
           end)

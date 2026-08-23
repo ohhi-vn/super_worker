@@ -528,4 +528,96 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       assert parsed.options[:link] == true
     end
   end
+
+  describe "parse/1 option normalization branches" do
+    test "invalid link values fall back to true" do
+      config = [
+        options: [id: :p_link, link: "not_a_boolean"],
+        workers: []
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert true == Keyword.fetch!(parsed.options, :link)
+    end
+
+    test "report_to lists are preserved" do
+      config = [
+        options: [id: :p_report, link: false, report_to: [self()]],
+        workers: []
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert [me] = Keyword.fetch!(parsed.options, :report_to)
+      assert me == self()
+    end
+
+    test "valid strategies are preserved" do
+      config = [
+        options: [id: :p_strategy, strategy: :rest_for_one],
+        workers: []
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert :rest_for_one = Keyword.fetch!(parsed.options, :strategy)
+    end
+
+    test "invalid group restart_strategy is rejected" do
+      config = [
+        options: [id: :p_bad_group, link: false],
+        groups: [{:g, [restart_strategy: :sometimes, workers: []]}]
+      ]
+
+      assert {:error, {:group_parsing_errors, [error: {:invalid_group_config, _}]}} =
+               Parser.parse(config)
+    end
+
+    test "unknown send_type defaults to round_robin" do
+      config = [
+        options: [id: :p_send, link: false],
+        chains: [{:c, [send_type: :carrier_pigeon, workers: []]}]
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+
+      chain = Enum.find(parsed.children, &match?(%{type: :chain}, &1))
+      assert :round_robin = Keyword.fetch!(chain.options, :send_type)
+    end
+
+    test "invalid standalone worker configs are reported per index" do
+      config = [
+        options: [id: :p_bad_worker, link: false],
+        workers: ["not a keyword list"]
+      ]
+
+      assert {:error, {:worker_parsing_errors, [error: {:invalid_worker_config, _}]}} =
+               Parser.parse(config)
+    end
+
+    test "task shorthand with invalid value is rejected" do
+      config = [
+        options: [id: :p_bad_task, link: false],
+        workers: [
+          [task: "nope", options: [id: :t1]]
+        ]
+      ]
+
+      assert {:error, {:worker_parsing_errors, [error: {:invalid_task, _}]}} =
+               Parser.parse(config)
+    end
+
+    test "standalone GenServer workers given as {module, options} pairs are converted" do
+      config = [
+        options: [id: :p_pair, link: false],
+        workers: [
+          {MyGenServer, [id: :gs_from_pair]}
+        ]
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+
+      worker = hd(parsed.children)
+      assert worker.type == :standalone
+      assert worker.options[:fun] != nil or worker.mfa != nil
+    end
+  end
 end

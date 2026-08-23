@@ -146,16 +146,19 @@ defmodule SuperWorker.Supervisor.Db do
     Ets.delete(table, {:worker, worker_id, parent})
   end
 
-  def get_worker_infos_by_parent(table, parent) do
+  def get_worker_infos_by_parent(table, {type, parent_value} = _parent) do
     # The ETS table stores: {{:worker, worker_id, {type, parent_value}}, worker_info}
-    # The parent parameter is {type, parent_value}, e.g. {:group, reference}
-    # We need to match all entries where the parent matches
-    result =
-      Ets.match_object(table, {{:worker, :_, {:_, :_}}, :_})
-      |> Enum.filter(fn {{_, _, {type, p}}, _} -> {type, p} == parent end)
-      |> Enum.map(fn {_, worker} -> worker end)
+    # Filter inside ETS with a match spec instead of scanning the whole
+    # table into the caller process.
+    match_spec = [
+      {{{:worker, :_, {:"$1", :"$2"}}, :"$3"},
+       [
+         {:"=:=", :"$1", {:const, type}},
+         {:"=:=", :"$2", {:const, parent_value}}
+       ], [:"$3"]}
+    ]
 
-    {:ok, result}
+    {:ok, Ets.select(table, match_spec)}
   end
 
   def get_all_standalone_worker_infos(table) do
@@ -167,15 +170,6 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def get_all_workers(table) do
-    result =
-      Ets.match_object(table, {{:worker, :_, :_}, :_})
-      |> Enum.map(fn {_, worker_info} -> worker_info end)
-
-    {:ok, result}
-  end
-
-  # Optimized version using select for better performance on large datasets
-  def get_all_workers_select(table) do
     result =
       Ets.match_object(table, {{:worker, :_, :_}, :_})
       |> Enum.map(fn {_, worker_info} -> worker_info end)

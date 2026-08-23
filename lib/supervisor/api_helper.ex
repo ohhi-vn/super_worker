@@ -10,20 +10,6 @@ defmodule SuperWorker.Supervisor.ApiHelper do
   @type api_result :: {:ok, any()} | {:error, any()}
   @type timeout_ms :: non_neg_integer() | :infinity
 
-  # List message from api.
-  @api_types [
-    :start_worker,
-    :remove_group_worker,
-    :send_to_group,
-    :send_to_group_random,
-    :add_data_to_chain,
-    :send_to_standalone_worker,
-    :count_workers_in_group,
-    :add_group,
-    :add_chain,
-    :stop_supervisor
-  ]
-
   alias SuperWorker.Supervisor.Message
 
   require Logger
@@ -57,6 +43,8 @@ defmodule SuperWorker.Supervisor.ApiHelper do
   @doc """
   Sends an API response to the caller.
 
+  No-op when the message has no sender (fire-and-forget calls).
+
   ## Examples
 
       def handle_api({from, ref}, params) do
@@ -65,7 +53,15 @@ defmodule SuperWorker.Supervisor.ApiHelper do
       end
 
   """
-  @spec api_response(Message.t(), any()) :: any()
+  @spec api_response(Message.t(), any()) :: :ok | {:error, :no_receiver}
+  def api_response(%Message{from: nil}, _result) do
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, ApiHelper, no receiver for response, skipping."
+    end)
+
+    {:error, :no_receiver}
+  end
+
   def api_response(message = %Message{}, result) do
     send(message.from, {message.id, result})
   end
@@ -134,6 +130,4 @@ defmodule SuperWorker.Supervisor.ApiHelper do
 
     message.id
   end
-
-  def valid_type?(type), do: type in @api_types
 end

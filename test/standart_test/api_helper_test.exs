@@ -58,8 +58,6 @@ defmodule SuperWorker.Supervisor.ApiHelperTest do
     end
 
     test "sends various data types" do
-      parent = self()
-
       test_data = [
         :atom,
         "string",

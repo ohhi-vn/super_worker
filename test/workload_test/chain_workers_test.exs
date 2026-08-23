@@ -48,7 +48,7 @@ defmodule SuperWorker.Supervisor.ChainWorkloadTest do
     # Verify chain was created by checking worker count
     assert {:ok, 0} = Sup.count_workers_in_chain(sup_id, chain_id)
 
-    assert true = Sup.remove_chain(sup_id, chain_id)
+    assert :ok = Sup.remove_chain(sup_id, chain_id)
 
     # After removal, count should return error
     assert {:error, _} = Sup.count_workers_in_chain(sup_id, chain_id)

@@ -3,6 +3,31 @@ defmodule SuperWorker.Supervisor.UtilsTest do
 
   alias SuperWorker.Supervisor.Utils
 
+  # Doctests are evaluated in this module's context and need the functions
+  # imported unqualified.
+  import SuperWorker.Supervisor.Utils
+
+  doctest Utils
+
+  describe "safe_call/1" do
+    test "returns ok tuples for successful calls" do
+      assert {:ok, :result} = Utils.safe_call(fn -> :result end)
+    end
+
+    test "catches raises, throws and exits" do
+      assert {:error, {:error, %RuntimeError{message: "x"}}} =
+               Utils.safe_call(fn -> raise "x" end)
+
+      assert {:error, {:throw, :thrown}} = Utils.safe_call(fn -> throw(:thrown) end)
+      assert {:error, {:exit, :halt}} = Utils.safe_call(fn -> exit(:halt) end)
+    end
+
+    test "safe_call/3 applies mfas" do
+      assert {:ok, 3} = Utils.safe_call(Enum, :sum, [[1, 2]])
+      assert {:error, {:error, :undef}} = Utils.safe_call(:nope, :nope, [])
+    end
+  end
+
   describe "get_hash_order/2" do
     test "returns value within range" do
       order = Utils.get_hash_order("test_data", 10)

@@ -10,10 +10,14 @@ defmodule SuperWorker.PropertyTest do
   use ExUnitProperties
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Worker, Group, Chain, MapQueue}
+  alias SuperWorker.Supervisor.{Worker, MapQueue}
   alias SuperWorker.CircuitBreaker
 
   import StreamData
+
+  # Property tests generate hundreds of breakers/supervisors whose warnings
+  # would flood the output.
+  @moduletag :capture_log
 
   describe "MapQueue properties" do
     property "add then get returns the same data" do
@@ -91,9 +95,7 @@ defmodule SuperWorker.PropertyTest do
     end
 
     property "worker with invalid type returns error" do
-      check all(
-              id <- term()
-            ) do
+      check all(id <- term()) do
         config = [id: id, type: :invalid_type, fun: {:fun, fn -> :ok end}]
 
         assert {:error, _} = Worker.from_config(config)
@@ -103,9 +105,7 @@ defmodule SuperWorker.PropertyTest do
 
   describe "CircuitBreaker properties" do
     property "circuit starts in closed state" do
-      check all(
-              name <- atom(:alphanumeric)
-            ) do
+      check all(name <- atom(:alphanumeric)) do
         {:ok, pid} = CircuitBreaker.start(name, failure_threshold: 3)
         {:ok, state} = CircuitBreaker.get_state(name)
 
@@ -154,9 +154,7 @@ defmodule SuperWorker.PropertyTest do
     end
 
     property "circuit rejects calls when open" do
-      check all(
-              name <- atom(:alphanumeric)
-            ) do
+      check all(name <- atom(:alphanumeric)) do
         {:ok, pid} = CircuitBreaker.start(name, failure_threshold: 1)
 
         # Cause failure to open circuit
@@ -221,9 +219,7 @@ defmodule SuperWorker.PropertyTest do
 
     @tag :property
     property "adding workers increases worker count" do
-      check all(
-              num_workers <- integer(1..10)
-            ) do
+      check all(num_workers <- integer(1..10)) do
         sup_id = :"property_test_#{System.unique_integer([:positive])}"
         {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 1)
 

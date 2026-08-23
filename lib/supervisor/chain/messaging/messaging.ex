@@ -11,7 +11,7 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   require Logger
   require SuperWorker.Log
 
-  alias SuperWorker.Supervisor.{Chain, Db, Message, ErrorHandler}
+  alias SuperWorker.Supervisor.{Chain, Db, Message, ErrorHandler, Utils}
 
   # ============================================================================
   # Public API
@@ -38,7 +38,7 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
     with {:ok, {_worker_id, pid}} <-
            Db.get_chain_order(chain.table, chain.id, order) do
       SuperWorker.Log.debug(fn ->
-        "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker: #{inspect(worker_id)}. Sending message."
+        "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker. Sending message."
       end)
 
       send(pid, {:new_data, msg})
@@ -70,36 +70,10 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
         {:ok, :no_callback}
 
       {:fun, fun} when is_function(fun, 1) ->
-        try do
-          fun.(msg.data)
-          {:ok, :callback_executed}
-        catch
-          kind, reason ->
-            ErrorHandler.log_error(__MODULE__, "Finished callback failed",
-              chain_id: chain.id,
-              kind: kind,
-              reason: reason
-            )
-
-            {:error, :callback_failed}
-        end
+        run_callback(chain, fn -> fun.(msg.data) end)
 
       {m, f, a} when is_atom(m) and is_atom(f) and is_list(a) ->
-        try do
-          apply(m, f, [msg.data | a])
-          {:ok, :callback_executed}
-        catch
-          kind, reason ->
-            ErrorHandler.log_error(__MODULE__, "Finished callback failed",
-              chain_id: chain.id,
-              module: m,
-              function: f,
-              kind: kind,
-              reason: reason
-            )
-
-            {:error, :callback_failed}
-        end
+        run_callback(chain, fn -> apply(m, f, [msg.data | a]) end)
 
       invalid_callback ->
         ErrorHandler.log_error(__MODULE__, "Invalid finished_callback definition",
@@ -108,6 +82,21 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
         )
 
         {:error, :invalid_callback}
+    end
+  end
+
+  defp run_callback(chain, callback) do
+    case Utils.safe_call(callback) do
+      {:ok, _result} ->
+        {:ok, :callback_executed}
+
+      {:error, reason} = error ->
+        ErrorHandler.log_error(__MODULE__, "Finished callback failed",
+          chain_id: chain.id,
+          reason: reason
+        )
+
+        error
     end
   end
 end

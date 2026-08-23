@@ -42,11 +42,10 @@ defmodule MyTest do
 
   """
   def task(n, sleep \\ 1) when is_integer(n) do
-    sum =
-      Enum.reduce(1..n, 0, fn i, acc ->
-        if sleep > 0, do: :timer.sleep(sleep)
-        acc + i
-      end)
+    Enum.reduce(1..n, 0, fn _i, acc ->
+      if sleep > 0, do: :timer.sleep(sleep)
+      acc + 1
+    end)
 
     {:next, n + 1}
   end

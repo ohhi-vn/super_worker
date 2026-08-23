@@ -88,6 +88,72 @@ graph LR
     Supervisor-->Worker_standalone3
 ```
 
+## Fault tolerance
+
+Workers are spread over one or more partitions. Each partition is monitored by
+the supervisor master, so failures are contained and recovered automatically:
+
+- a crashing **worker** is restarted by its partition following the restart
+  strategy of its parent (standalone / group / chain). Workers on other
+  partitions are never affected;
+- a crashing **partition** is restarted individually — the supervisor and all
+  other partitions keep serving requests;
+- every partition watches the master process, so nothing outlives the
+  supervisor itself.
+
+```mermaid
+graph LR
+    Master(Supervisor master) -->|monitor| P1(Partition 1)
+    Master -->|monitor| P2(Partition 2)
+    P1 --> W1(Worker)
+    P1 --> W2(Worker)
+    P2 --> W3(Worker)
+```
+
+## Introspection & observability
+
+Running supervisors can be discovered and inspected at runtime:
+
+```elixir
+# All supervisors started by the library on this node.
+Sup.running_supervisors()
+# [{:sup1, #PID<0.200.0>}]
+
+# Partition health + counts of groups/chains/workers.
+{:ok, info} = Sup.supervisor_info(:sup1)
+info.num_groups
+info.partitions |> Enum.all?(& &1.alive?)
+
+# List groups/chains/standalone workers with their configuration.
+{:ok, groups} = Sup.list_groups(:sup1)
+{:ok, chains} = Sup.list_chains(:sup1)
+{:ok, workers} = Sup.list_standalone_workers(:sup1)
+```
+
+## Utilities
+
+The library ships a few small focused helpers:
+
+- `SuperWorker.CircuitBreaker` — protect external calls with a closed/open/
+  half-open circuit. The protected function runs in the caller process, so
+  slow calls never block the breaker:
+
+  ```elixir
+  SuperWorker.CircuitBreaker.call(:external_api, fn ->
+    Req.get("https://api.example.com")
+  end)
+  ```
+
+- `SuperWorker.TermStorage` — thin `:persistent_term` wrapper for rarely
+  changing node-wide data.
+
+- `SuperWorker.Supervisor.Utils.safe_call/1,3` — invoke user functions without
+  letting exceptions escape:
+
+  ```elixir
+  {:error, {:error, %RuntimeError{}}} = Utils.safe_call(fn -> raise "boom" end)
+  ```
+
 ## Planned features
 
 - Multiprocess per chain node.

@@ -3,7 +3,7 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   require Logger
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Chain, Worker, Db}
+  alias SuperWorker.Supervisor.{Chain, Db}
 
   doctest Chain
 
@@ -178,5 +178,207 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
     assert_receive {:processed, result}, 5_000
     assert is_integer(result)
+  end
+
+  @tag :chain_result_protocol
+  test "worker returning plain data passes it through the chain", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    # Default branch forwards the raw return value to the next worker.
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn _data -> :first_output end, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn data -> {:next, data} end, id: 2)
+
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, :input)
+
+    # The default branch wraps plain data as {msg_id, data}; the next worker
+    # forwards it via {:next, ...}, so the callback receives the wrapped pair.
+    assert_receive {:finished, {msg_id, :first_output}}, 5_000
+    assert is_integer(msg_id)
+  end
+
+  @tag :chain_result_protocol_drop
+  test "worker returning {:drop, reason} stops forwarding", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn _data -> {:drop, :filtered} end, id: 1)
+
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, :input)
+
+    refute_receive {:finished, _}, 500
+  end
+
+  @tag :chain_result_protocol_error
+  test "worker returning {:error, reason} stops forwarding but keeps worker alive", %{
+    sup_id: sup_id
+  } do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    {:ok, _} =
+      Sup.add_chain_worker(sup_id, chain_id, fn _data -> {:error, :bad_data} end, id: 1)
+
+    {:ok, pid1} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, :input)
+    refute_receive {:finished, _}, 500
+
+    # Worker survived the error result.
+    Process.sleep(50)
+    assert {:ok, ^pid1} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+  end
+
+  @tag :chain_mfa_callback
+  test "mfa finished_callback receives final data", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        finished_callback: {__MODULE__, :capture_callback, [parent]}
+      )
+
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, [1]}, id: 1)
+
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 7)
+
+    assert_receive {:mfa_finished, _data}, 5_000
+  end
+
+  @doc "MFA callback target used by chain tests."
+  def capture_callback(data, parent) do
+    send(parent, {:mfa_finished, data})
+    :ok
+  end
+
+  @tag :chain_unknown_message
+  test "chain worker ignores unknown messages", %{sup_id: sup_id} do
+    chain_id = make_ref()
+
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, [1]}, id: 1)
+
+    {:ok, pid} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+    send(pid, :some_unexpected_message)
+    Process.sleep(50)
+
+    assert Process.alive?(pid)
+    assert {:ok, ^pid} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+  end
+
+  @tag :chain_restart_on_crash
+  test "one_for_one: killed chain worker is restarted", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        restart_strategy: :one_for_one,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    {:ok, _} =
+      Sup.add_chain_worker(sup_id, chain_id, fn data -> {:next, data} end, id: 1)
+
+    {:ok, pid} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+
+    # Ask the chain worker to terminate; the supervisor sees an abnormal
+    # exit (:restart is reserved for internal restart cycles) and restarts it.
+    send(pid, {:kill, :simulated_crash})
+
+    wait_until(fn ->
+      match?({:ok, p} when p != pid, Sup.get_pid_chain_worker(sup_id, chain_id, 1))
+    end)
+
+    # The restarted worker still processes data.
+    {:ok, _} = Sup.send_to_chain(sup_id, chain_id, :fine)
+    assert_receive {:finished, :fine}, 5_000
+  end
+
+  @tag :chain_restart_worker_missing
+  test "restart missing chain worker returns error", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id)
+
+    table = :sys.get_state(sup_id).supervisor.table
+    {:ok, chain} = Db.get_chain(table, chain_id)
+
+    assert {:error, :worker_not_found} = Chain.restart_worker(chain, :missing)
+    assert {:error, :not_found} = Chain.kill_worker(chain, :missing)
+    assert false == Chain.worker_exists?(chain, :missing)
+  end
+
+  @tag :chain_restart_all_on_crash
+  test "one_for_all: killing one chain worker restarts all of them", %{sup_id: sup_id} do
+    chain_id = make_ref()
+
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id, restart_strategy: :one_for_all)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn data -> {:next, data} end, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn data -> {:next, data} end, id: 2)
+
+    {:ok, old_pid1} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+    {:ok, old_pid2} = Sup.get_pid_chain_worker(sup_id, chain_id, 2)
+
+    send(old_pid1, {:kill, :simulated_crash})
+
+    wait_until(fn ->
+      match?({:ok, p1} when p1 != old_pid1, Sup.get_pid_chain_worker(sup_id, chain_id, 1)) and
+        match?({:ok, p2} when p2 != old_pid2, Sup.get_pid_chain_worker(sup_id, chain_id, 2))
+    end)
+  end
+
+  @tag :chain_multi_workers_per_node
+  test "adding a chain node with num_workers > 1 spawns several workers" do
+    table = Db.init(:"chain_unit_#{System.unique_integer([:positive])}")
+
+    chain = %Chain{id: :chain_multi, table: table}
+
+    worker = %SuperWorker.Supervisor.Worker{
+      id: :multi,
+      fun: {:fun, fn _data -> {:next, :ok} end},
+      type: :chain,
+      num_workers: 3
+    }
+
+    assert {:ok, chain} = Chain.add_worker(chain, worker)
+    assert {:ok, workers} = Chain.get_all_workers(chain)
+    assert length(workers) == 3
+
+    assert Enum.all?(workers, &(&1.parent == :chain_multi))
+
+    # All replicas of one node share a single order slot.
+    assert Enum.count(Enum.uniq(Enum.map(workers, & &1.order))) == 1
+    assert {:ok, {_, _}} = Db.get_chain_order(table, :chain_multi, hd(workers).order)
+  end
+
+  defp wait_until(fun, tries \\ 100) do
+    if fun.() do
+      :ok
+    else
+      if tries <= 0, do: flunk("wait_until timed out")
+      Process.sleep(20)
+      wait_until(fun, tries - 1)
+    end
   end
 end

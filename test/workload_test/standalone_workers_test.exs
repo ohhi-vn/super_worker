@@ -181,15 +181,12 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
       Sup.send_to_standalone_worker(sup_id, {ref, i}, :crash)
     end
 
-    Process.sleep(300)
-
-    # No temporary worker should be alive
-    dead_count =
+    # No temporary worker should be alive once all DOWN messages are handled.
+    wait_until(fn ->
       Enum.count(1..num_workers, fn i ->
         match?({:error, _}, Sup.get_pid_standalone_worker(sup_id, {ref, i}))
-      end)
-
-    assert dead_count == num_workers
+      end) == num_workers
+    end)
   end
 
   @tag timeout: @default_timeout
@@ -468,6 +465,16 @@ defmodule SuperWorker.Supervisor.StandaloneWorkloadTest do
       {:pong, _} -> :ok
     after
       1_000 -> :timeout
+    end
+  end
+
+  defp wait_until(fun, tries \\ 150) do
+    if fun.() do
+      :ok
+    else
+      if tries <= 0, do: flunk("wait_until timed out")
+      Process.sleep(20)
+      wait_until(fun, tries - 1)
     end
   end
 end

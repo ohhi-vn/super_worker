@@ -2,11 +2,8 @@ defmodule SuperWorker.SupervisorTest do
   use ExUnit.Case, async: false
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Group, Chain, Worker}
 
-  @group {:group1, "test group"}
   @sup_id :sup_test
-  @chain :chain1
 
   doctest Sup
 
@@ -332,11 +329,12 @@ defmodule SuperWorker.SupervisorTest do
     {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 10)
     assert true == Sup.running?(sup_id)
     Sup.stop(sup_id)
-    Process.sleep(1)
+    :ok = wait_until_stopped(sup_id, 3_000)
+
     {:ok, _} = Sup.start_with_config(link: false, id: sup_id, num_partitions: 10)
     assert true == Sup.running?(sup_id)
     Sup.stop(sup_id)
-    Process.sleep(1)
+    :ok = wait_until_stopped(sup_id, 3_000)
     assert false == Sup.running?(sup_id)
   end
 
@@ -386,5 +384,22 @@ defmodule SuperWorker.SupervisorTest do
     else
       :ok
     end
+  end
+
+  @tag :supervisor_default_start
+  test "start/0 and start_link/0 use the default supervisor name" do
+    default_id = SuperWorker.Supervisor
+
+    assert {:ok, _} = Sup.start()
+    assert true == Sup.running?(default_id)
+    :ok = Sup.stop(default_id)
+    Process.sleep(50)
+
+    assert {:ok, _} = Sup.start_link()
+    assert true == Sup.running?(default_id)
+    :ok = Sup.stop(default_id)
+    Process.sleep(50)
+
+    assert false == Sup.running?(default_id)
   end
 end

@@ -4,7 +4,7 @@ defmodule SuperWorker.MixProject do
   def project do
     [
       app: :super_worker,
-      version: "0.5.0",
+      version: "0.6.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -18,7 +18,18 @@ defmodule SuperWorker.MixProject do
       description: description(),
       package: package(),
       aliases: aliases(),
-      elixirc_paths: elixirc_paths(Mix.env())
+      elixirc_paths: elixirc_paths(Mix.env()),
+      test_coverage: [
+        # Test-support modules, compile-time macros and the application
+        # bootstrap are not meaningful coverage targets.
+        ignore_modules: [
+          SuperWorker.Log,
+          SuperWorker.Application,
+          MyTest,
+          MyGenServer,
+          FailingGenServer
+        ]
+      ]
     ]
   end
 

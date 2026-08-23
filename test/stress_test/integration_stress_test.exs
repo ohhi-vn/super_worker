@@ -96,52 +96,6 @@ defmodule SuperWorker.StressTest.IntegrationStressTest do
     end)
   end
 
-  defp send_group_pings_and_count(sup_id, group_id, worker_id, count, timeout \\ 2_000) do
-    Enum.count(1..count, fn _ ->
-      Sup.send_to_group_worker(sup_id, group_id, worker_id, {:ping, self()})
-
-      receive do
-        {:pong, _} -> true
-      after
-        timeout -> false
-      end
-    end)
-  end
-
-  # ---------------------------------------------------------------------------
-  # Helper: Parallel sender
-  # ---------------------------------------------------------------------------
-
-  defp parallel_senders(sup_id, worker_id, senders, messages_per_sender) do
-    parent = self()
-
-    for _ <- 1..senders do
-      spawn(fn ->
-        results =
-          Enum.count(1..messages_per_sender, fn _ ->
-            Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
-
-            receive do
-              {:pong, _} -> 1
-            after
-              3_000 -> 0
-            end
-          end)
-
-        send(parent, {:sender_done, results})
-      end)
-    end
-
-    # Collect results
-    Enum.reduce(1..senders, 0, fn _, acc ->
-      receive do
-        {:sender_done, count} -> acc + count
-      after
-        10_000 -> acc
-      end
-    end)
-  end
-
   # ===========================================================================
   # STANDALONE WORKER STRESS TESTS
   # ===========================================================================
@@ -204,28 +158,27 @@ defmodule SuperWorker.StressTest.IntegrationStressTest do
 
     num_senders = 50
     messages_per_sender = 20
-    expected_total = num_senders * messages_per_sender
+    _expected_total = num_senders * messages_per_sender
 
     # Start parallel senders
     parent = self()
 
-    senders =
-      for _ <- 1..num_senders do
-        spawn(fn ->
-          results =
-            Enum.count(1..messages_per_sender, fn _ ->
-              Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    for _ <- 1..num_senders do
+      spawn(fn ->
+        results =
+          Enum.count(1..messages_per_sender, fn _ ->
+            Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
 
-              receive do
-                {:pong, _} -> 1
-              after
-                3_000 -> 0
-              end
-            end)
+            receive do
+              {:pong, _} -> 1
+            after
+              3_000 -> 0
+            end
+          end)
 
-          send(parent, {:sender_done, results})
-        end)
-      end
+        send(parent, {:sender_done, results})
+      end)
+    end
 
     # Crash worker while senders are running
     Process.sleep(100)
@@ -409,15 +362,14 @@ defmodule SuperWorker.StressTest.IntegrationStressTest do
     parent = self()
 
     # Start broadcaster
-    broadcaster =
-      spawn(fn ->
-        Enum.each(1..10, fn _ ->
-          Sup.broadcast_to_group(sup_id, group_id, {:ping, self()})
-          Process.sleep(50)
-        end)
-
-        send(parent, :broadcast_done)
+    spawn(fn ->
+      Enum.each(1..10, fn _ ->
+        Sup.broadcast_to_group(sup_id, group_id, {:ping, self()})
+        Process.sleep(50)
       end)
+
+      send(parent, :broadcast_done)
+    end)
 
     # Add/remove workers while broadcasting
     for i <- 1..10 do

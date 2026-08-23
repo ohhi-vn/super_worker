@@ -80,28 +80,6 @@ defmodule SuperWorker.Supervisor.Validator do
   def get_keyword(_), do: {:error, :invalid_options}
 
   # ============================================================================
-  # Hashing and Partitioning
-  # ============================================================================
-
-  @doc """
-  Computes a hash-based order for partitioning data.
-
-  Uses Erlang's phash2 for consistent hashing across the cluster.
-
-  ## Examples
-
-      iex> order = get_hash_order("my_data", 10)
-      iex> order >= 0 and order < 10
-      true
-
-  """
-  @spec get_hash_order(term(), pos_integer()) :: non_neg_integer()
-  def get_hash_order(term, num_partitions)
-      when is_integer(num_partitions) and num_partitions > 0 do
-    :erlang.phash2(term, num_partitions)
-  end
-
-  # ============================================================================
   # Private Functions
   # ============================================================================
 

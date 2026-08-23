@@ -411,4 +411,80 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       :ok
     end
   end
+
+  describe "start_supervisor/1 child failure branches" do
+    test "reports failure when a group has invalid options", %{sup_id: sup_id} do
+      _ = sup_id
+
+      sup = :"bs_grp_fail_#{System.unique_integer([:positive])}"
+
+      config = %{
+        options: [id: sup, num_partitions: 1, link: false],
+        children: [
+          %{
+            type: :group,
+            id: :bad_group,
+            options: [restart_strategy: :all_for_one],
+            workers: []
+          }
+        ]
+      }
+
+      assert {:error, _reason} = Bootstrap.start_supervisor(config)
+    end
+
+    test "reports failure when a chain has invalid options", %{sup_id: sup_id} do
+      _ = sup_id
+      sup = :"bs_chain_fail_#{System.unique_integer([:positive])}"
+
+      config = %{
+        options: [id: sup, num_partitions: 1, link: false],
+        children: [
+          %{type: :chain, id: :bad_chain, options: [queue_length: 0], workers: []}
+        ]
+      }
+
+      assert {:error, _reason} = Bootstrap.start_supervisor(config)
+    end
+
+    test "reports failure when a group worker has invalid options", %{sup_id: sup_id} do
+      _ = sup_id
+      sup = :"bs_gw_fail_#{System.unique_integer([:positive])}"
+
+      config = %{
+        options: [id: sup, num_partitions: 1, link: false],
+        children: [
+          %{
+            type: :group,
+            id: :g1,
+            options: [restart_strategy: :one_for_one],
+            workers: [
+              %{
+                mfa: {MyTest, :loop, [1]},
+                options: [id: :w1, restart_strategy: :sometimes]
+              }
+            ]
+          }
+        ]
+      }
+
+      assert match?({:error, _}, Bootstrap.start_supervisor(config))
+    after
+      # nothing to clean up: the failed start tears the supervisor down
+      :ok
+    end
+
+    test "rejects invalid child entries", %{sup_id: sup_id} do
+      _ = sup_id
+      sup = :"bs_invalid_#{System.unique_integer([:positive])}"
+
+      config = %{
+        options: [id: sup, num_partitions: 1, link: false],
+        children: [%{type: :swarm, id: :weird}]
+      }
+
+      assert {:error, {:children_start_errors, [error: :invalid_child]}} =
+               Bootstrap.start_supervisor(config)
+    end
+  end
 end

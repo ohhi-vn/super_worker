@@ -61,6 +61,56 @@ defmodule SuperWorker.Supervisor.Utils do
   end
 
   # ============================================================================
+  # Safe Invocation
+  # ============================================================================
+
+  @doc """
+  Invokes a zero-arity function and never lets exceptions escape.
+
+  Returns `{:ok, result}` on success or `{:error, {kind, reason}}` when the
+  function throws, raises or exits. Used everywhere user supplied callbacks
+  are invoked so a faulty callback cannot take down supervisor processes.
+
+  ## Examples
+
+      iex> safe_call(fn -> 1 + 1 end)
+      {:ok, 2}
+
+      iex> match?({:error, {:error, %RuntimeError{}}}, safe_call(fn -> raise "boom" end))
+      true
+
+      iex> match?({:error, {:exit, :halt}}, safe_call(fn -> exit(:halt) end))
+      true
+
+      iex> safe_call(Enum, :sum, [[1, 2, 3]])
+      {:ok, 6}
+
+  """
+  @spec safe_call((-> term())) :: {:ok, term()} | {:error, {atom(), term()}}
+  def safe_call(fun) when is_function(fun, 0) do
+    try do
+      {:ok, fun.()}
+    catch
+      kind, reason -> {:error, {kind, reason}}
+    end
+  end
+
+  @doc """
+  Like `safe_call/1` for remote calls: `apply(module, function, arguments)`.
+
+  ## Examples
+
+      iex> safe_call(Enum, :sum, [[1, 2, 3]])
+      {:ok, 6}
+
+  """
+  @spec safe_call(module(), atom(), [term()]) :: {:ok, term()} | {:error, {atom(), term()}}
+  def safe_call(module, function, arguments)
+      when is_atom(module) and is_atom(function) and is_list(arguments) do
+    safe_call(fn -> apply(module, function, arguments) end)
+  end
+
+  # ============================================================================
   # ID Generation
   # ============================================================================
 

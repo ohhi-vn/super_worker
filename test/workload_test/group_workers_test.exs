@@ -428,7 +428,7 @@ defmodule SuperWorker.Supervisor.GroupWorkloadTest do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp do_send_receive(parent, sup_id, group_id, worker_id, 0),
+  defp do_send_receive(parent, _sup_id, _group_id, worker_id, 0),
     do: send(parent, {:result, worker_id})
 
   defp do_send_receive(parent, sup_id, group_id, worker_id, times) do

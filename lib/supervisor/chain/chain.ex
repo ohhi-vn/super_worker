@@ -31,7 +31,7 @@ defmodule SuperWorker.Supervisor.Chain do
   @type check_options_result :: {:error, atom() | {atom(), any()}} | {:ok, t()}
   @type worker_operation_result :: {:error, atom()} | {:ok, t()}
 
-  alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue, Constants}
+  alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue, Constants, Utils}
 
   alias __MODULE__
   alias Chain.Messaging
@@ -134,6 +134,11 @@ defmodule SuperWorker.Supervisor.Chain do
           {:ok, _chain} ->
             spawn_worker(chain, worker)
 
+          # The ref row may already be cleaned up by the crash handler;
+          # respawn anyway so the node comes back.
+          {:error, :not_found} ->
+            spawn_worker(chain, worker)
+
           error ->
             Logger.error(
               "SuperWorker, Chain, failed to kill worker #{inspect(worker_id)} before restart: #{inspect(error)}"
@@ -154,11 +159,17 @@ defmodule SuperWorker.Supervisor.Chain do
 
     results =
       Enum.map(workers, fn worker ->
-        Logger.info(
-          "SuperWorker, Chain, restarting worker #{inspect(worker.id)}, pid: #{inspect(worker.pid)}"
-        )
+        Logger.info("SuperWorker, Chain, restarting worker #{inspect(worker.id)}")
 
-        Process.exit(worker.pid, :kill)
+        case Db.get_worker_by_id(chain.table, worker.id, {:chain, chain.id}) do
+          {:ok, {ref, pid}} ->
+            Process.exit(pid, :kill)
+            Db.delete_worker(chain.table, ref)
+
+          {:error, _reason} ->
+            :ok
+        end
+
         do_spawn_worker(chain, worker)
       end)
 
@@ -266,20 +277,22 @@ defmodule SuperWorker.Supervisor.Chain do
         loop_chain(table, queue, worker)
 
       {:new_data, msg = %Message{}} ->
-        # TO-DO: catch throw, error from outside.
         result =
-          try do
-            case worker.fun do
-              {:fun, f} ->
-                f.(msg.data)
+          case Utils.safe_call(fn ->
+                 case worker.fun do
+                   {:fun, f} ->
+                     f.(msg.data)
 
-              {m, f, a} ->
-                apply(m, f, [msg.data | a])
-            end
-          catch
-            e ->
+                   {m, f, a} ->
+                     apply(m, f, [msg.data | a])
+                 end
+               end) do
+            {:ok, result} ->
+              result
+
+            {:error, {kind, reason}} ->
               Logger.error(
-                "SuperWorker, Chain, fail to call function in chain, worker_id: #{inspect(id)}, reason: #{inspect(e)}"
+                "SuperWorker, Chain, fail to call function in chain, worker_id: #{inspect(id)}, #{kind}: #{inspect(reason)}"
               )
 
               {:error, :fail_to_execute_func}

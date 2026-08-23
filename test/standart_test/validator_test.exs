@@ -53,7 +53,7 @@ defmodule SuperWorker.Supervisor.ValidatorTest do
     end
   end
 
-  describe "check_type/3" do
+  describe "check_type edge cases" do
     test "validates correct type" do
       opts = %{count: 5}
       assert {:ok, ^opts} = Validator.check_type(opts, :count, &is_integer/1)
@@ -99,6 +99,33 @@ defmodule SuperWorker.Supervisor.ValidatorTest do
     test "returns error for unknown keyword" do
       assert {:error, :invalid_options} = Validator.get_keyword(:unknown)
       assert {:error, :invalid_options} = Validator.get_keyword(:other)
+    end
+  end
+
+  describe "check_type/3" do
+    test "returns error when the key is missing" do
+      assert {:error, :invalid_type} = Validator.check_type(%{}, :nope, &is_integer/1)
+    end
+
+    test "passes the value through on success" do
+      opts = %{count: 5}
+      assert {:ok, ^opts} = Validator.check_type(opts, :count, &is_integer/1)
+    end
+  end
+
+  describe "validate_and_convert/1" do
+    test "rejects a non-atom id" do
+      assert {:error, :invalid_type} = Validator.validate_and_convert(id: "not_atom")
+    end
+
+    test "rejects non-positive partitions" do
+      assert {:error, :invalid_type} =
+               Validator.validate_and_convert(id: :v, num_partitions: 0)
+    end
+
+    test "rejects invalid link values" do
+      assert {:error, :invalid_type} =
+               Validator.validate_and_convert(id: :v, link: "yes")
     end
   end
 end

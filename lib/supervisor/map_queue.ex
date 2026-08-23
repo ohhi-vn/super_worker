@@ -77,9 +77,9 @@ defmodule SuperWorker.Supervisor.MapQueue do
 
   ## Examples
 
-      iex> queue = MapQueue.new(:test)
-      iex> {:ok, queue, 1} = MapQueue.add(queue, "message")
-      iex> {:ok, queue, 2} = MapQueue.add(queue, "another")
+      iex> queue0 = MapQueue.new(:test)
+      iex> {:ok, queue1, 1} = MapQueue.add(queue0, "message")
+      iex> {:ok, _queue2, 2} = MapQueue.add(queue1, "another")
 
   """
   @spec add(t(), message()) :: {:ok, t(), msg_id()} | {:error, :queue_full}
