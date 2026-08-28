@@ -9,8 +9,6 @@ defmodule SuperWorker.Supervisor.Utils do
   - Process information helpers
   """
 
-  require Logger
-
   # ============================================================================
   # Hashing and Partitioning
   # ============================================================================
@@ -88,11 +86,9 @@ defmodule SuperWorker.Supervisor.Utils do
   """
   @spec safe_call((-> term())) :: {:ok, term()} | {:error, {atom(), term()}}
   def safe_call(fun) when is_function(fun, 0) do
-    try do
-      {:ok, fun.()}
-    catch
-      kind, reason -> {:error, {kind, reason}}
-    end
+    {:ok, fun.()}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   @doc """

@@ -30,7 +30,8 @@ defmodule SuperWorker.Supervisor.Group do
   @type worker_operation_result :: {:ok, t()} | {:error, atom()}
 
   alias __MODULE__
-  alias SuperWorker.Supervisor.{Worker, Db, Validator, Constants}
+  alias SuperWorker.Supervisor.{Constants, Db, Validator, Worker}
+  alias SuperWorker.Supervisor.Utils
 
   require Logger
   require SuperWorker.Log
@@ -40,7 +41,6 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Check, validate and convert key-value pairs to struct.
   """
-  @spec check_options([keyword]) :: {:ok, %Group{}} | {:error, atom | {atom, any}}
   @spec check_options([atom() | keyword()]) :: check_options_result()
   def check_options(options) do
     with {:ok, options} <- Validator.normalize_options(options, @group_params),
@@ -84,7 +84,6 @@ defmodule SuperWorker.Supervisor.Group do
     Db.get_worker_infos_by_parent(group.table, {:group, group.id})
   end
 
-  @spec count_workers(%Group{}) :: non_neg_integer()
   @spec count_workers(t()) :: non_neg_integer()
   def count_workers(%Group{} = group) do
     {:ok, workers} = get_all_workers(group)
@@ -115,10 +114,10 @@ defmodule SuperWorker.Supervisor.Group do
         worker = %Worker{worker | parent: group.id}
 
         worker =
-          if !worker.id do
-            %Worker{worker | id: SuperWorker.Supervisor.Utils.random_id()}
-          else
-            worker
+          case worker.id do
+            nil -> %Worker{worker | id: Utils.random_id()}
+            false -> %Worker{worker | id: Utils.random_id()}
+            _ -> worker
           end
 
         Db.put_worker_info(group.table, worker)
@@ -158,13 +157,6 @@ defmodule SuperWorker.Supervisor.Group do
         end)
 
         spawn_worker(group, worker)
-
-      {:error, reason} ->
-        Logger.error(
-          "SuperWorker, Group, failed to kill worker #{inspect(worker.id)} before restart, reason: #{inspect(reason)}"
-        )
-
-        {:error, :kill_failed}
     end
   end
 
@@ -210,18 +202,19 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   def kill_worker(group = %Group{}, worker = %Worker{}, reason) do
-    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.table, worker.id, {:group, group.id}) do
-      if Process.alive?(pid) do
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Group, group: #{inspect(group.id)}, kill_worker: #{inspect(worker)}, reason: #{inspect(reason)}"
-        end)
+    case Db.get_worker_by_id(group.table, worker.id, {:group, group.id}) do
+      {:ok, {_, pid}} ->
+        if Process.alive?(pid) do
+          SuperWorker.Log.debug(fn ->
+            "SuperWorker, Group, group: #{inspect(group.id)}, kill_worker: #{inspect(worker)}, reason: #{inspect(reason)}"
+          end)
 
-        Process.exit(pid, reason)
-        {:ok, :killed}
-      else
-        {:error, :not_alive}
-      end
-    else
+          Process.exit(pid, reason)
+          {:ok, :killed}
+        else
+          {:error, :not_alive}
+        end
+
       _ ->
         {:error, :not_found}
     end
@@ -297,7 +290,7 @@ defmodule SuperWorker.Supervisor.Group do
     end
   end
 
-  @spec broadcast(%Group{}, any()) :: :ok | {:error, list()}
+  @spec broadcast(t(), any()) :: :ok | {:error, list()}
   def broadcast(group = %Group{}, message) do
     case Db.get_worker_pids_by_parent(group.table, {:group, group.id}) do
       {:ok, worker_pids} ->
@@ -323,16 +316,15 @@ defmodule SuperWorker.Supervisor.Group do
         else
           {:error, errors}
         end
-
-      error ->
-        error
     end
   end
 
   def send_message(group = %Group{}, worker_id, message) do
-    with {:ok, {_, pid}} <- Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
-      send(pid, message)
-    else
+    case Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
+      {:ok, {_, pid}} ->
+        send(pid, message)
+        :ok
+
       error ->
         Logger.error(
           "SuperWorker, Group, send to worker #{inspect(worker_id)} failed, #{inspect(error)}"
@@ -343,6 +335,18 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   ## Private functions
+
+  defp register_worker_name(nil), do: :ok
+
+  defp register_worker_name(name) do
+    case Process.whereis(name) do
+      nil ->
+        Process.register(self(), name)
+
+      _pid ->
+        Logger.warning("SuperWorker, Group, worker name already registered: #{inspect(name)}")
+    end
+  end
 
   defp do_spawn_worker(group, %Worker{} = worker) do
     {pid, ref} =
@@ -364,15 +368,7 @@ defmodule SuperWorker.Supervisor.Group do
             Process.put({:supervisor, :group_id}, group.id)
             Process.put({:supervisor, :worker_id}, worker.id)
 
-            if worker.name do
-              if Process.whereis(worker.name) do
-                Logger.warning(
-                  "SuperWorker, Group, worker name already registered: #{inspect(worker.name)}"
-                )
-              else
-                Process.register(self(), worker.name)
-              end
-            end
+            register_worker_name(worker.name)
 
             SuperWorker.Log.debug(fn ->
               "SuperWorker, Group, worker #{inspect(worker.id)} started, fun: #{inspect(worker.fun)}"

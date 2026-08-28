@@ -179,35 +179,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
 
   # Parses group configurations
   defp parse_groups(config) do
-    groups = Keyword.get(config, :groups, [])
-
-    if is_list(groups) do
-      parsed_groups =
-        groups
-        |> Enum.with_index()
-        |> Enum.map(fn {group_config, index} ->
-          parse_group(group_config, index)
-        end)
-
-      {success, errors} =
-        Enum.reduce(parsed_groups, {[], []}, fn result, {ok, errors} ->
-          case result do
-            {:ok, data} -> {[data | ok], errors}
-            {:error, _} -> {ok, [result | errors]}
-          end
-        end)
-
-      success = Enum.reverse(success)
-      errors = Enum.reverse(errors)
-
-      if Enum.empty?(errors) do
-        {:ok, success}
-      else
-        {:error, {:group_parsing_errors, errors}}
-      end
-    else
-      {:error, {:invalid_groups, "Groups must be a list"}}
-    end
+    parse_collection(config, :groups, :group, &parse_group/2)
   end
 
   defp parse_group({id, group_config}, index) when is_list(group_config) do
@@ -274,36 +246,38 @@ defmodule SuperWorker.ConfigLoader.Parser do
 
   # Parses chain configurations
   defp parse_chains(config) do
-    chains = Keyword.get(config, :chains, [])
+    parse_collection(config, :chains, :chain, &parse_chain/2)
+  end
 
-    if is_list(chains) do
-      parsed_chains =
-        chains
+  defp parse_collection(config, key, type, parser) do
+    entries = Keyword.get(config, key, [])
+
+    if is_list(entries) do
+      {success, errors} =
+        entries
         |> Enum.with_index()
-        |> Enum.map(fn {chain_config, index} ->
-          parse_chain(chain_config, index)
+        |> Enum.map(fn {entry, index} -> parser.(entry, index) end)
+        |> Enum.reduce({[], []}, fn
+          {:ok, data}, {success, errors} -> {[data | success], errors}
+          {:error, _} = error, {success, errors} -> {success, [error | errors]}
         end)
 
-      {results, errors} =
-        Enum.reduce(parsed_chains, {[], []}, fn result, {ok, errors} ->
-          case result do
-            {:ok, data} -> {[data | ok], errors}
-            {:error, _} -> {ok, [result | errors]}
-          end
-        end)
-
-      results = Enum.reverse(results)
-      errors = Enum.reverse(errors)
-
-      if Enum.empty?(errors) do
-        {:ok, results}
-      else
-        {:error, {:chain_parsing_errors, errors}}
+      case {Enum.reverse(success), Enum.reverse(errors)} do
+        {success, []} -> {:ok, success}
+        {_success, errors} -> {:error, {parsing_error(type), errors}}
       end
     else
-      {:error, {:invalid_chains, "Chains must be a list"}}
+      {:error, {invalid_collection(key), "#{key} must be a list"}}
     end
   end
+
+  defp parsing_error(:group), do: :group_parsing_errors
+  defp parsing_error(:chain), do: :chain_parsing_errors
+  defp parsing_error(:worker), do: :worker_parsing_errors
+
+  defp invalid_collection(:groups), do: :invalid_groups
+  defp invalid_collection(:chains), do: :invalid_chains
+  defp invalid_collection(:workers), do: :invalid_workers
 
   defp parse_chain({id, chain_config}, _index) when is_list(chain_config) do
     with {:ok, options} <- extract_chain_options(chain_config),
@@ -364,26 +338,7 @@ defmodule SuperWorker.ConfigLoader.Parser do
 
   # Parses standalone worker configurations
   defp parse_standalone_workers(config) do
-    workers = Keyword.get(config, :workers, [])
-
-    if is_list(workers) do
-      parsed_workers =
-        workers
-        |> Enum.with_index()
-        |> Enum.map(fn {worker_config, index} ->
-          parse_standalone_worker(worker_config, index)
-        end)
-
-      errors = Enum.filter(parsed_workers, fn result -> match?({:error, _}, result) end)
-
-      if Enum.empty?(errors) do
-        {:ok, Enum.map(parsed_workers, fn {:ok, worker} -> worker end)}
-      else
-        {:error, {:worker_parsing_errors, errors}}
-      end
-    else
-      {:error, {:invalid_workers, "Workers must be a list"}}
-    end
+    parse_collection(config, :workers, :worker, &parse_standalone_worker/2)
   end
 
   defp parse_standalone_worker(worker_config, index) when is_list(worker_config) do
@@ -489,47 +444,59 @@ defmodule SuperWorker.ConfigLoader.Parser do
 
   # Extracts MFA or function from worker config
   defp extract_mfa(config, index) do
-    cond do
-      Keyword.has_key?(config, :mfa) ->
-        case Keyword.get(config, :mfa) do
-          {m, f, a} when is_atom(m) and is_atom(f) and is_list(a) ->
-            {:ok, {m, f, a}}
+    case Keyword.fetch(config, :mfa) do
+      {:ok, value} -> validate_mfa(value, index)
+      :error -> extract_fun_or_task(config, index)
+    end
+  end
 
-          invalid ->
-            {:error,
-             {:invalid_mfa,
-              "Worker at index #{index} has invalid MFA: #{inspect(invalid)}. Expected {Module, :function, [args]}"}}
-        end
+  defp extract_fun_or_task(config, index) do
+    case Keyword.fetch(config, :fun) do
+      {:ok, value} -> validate_fun(value, index)
+      :error -> extract_task(config, index)
+    end
+  end
 
-      Keyword.has_key?(config, :fun) ->
-        case Keyword.get(config, :fun) do
-          fun when is_function(fun, 0) ->
-            {:ok, {:fun, fun}}
+  defp extract_task(config, index) do
+    case Keyword.fetch(config, :task) do
+      {:ok, value} ->
+        validate_task(value, index)
 
-          invalid ->
-            {:error,
-             {:invalid_fun,
-              "Worker at index #{index} has invalid function: #{inspect(invalid)}. Expected 0-arity function"}}
-        end
-
-      Keyword.has_key?(config, :task) ->
-        case Keyword.get(config, :task) do
-          {m, f, a} when is_atom(m) and is_atom(f) and is_list(a) ->
-            {:ok, {m, f, a}}
-
-          invalid ->
-            {:error,
-             {:invalid_task,
-              "Worker at index #{index} has invalid task: #{inspect(invalid)}. Expected {Module, :function, [args]}"}}
-        end
-
-      true ->
+      :error ->
         Logger.error(
           "Worker at index #{index} must have :mfa or :fun, config: #{inspect(config)}"
         )
 
         {:error, {:missing_worker_function, "Worker at index #{index} must have :mfa or :fun"}}
     end
+  end
+
+  defp validate_mfa({module, function, args}, _index)
+       when is_atom(module) and is_atom(function) and is_list(args),
+       do: {:ok, {module, function, args}}
+
+  defp validate_mfa(value, index) do
+    {:error,
+     {:invalid_mfa,
+      "Worker at index #{index} has invalid MFA: #{inspect(value)}. Expected {Module, :function, [args]}"}}
+  end
+
+  defp validate_fun(fun, _index) when is_function(fun, 0), do: {:ok, {:fun, fun}}
+
+  defp validate_fun(value, index) do
+    {:error,
+     {:invalid_fun,
+      "Worker at index #{index} has invalid function: #{inspect(value)}. Expected 0-arity function"}}
+  end
+
+  defp validate_task({module, function, args}, _index)
+       when is_atom(module) and is_atom(function) and is_list(args),
+       do: {:ok, {module, function, args}}
+
+  defp validate_task(value, index) do
+    {:error,
+     {:invalid_task,
+      "Worker at index #{index} has invalid task: #{inspect(value)}. Expected {Module, :function, [args]}"}}
   end
 
   # Extracts worker options
@@ -563,18 +530,15 @@ defmodule SuperWorker.ConfigLoader.Parser do
     * `{:error, reason}` - If the module doesn't implement `child_spec/1`
   """
   def convert_regular_child_spec({module, keywords}) do
-    try do
-      result =
-        module.child_spec(keywords)
-        |> add_default_options()
-        |> regular_child_spec_to_spec()
+    result =
+      module.child_spec(keywords)
+      |> add_default_options()
+      |> regular_child_spec_to_spec()
 
-      {:ok, result}
-    rescue
-      UndefinedFunctionError ->
-        {:error,
-         {:invalid_child_spec, "Module #{inspect(module)} does not implement child_spec/1"}}
-    end
+    {:ok, result}
+  rescue
+    UndefinedFunctionError ->
+      {:error, {:invalid_child_spec, "Module #{inspect(module)} does not implement child_spec/1"}}
   end
 
   @doc false

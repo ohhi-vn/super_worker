@@ -219,6 +219,160 @@ defmodule SuperWorker.ConfigLoader.ParserTest do
       assert {:error, :invalid_config_format} = Parser.parse(123)
     end
 
+    test "keeps a pid link option" do
+      config = [options: [id: :sup, link: self()]]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert parsed.options[:link] == self()
+    end
+
+    test "passes through non-list report_to unchanged" do
+      config = [options: [report_to: :not_a_list]]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert parsed.options[:report_to] == :not_a_list
+    end
+
+    test "passes through other group options unchanged" do
+      config = [
+        groups: [
+          my_group: [
+            id: :my_group,
+            restart_strategy: :one_for_one,
+            max_restarts: 3,
+            workers: []
+          ]
+        ]
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert [group] = parsed.children
+      assert group.options[:id] == :my_group
+      assert group.options[:max_restarts] == 3
+    end
+
+    test "passes through other chain options unchanged" do
+      config = [
+        chains: [
+          my_chain: [
+            id: :my_chain,
+            restart_strategy: :one_for_one,
+            queue_length: 10,
+            workers: []
+          ]
+        ]
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert [chain] = parsed.children
+      assert chain.options[:id] == :my_chain
+      assert chain.options[:queue_length] == 10
+    end
+
+    test "returns error when groups is not a list" do
+      assert {:error, {:invalid_groups, "groups must be a list"}} =
+               Parser.parse(groups: :nope)
+    end
+
+    test "returns error when chains is not a list" do
+      assert {:error, {:invalid_chains, "chains must be a list"}} =
+               Parser.parse(chains: :nope)
+    end
+
+    test "returns error when workers is not a list" do
+      assert {:error, {:invalid_workers, "workers must be a list"}} =
+               Parser.parse(workers: :nope)
+    end
+
+    test "parses group worker given as {id, config} pair" do
+      config = [
+        groups: [
+          my_group: [
+            restart_strategy: :one_for_one,
+            workers: [
+              # A non-atom id avoids matching the {module, opts} child-spec form.
+              {1, [mfa: {MyTest, :loop, [1]}]}
+            ]
+          ]
+        ]
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert [group] = parsed.children
+      assert [worker] = group.workers
+      assert worker.mfa == {MyTest, :loop, [1]}
+    end
+
+    test "collects worker parsing errors alongside successful workers" do
+      config = [
+        workers: [
+          [mfa: {MyTest, :loop, [1]}],
+          123
+        ]
+      ]
+
+      assert {:error, {:worker_parsing_errors, [error: {:invalid_worker_config, _}]}} =
+               Parser.parse(config)
+    end
+
+    test "returns invalid_worker_spec for a bare value in group workers" do
+      config = [
+        groups: [
+          my_group: [
+            restart_strategy: :one_for_one,
+            workers: [
+              [mfa: {MyTest, :loop, [1]}],
+              # A bare non-list/non-atom value hits the invalid worker spec path.
+              123
+            ]
+          ]
+        ]
+      ]
+
+      assert {:error,
+              {:group_parsing_errors,
+               [
+                 error:
+                   {:invalid_group_config,
+                    {:error, {:workers_parsing_errors, [error: {:invalid_worker_spec, _}]}}}
+               ]}} = Parser.parse(config)
+    end
+
+    test "parses standalone worker with a task" do
+      config = [
+        workers: [
+          [task: {MyTest, :loop, [1]}, options: [id: :w1]]
+        ]
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert [worker] = parsed.children
+      assert worker.mfa == {MyTest, :loop, [1]}
+    end
+
+    test "returns error for invalid task" do
+      config = [
+        workers: [
+          [task: :not_an_mfa]
+        ]
+      ]
+
+      assert {:error, {:worker_parsing_errors, [error: {:invalid_task, _}]}} =
+               Parser.parse(config)
+    end
+
+    test "ignores non-list worker options" do
+      config = [
+        workers: [
+          [mfa: {MyTest, :loop, [1]}, options: :bad]
+        ]
+      ]
+
+      assert {:ok, parsed} = Parser.parse(config)
+      assert [worker] = parsed.children
+      assert worker.options == []
+    end
+
     test "returns error for group without id" do
       config = [
         groups: [

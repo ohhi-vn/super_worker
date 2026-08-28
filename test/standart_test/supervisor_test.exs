@@ -177,7 +177,6 @@ defmodule SuperWorker.SupervisorTest do
           :ok
 
         msg ->
-          IO.inspect(msg)
           msg
       after
         1_000 -> :timed_out
@@ -213,7 +212,6 @@ defmodule SuperWorker.SupervisorTest do
           :ok
 
         msg ->
-          IO.inspect(msg)
           msg
       after
         1_000 -> :timed_out
@@ -362,7 +360,7 @@ defmodule SuperWorker.SupervisorTest do
   end
 
   # Continues receive message from sender.
-  def loop_receiver() do
+  def loop_receiver do
     receive do
       {:ping, sender} ->
         IO.puts("Ping from #{inspect(sender)}")

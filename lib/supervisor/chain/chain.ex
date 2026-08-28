@@ -31,7 +31,7 @@ defmodule SuperWorker.Supervisor.Chain do
   @type check_options_result :: {:error, atom() | {atom(), any()}} | {:ok, t()}
   @type worker_operation_result :: {:error, atom()} | {:ok, t()}
 
-  alias SuperWorker.Supervisor.{Worker, Db, Validator, Message, MapQueue, Constants, Utils}
+  alias SuperWorker.Supervisor.{Constants, Db, MapQueue, Message, Utils, Validator, Worker}
 
   alias __MODULE__
   alias Chain.Messaging
@@ -45,9 +45,8 @@ defmodule SuperWorker.Supervisor.Chain do
   @spec check_options([atom() | keyword()]) :: check_options_result()
   def check_options(options) do
     with {:ok, options} <- Validator.normalize_options(options, Constants.Types.chain_params()),
-         {:ok, chain} <- to_struct(options),
-         {:ok, chain} <- validate_options(chain) do
-      {:ok, chain}
+         {:ok, chain} <- to_struct(options) do
+      validate_options(chain)
     end
   end
 
@@ -138,13 +137,6 @@ defmodule SuperWorker.Supervisor.Chain do
           # respawn anyway so the node comes back.
           {:error, :not_found} ->
             spawn_worker(chain, worker)
-
-          error ->
-            Logger.error(
-              "SuperWorker, Chain, failed to kill worker #{inspect(worker_id)} before restart: #{inspect(error)}"
-            )
-
-            error
         end
 
       {:error, _} ->
@@ -170,7 +162,10 @@ defmodule SuperWorker.Supervisor.Chain do
             :ok
         end
 
-        do_spawn_worker(chain, worker)
+        case do_spawn_worker(chain, worker) do
+          %Worker{} -> {:ok, worker.id}
+          other -> other
+        end
       end)
 
     {failures, _successes} =
@@ -203,12 +198,12 @@ defmodule SuperWorker.Supervisor.Chain do
 
   @spec kill_worker(Chain.t(), any()) :: {:error, any} | {:ok, Chain.t()}
   def kill_worker(chain, worker_id) do
-    with {:ok, {ref, pid}} <-
-           Db.get_worker_by_id(chain.table, worker_id, {:chain, chain.id}) do
-      Process.exit(pid, :kill)
-      Db.delete_worker(chain.table, ref)
-      {:ok, chain}
-    else
+    case Db.get_worker_by_id(chain.table, worker_id, {:chain, chain.id}) do
+      {:ok, {ref, pid}} ->
+        Process.exit(pid, :kill)
+        Db.delete_worker(chain.table, ref)
+        {:ok, chain}
+
       error ->
         Logger.error(
           "SuperWorker, Chain, failed to kill worker #{inspect(worker_id)} in chain #{inspect(chain.id)}, error: #{inspect(error)}"
@@ -225,9 +220,7 @@ defmodule SuperWorker.Supervisor.Chain do
       "SuperWorker, Chain, spawning worker #{inspect(worker.id)} in chain #{inspect(chain.id)}"
     end)
 
-    worker =
-      worker
-      |> Map.put(:supervisor, chain.supervisor)
+    worker = %{worker | supervisor: chain.supervisor}
 
     Db.put_worker_info(chain.table, worker)
 
@@ -237,6 +230,15 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   defp do_spawn_worker(chain = %Chain{}, worker = %Worker{}) do
+    queue =
+      case Db.get_chain(chain.table, chain.id) do
+        {:ok, %Chain{queue_length: queue_length}} ->
+          %MapQueue{queue_length: queue_length}
+
+        _ ->
+          %MapQueue{}
+      end
+
     {pid, ref} =
       spawn_monitor(fn ->
         # Store for user can directly access to the worker.
@@ -244,7 +246,7 @@ defmodule SuperWorker.Supervisor.Chain do
         Process.put({:supervisor, :chain}, worker.parent)
         Process.put({:supervisor, :worker_id}, worker.id)
 
-        loop_chain(chain.table, %MapQueue{}, worker)
+        loop_chain(chain.table, queue, worker)
       end)
 
     Db.put_worker(chain.table, ref, worker.id, {worker.type, worker.parent}, pid)
@@ -310,39 +312,7 @@ defmodule SuperWorker.Supervisor.Chain do
 
         case result do
           {:next, new_data} ->
-            queue =
-              if MapQueue.is_full?(queue) do
-                SuperWorker.Log.debug(fn ->
-                  "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
-                end)
-
-                case loop_send(queue, worker, 5_000) do
-                  {:ok, updated_queue} ->
-                    updated_queue
-
-                  :stop ->
-                    Logger.error(
-                      "SuperWorker, Chain, worker #{inspect(id)}, queue full, exiting chain process"
-                    )
-
-                    exit(:queue_full)
-                end
-              else
-                queue
-              end
-
-            SuperWorker.Log.debug(fn ->
-              "SuperWorker, Chain, worker #{inspect(id)}, passing data to the next process, chain: #{inspect(chain_id)}"
-            end)
-
-            {:ok, queue, msg_id} = MapQueue.add(queue, new_data)
-            {:ok, chain} = Db.get_chain(table, chain_id)
-
-            msg = %Message{id: msg_id, data: new_data, type: :new_data, from: self()}
-
-            Messaging.send_next(chain, worker.order + 1, msg)
-
-            loop_chain(table, queue, worker)
+            forward_data(table, chain_id, worker, queue, new_data, :new_data)
 
           {:error, reason} ->
             Logger.error(
@@ -370,35 +340,7 @@ defmodule SuperWorker.Supervisor.Chain do
               "SuperWorker, Chain, worker #{inspect(id)}, passing data (default) to the next process, chain: #{inspect(chain_id)}"
             end)
 
-            queue =
-              if MapQueue.is_full?(queue) do
-                SuperWorker.Log.debug(fn ->
-                  "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
-                end)
-
-                case loop_send(queue, worker, 5_000) do
-                  {:ok, updated_queue} ->
-                    updated_queue
-
-                  :stop ->
-                    Logger.error(
-                      "SuperWorker, Chain, worker #{inspect(id)}, queue full, exiting chain process"
-                    )
-
-                    exit(:queue_full)
-                end
-              else
-                queue
-              end
-
-            {:ok, queue, msg_id} = MapQueue.add(queue, data)
-            {:ok, chain} = Db.get_chain(table, chain_id)
-
-            msg = Message.new(:chain_message, nil, {msg_id, data})
-
-            Messaging.send_next(chain, worker.order + 1, msg)
-
-            loop_chain(table, queue, worker)
+            forward_data(table, chain_id, worker, queue, data, :chain_message)
         end
 
       {:kill, reason} ->
@@ -428,14 +370,73 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
+  defp forward_data(table, chain_id, worker, queue, data, message_type) do
+    queue = ensure_queue_capacity(queue, worker)
+    {:ok, queue, msg_id} = MapQueue.add(queue, data)
+    {:ok, chain} = Db.get_chain(table, chain_id)
+
+    message =
+      case message_type do
+        :new_data -> %Message{id: msg_id, data: data, type: :new_data, from: self()}
+        :chain_message -> Message.new(:chain_message, nil, {msg_id, data})
+      end
+
+    result = Messaging.send_next(chain, worker.order + 1, message)
+
+    queue =
+      case result do
+        # A downstream worker owns the message and will send the
+        # {:processed, msg_id, ...} confirmation.
+        {:ok, :sent_to_one} ->
+          queue
+
+        # No downstream consumed the message (no next worker: the finished
+        # callback ran; or a send failure): nothing will ever confirm it,
+        # so drop the queue entry instead of wedging the worker.
+        _ ->
+          {:ok, queue} = MapQueue.remove(queue, msg_id)
+          queue
+      end
+
+    loop_chain(table, queue, worker)
+  end
+
+  defp ensure_queue_capacity(queue, %Worker{id: id} = worker) do
+    case MapQueue.full?(queue) do
+      false ->
+        queue
+
+      true ->
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Chain, worker #{inspect(id)}, queue is full, go to loop waiting for consume last data."
+        end)
+
+        case loop_send(queue, worker, 5_000) do
+          {:ok, updated_queue} ->
+            updated_queue
+
+          :stop ->
+            Logger.error(
+              "SuperWorker, Chain, worker #{inspect(id)}, queue full, exiting chain process"
+            )
+
+            exit(:queue_full)
+        end
+    end
+  end
+
   defp loop_send(queue, %Worker{id: id, parent: chain_id} = worker, timeout) do
+    # NOTE: there is deliberately no catch-all clause here. Non-matching
+    # messages (e.g. {:new_data, _} arriving while the queue is full) must
+    # stay in the mailbox so they are processed by loop_chain/3 once the
+    # queue drains; consuming them here would silently drop chain data.
     receive do
       {:processed, msg_id, _worker_id} ->
         SuperWorker.Log.debug(fn ->
           "SuperWorker, Chain, worker processed the data, msg_id: #{msg_id}"
         end)
 
-        {:ok, MapQueue.remove(queue, msg_id)}
+        MapQueue.remove(queue, msg_id)
 
       {:kill, reason} ->
         SuperWorker.Log.debug(fn ->
@@ -450,13 +451,6 @@ defmodule SuperWorker.Supervisor.Chain do
         end)
 
         :stop
-
-      unknown ->
-        Logger.warning(
-          "SuperWorker, Chain, worker #{id} received unknown message in loop_send: #{inspect(unknown)}"
-        )
-
-        loop_send(queue, worker, timeout)
     after
       timeout ->
         Logger.error("SuperWorker, Chain, worker #{id} timed out in loop_send after #{timeout}ms")
@@ -499,9 +493,8 @@ defmodule SuperWorker.Supervisor.Chain do
   defp validate_options(chain) do
     with {:ok, chain} <- validate_restart_strategy(chain),
          {:ok, chain} <- validate_send_type(chain),
-         {:ok, chain} <- validate_callback(chain),
-         {:ok, chain} <- validate_queue_length(chain) do
-      {:ok, chain}
+         {:ok, chain} <- validate_callback(chain) do
+      validate_queue_length(chain)
     end
   end
 

@@ -3,7 +3,6 @@
 /config/*.secret.exs
 .elixir_ls/
 
-
 # The directory Mix will write compiled artifacts to.
 /_build/
 
@@ -34,3 +33,4 @@ mix.lock
 IMPROVEMENTS.md
 REFACTORING_SUMMARY.md
 .expert
+mise.toml

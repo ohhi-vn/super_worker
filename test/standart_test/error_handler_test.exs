@@ -105,6 +105,11 @@ defmodule SuperWorker.Supervisor.ErrorHandlerTest do
 
     test "message/1 falls back to the reason when no message was set" do
       assert Exception.message(Error.exception(:worker_not_found)) == "Worker not found"
+
+      # A struct built directly (message: nil) also falls back to the reason.
+      assert Exception.message(%Error{reason: :worker_not_found}) == "Worker not found"
+      assert Exception.message(%Error{reason: :some_new_error}) == "Some new error"
+      assert Exception.message(%Error{reason: "plain text"}) == "plain text"
     end
 
     test "raise_error raises a SuperWorker.Error" do

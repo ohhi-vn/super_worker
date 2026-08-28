@@ -486,5 +486,64 @@ defmodule SuperWorker.ConfigLoader.BootstrapTest do
       assert {:error, {:children_start_errors, [error: :invalid_child]}} =
                Bootstrap.start_supervisor(config)
     end
+
+    test "starts a standalone worker with an explicit restart_strategy", %{sup_id: sup_id} do
+      _ = sup_id
+      sup = :"bs_standalone_opts_#{System.unique_integer([:positive])}"
+
+      config = %{
+        options: [id: sup, num_partitions: 1, link: false],
+        children: [
+          %{
+            type: :standalone,
+            mfa: {MyTest, :loop, [1]},
+            options: [id: :w1, restart_strategy: :transient]
+          }
+        ]
+      }
+
+      assert {:ok, _pid} = Bootstrap.start_supervisor(config)
+      assert true == Supervisor.running?(sup)
+      Supervisor.stop(sup)
+    end
+
+    test "reports failure when a standalone worker has invalid options", %{sup_id: sup_id} do
+      _ = sup_id
+      sup = :"bs_sw_fail_#{System.unique_integer([:positive])}"
+
+      config = %{
+        options: [id: sup, num_partitions: 1, link: false],
+        children: [
+          %{
+            type: :standalone,
+            mfa: {MyTest, :loop, [1]},
+            options: [id: :w1, restart_strategy: :sometimes]
+          }
+        ]
+      }
+
+      assert match?({:error, _}, Bootstrap.start_supervisor(config))
+    end
+
+    test "reports failure when a chain worker has invalid options", %{sup_id: sup_id} do
+      _ = sup_id
+      sup = :"bs_cw_fail_#{System.unique_integer([:positive])}"
+
+      config = %{
+        options: [id: sup, num_partitions: 1, link: false],
+        children: [
+          %{
+            type: :chain,
+            id: :c1,
+            options: [restart_strategy: :one_for_one],
+            workers: [
+              %{mfa: {MyTest, :loop, [1]}, options: [id: :w1, restart_strategy: :sometimes]}
+            ]
+          }
+        ]
+      }
+
+      assert match?({:error, _}, Bootstrap.start_supervisor(config))
+    end
   end
 end

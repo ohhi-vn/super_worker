@@ -9,9 +9,9 @@ defmodule SuperWorker.PropertyTest do
   use ExUnit.Case, async: false
   use ExUnitProperties
 
-  alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{Worker, MapQueue}
   alias SuperWorker.CircuitBreaker
+  alias SuperWorker.Supervisor, as: Sup
+  alias SuperWorker.Supervisor.{MapQueue, Worker}
 
   import StreamData
 
@@ -55,9 +55,9 @@ defmodule SuperWorker.PropertyTest do
           end)
 
         if num_items >= queue_length do
-          assert MapQueue.is_full?(queue) == true
+          assert MapQueue.full?(queue) == true
         else
-          assert MapQueue.is_full?(queue) == false
+          assert MapQueue.full?(queue) == false
         end
       end
     end

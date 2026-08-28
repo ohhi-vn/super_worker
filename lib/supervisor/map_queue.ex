@@ -12,7 +12,7 @@ defmodule SuperWorker.Supervisor.MapQueue do
       iex> queue = MapQueue.new(:my_queue)
       iex> {:ok, queue, msg_id} = MapQueue.add(queue, "hello")
       iex> {:ok, "hello"} = MapQueue.get(queue, msg_id)
-      iex> false = MapQueue.is_empty?(queue)
+      iex> false = MapQueue.empty?(queue)
       iex> 1 = MapQueue.size(queue)
 
   """
@@ -84,7 +84,7 @@ defmodule SuperWorker.Supervisor.MapQueue do
   """
   @spec add(t(), message()) :: {:ok, t(), msg_id()} | {:error, :queue_full}
   def add(%__MODULE__{} = queue, msg) do
-    if is_full?(queue) do
+    if full?(queue) do
       {:error, :queue_full}
     else
       msg_id = queue.last_msg_id + 1
@@ -150,11 +150,11 @@ defmodule SuperWorker.Supervisor.MapQueue do
       iex> queue = MapQueue.new(:test, queue_length: 2)
       iex> {:ok, queue, _} = MapQueue.add(queue, "msg1")
       iex> {:ok, queue, _} = MapQueue.add(queue, "msg2")
-      iex> true = MapQueue.is_full?(queue)
+      iex> true = MapQueue.full?(queue)
 
   """
-  @spec is_full?(t()) :: boolean()
-  def is_full?(%__MODULE__{msgs: msgs, queue_length: max_length}) do
+  @spec full?(t()) :: boolean()
+  def full?(%__MODULE__{msgs: msgs, queue_length: max_length}) do
     map_size(msgs) >= max_length
   end
 
@@ -166,13 +166,13 @@ defmodule SuperWorker.Supervisor.MapQueue do
   ## Examples
 
       iex> queue = MapQueue.new(:test)
-      iex> true = MapQueue.is_empty?(queue)
+      iex> true = MapQueue.empty?(queue)
       iex> {:ok, queue, _} = MapQueue.add(queue, "msg")
-      iex> false = MapQueue.is_empty?(queue)
+      iex> false = MapQueue.empty?(queue)
 
   """
-  @spec is_empty?(t()) :: boolean()
-  def is_empty?(%__MODULE__{msgs: msgs}) do
+  @spec empty?(t()) :: boolean()
+  def empty?(%__MODULE__{msgs: msgs}) do
     map_size(msgs) == 0
   end
 
@@ -219,7 +219,7 @@ defmodule SuperWorker.Supervisor.MapQueue do
       iex> {:ok, queue, _} = MapQueue.add(queue, "msg1")
       iex> {:ok, queue, _} = MapQueue.add(queue, "msg2")
       iex> queue = MapQueue.clear(queue)
-      iex> true = MapQueue.is_empty?(queue)
+      iex> true = MapQueue.empty?(queue)
 
   """
   @spec clear(t()) :: t()

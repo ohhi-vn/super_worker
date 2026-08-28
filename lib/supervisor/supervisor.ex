@@ -121,6 +121,10 @@ defmodule SuperWorker.Supervisor do
     # pid of the supervisor master process, used by partitions.
     # for internal use only.
     master_pid: nil,
+    # partition state fields, for internal use only.
+    master: nil,
+    master_monitor: nil,
+    linked_pids: nil,
     # for internal use only.
     partitions: %{},
     # storage data for supervisor, workers/groups/chains, for internal use only.
@@ -133,7 +137,11 @@ defmodule SuperWorker.Supervisor do
           link: boolean(),
           report_to: [pid() | {atom(), pid()}],
           partitions: %{pos_integer() => pid()},
-          table: nil
+          table: nil,
+          master_pid: nil | pid(),
+          master: atom() | nil,
+          master_monitor: reference() | nil,
+          linked_pids: pid() | nil
         }
 
   @default_time 3_000
@@ -142,9 +150,19 @@ defmodule SuperWorker.Supervisor do
 
   alias __MODULE__
 
-  alias SuperWorker.Supervisor.{Worker, Group, Chain}
+  alias SuperWorker.Supervisor.{
+    ApiHelper,
+    Chain,
+    Db,
+    Group,
+    Message,
+    Partition,
+    Utils,
+    Validator,
+    Worker
+  }
 
-  alias SuperWorker.Supervisor.{Utils, ApiHelper, Message, Validator, Db, Partition}
+  alias SuperWorker.ConfigLoader.Parser
   alias SuperWorker.TermStorage
 
   require Logger
@@ -167,7 +185,7 @@ defmodule SuperWorker.Supervisor do
   Work like `start_link/1` with default options.
   """
   @spec start_link() :: {:ok, pid} | {:error, any()}
-  def start_link() do
+  def start_link do
     supervisor = %Supervisor{
       id: __MODULE__,
       num_partitions: Utils.get_default_schedulers()
@@ -193,7 +211,7 @@ defmodule SuperWorker.Supervisor do
   Start supervisor run as independent process with default options.
   """
   @spec start() :: {:ok, pid} | {:error, any()}
-  def start() do
+  def start do
     supervisor = %Supervisor{
       id: __MODULE__,
       num_partitions: Utils.get_default_schedulers()
@@ -259,11 +277,9 @@ defmodule SuperWorker.Supervisor do
       "SuperWorker, Supervisor, stop supervisor: #{inspect(sup_id)},  shutdown type: #{inspect(shutdown_type)}"
     end)
 
-    with true <- running?(sup_id) do
-      GenServer.call(sup_id, {:stop_supervisor, shutdown_type}, timeout)
-    else
-      false ->
-        {:error, :not_running}
+    case running?(sup_id) do
+      true -> GenServer.call(sup_id, {:stop_supervisor, shutdown_type}, timeout)
+      false -> {:error, :not_running}
     end
   end
 
@@ -395,7 +411,7 @@ defmodule SuperWorker.Supervisor do
   Get supervisor id in current process (not support for GenServer worker).
   """
   @spec get_my_supervisor() :: atom() | nil
-  def get_my_supervisor() do
+  def get_my_supervisor do
     Process.get({:supervisor, :sup_id})
   end
 
@@ -617,7 +633,7 @@ defmodule SuperWorker.Supervisor do
   get current group id of worker.
   """
   @spec get_my_group() :: atom() | nil
-  def get_my_group() do
+  def get_my_group do
     Process.get({:supervisor, :group_id})
   end
 
@@ -904,39 +920,40 @@ defmodule SuperWorker.Supervisor do
 
   @impl true
   def init(supervisor = %Supervisor{}) do
-    with {:ok, _} <- link_process(supervisor) do
-      # Initialize the table for the supervisor
-      table = Db.init(supervisor.id)
+    case link_process(supervisor) do
+      {:ok, _} ->
+        # Initialize the table for the supervisor
+        table = Db.init(supervisor.id)
 
-      supervisor = %{supervisor | table: table}
+        supervisor = %{supervisor | table: table}
 
-      SuperWorker.Log.debug(fn ->
-        "SuperWorker, Supervisor, created table for #{inspect(supervisor.id)}"
-      end)
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Supervisor, created table for #{inspect(supervisor.id)}"
+        end)
 
-      Db.put_sup_info(supervisor.table, :master, supervisor)
+        Db.put_sup_info(supervisor.table, :master, supervisor)
 
-      {partitions, partition_refs} = Partition.init_additional_partitions(supervisor)
-      list_partition_ids = Map.keys(partitions)
+        {partitions, partition_refs} = Partition.init_additional_partitions(supervisor)
+        list_partition_ids = Map.keys(partitions)
 
-      notify_partitions(partitions)
+        notify_partitions(partitions)
 
-      # Publish this instance for running_supervisors/0.
-      TermStorage.put(registry_key(supervisor.id), %{
-        pid: self(),
-        started_at: System.system_time(:millisecond)
-      })
+        # Publish this instance for running_supervisors/0.
+        TermStorage.put(registry_key(supervisor.id), %{
+          pid: self(),
+          started_at: System.system_time(:millisecond)
+        })
 
-      {:ok,
-       %{
-         supervisor: supervisor,
-         partitions: partitions,
-         partition_refs: partition_refs,
-         partition_ids: list_partition_ids,
-         cache: %{},
-         stopping: false
-       }}
-    else
+        {:ok,
+         %{
+           supervisor: supervisor,
+           partitions: partitions,
+           partition_refs: partition_refs,
+           partition_ids: list_partition_ids,
+           cache: %{},
+           stopping: false
+         }}
+
       failed ->
         Logger.error(
           "SuperWorker, Supervisor, failed to init partitions/link process, reason: #{inspect(failed)}"
@@ -959,10 +976,11 @@ defmodule SuperWorker.Supervisor do
         pid = Map.get(state.partitions, order, {:error, :not_found_partition})
 
         # Cache the result if it's a valid pid
-        case pid do
-          {:error, _} -> :ok
-          _ -> put_in_cache(state, {:partition, order}, pid)
-        end
+        state =
+          case pid do
+            {:error, _} -> state
+            _ -> put_in_cache(state, {:partition, order}, pid)
+          end
 
         {:reply, pid, state}
 
@@ -1017,9 +1035,6 @@ defmodule SuperWorker.Supervisor do
               worker_ids: worker_ids_for(table, {:group, group.id})
             }
           end)
-
-        _ ->
-          []
       end
 
     {:reply, {:ok, groups}, state}
@@ -1040,9 +1055,6 @@ defmodule SuperWorker.Supervisor do
               worker_ids: worker_ids_for(table, {:chain, chain.id})
             }
           end)
-
-        _ ->
-          []
       end
 
     {:reply, {:ok, chains}, state}
@@ -1062,9 +1074,6 @@ defmodule SuperWorker.Supervisor do
             }
           end)
           |> Enum.sort_by(& &1.id)
-
-        _ ->
-          []
       end
 
     {:reply, {:ok, workers}, state}
@@ -1201,7 +1210,6 @@ defmodule SuperWorker.Supervisor do
   defp worker_ids_for(table, parent) do
     case Db.get_worker_infos_by_parent(table, parent) do
       {:ok, infos} -> Enum.map(infos, & &1.id)
-      _ -> []
     end
   end
 
@@ -1235,24 +1243,22 @@ defmodule SuperWorker.Supervisor do
   defp query_target_partition(supervisor_id, data) do
     # Implement logic to get target partition
 
-    try do
-      result = GenServer.call(supervisor_id, {:query_target_partition, data})
-      {:ok, result}
-    catch
-      :exit, reason ->
-        Logger.error(
-          "SuperWorker, Supervisor, failed to query target partition, reason: #{inspect(reason)}"
-        )
+    result = GenServer.call(supervisor_id, {:query_target_partition, data})
+    {:ok, result}
+  catch
+    :exit, reason ->
+      Logger.error(
+        "SuperWorker, Supervisor, failed to query target partition, reason: #{inspect(reason)}"
+      )
 
-        {:error, :failed_to_query}
+      {:error, :failed_to_query}
 
-      :error, reason ->
-        Logger.error(
-          "SuperWorker, Supervisor, failed to query target partition, reason: #{inspect(reason)}"
-        )
+    :error, reason ->
+      Logger.error(
+        "SuperWorker, Supervisor, failed to query target partition, reason: #{inspect(reason)}"
+      )
 
-        {:error, :failed_to_query}
-    end
+      {:error, :failed_to_query}
   end
 
   defp link_process(supervisor = %Supervisor{}) do
@@ -1280,7 +1286,7 @@ defmodule SuperWorker.Supervisor do
     case opts.link do
       true ->
         SuperWorker.Log.debug(fn -> "SuperWorker, Supervisor, starting supervisor with link." end)
-        opts = Map.put(opts, :linked_pids, self())
+        opts = %{opts | linked_pids: self()}
         start_link(opts)
 
       _ ->
@@ -1303,7 +1309,7 @@ defmodule SuperWorker.Supervisor do
   end
 
   defp convert_gen_server_specs(f, opts) do
-    case SuperWorker.ConfigLoader.Parser.convert_regular_child_spec(f) do
+    case Parser.convert_regular_child_spec(f) do
       {:ok, gen_sever_options = %{mfa: mfa}} ->
         default_options =
           gen_sever_options

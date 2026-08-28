@@ -156,14 +156,14 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
     test "returns false for empty queue" do
       queue = MapQueue.new(:test, queue_length: 5)
 
-      refute MapQueue.is_full?(queue)
+      refute MapQueue.full?(queue)
     end
 
     test "returns false for partially filled queue" do
       queue = MapQueue.new(:test, queue_length: 5)
       {:ok, queue, _} = MapQueue.add(queue, "msg")
 
-      refute MapQueue.is_full?(queue)
+      refute MapQueue.full?(queue)
     end
 
     test "returns true when queue reaches capacity" do
@@ -171,18 +171,18 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
       {:ok, queue, _} = MapQueue.add(queue, "msg1")
       {:ok, queue, _} = MapQueue.add(queue, "msg2")
 
-      assert MapQueue.is_full?(queue)
+      assert MapQueue.full?(queue)
     end
 
     test "returns false after removing from full queue" do
       queue = MapQueue.new(:test, queue_length: 1)
       {:ok, queue, msg_id} = MapQueue.add(queue, "msg")
 
-      assert MapQueue.is_full?(queue)
+      assert MapQueue.full?(queue)
 
       {:ok, queue} = MapQueue.remove(queue, msg_id)
 
-      refute MapQueue.is_full?(queue)
+      refute MapQueue.full?(queue)
     end
   end
 
@@ -190,14 +190,14 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
     test "returns true for new queue" do
       queue = MapQueue.new(:test)
 
-      assert MapQueue.is_empty?(queue)
+      assert MapQueue.empty?(queue)
     end
 
     test "returns false after adding message" do
       queue = MapQueue.new(:test)
       {:ok, queue, _} = MapQueue.add(queue, "msg")
 
-      refute MapQueue.is_empty?(queue)
+      refute MapQueue.empty?(queue)
     end
 
     test "returns true after removing all messages" do
@@ -208,7 +208,7 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
       {:ok, queue} = MapQueue.remove(queue, id1)
       {:ok, queue} = MapQueue.remove(queue, id2)
 
-      assert MapQueue.is_empty?(queue)
+      assert MapQueue.empty?(queue)
     end
   end
 
@@ -289,7 +289,7 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
 
       queue = MapQueue.clear(queue)
 
-      assert MapQueue.is_empty?(queue)
+      assert MapQueue.empty?(queue)
       assert MapQueue.size(queue) == 0
     end
 
@@ -444,11 +444,11 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
       {:ok, queue, _} = MapQueue.add(queue, "msg1")
       {:ok, queue, _} = MapQueue.add(queue, "msg2")
 
-      assert MapQueue.is_full?(queue)
+      assert MapQueue.full?(queue)
 
       queue = MapQueue.update_queue_length(queue, 5)
 
-      refute MapQueue.is_full?(queue)
+      refute MapQueue.full?(queue)
       assert {:ok, _queue, _} = MapQueue.add(queue, "msg3")
     end
 
@@ -463,7 +463,7 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
       # Messages still exist
       assert MapQueue.size(queue) == 3
       # But queue is now considered "full"
-      assert MapQueue.is_full?(queue)
+      assert MapQueue.full?(queue)
     end
   end
 
@@ -481,7 +481,7 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
       ids = Enum.reverse(ids)
 
       assert MapQueue.size(queue) == 50
-      refute MapQueue.is_full?(queue)
+      refute MapQueue.full?(queue)
 
       # Remove every other message
       queue =
@@ -509,7 +509,7 @@ defmodule SuperWorker.Supervisor.MapQueueTest do
           q
         end)
 
-      assert MapQueue.is_empty?(queue)
+      assert MapQueue.empty?(queue)
       # Message IDs continue incrementing
       {:ok, _queue, id} = MapQueue.add(queue, "final")
       assert id == 101

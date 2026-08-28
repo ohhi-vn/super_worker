@@ -11,7 +11,7 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   require Logger
   require SuperWorker.Log
 
-  alias SuperWorker.Supervisor.{Chain, Db, Message, ErrorHandler, Utils}
+  alias SuperWorker.Supervisor.{Chain, Db, ErrorHandler, Message, Utils}
 
   # ============================================================================
   # Public API
@@ -22,10 +22,6 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   """
   @spec new_data(Chain.t(), Message.t()) :: :ok
   def new_data(chain = %Chain{}, msg = %Message{}) do
-    SuperWorker.Log.debug(fn ->
-      "Chain.Messaging: Injecting new data into chain #{inspect(chain.id)}"
-    end)
-
     send_next(chain, 1, msg)
   end
 
@@ -35,15 +31,11 @@ defmodule SuperWorker.Supervisor.Chain.Messaging do
   @spec send_next(Chain.t(), non_neg_integer(), Message.t()) ::
           {:ok, atom()} | {:error, atom()}
   def send_next(chain = %Chain{}, order, msg = %Message{}) do
-    with {:ok, {_worker_id, pid}} <-
-           Db.get_chain_order(chain.table, chain.id, order) do
-      SuperWorker.Log.debug(fn ->
-        "Chain.Messaging: Chain #{inspect(chain.id)}, order #{order}, found next worker. Sending message."
-      end)
+    case Db.get_chain_order(chain.table, chain.id, order) do
+      {:ok, {_worker_id, pid}} ->
+        send(pid, {:new_data, msg})
+        {:ok, :sent_to_one}
 
-      send(pid, {:new_data, msg})
-      {:ok, :sent_to_one}
-    else
       {:error, :not_found} ->
         handle_finished_callback(chain, msg)
 

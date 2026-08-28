@@ -847,6 +847,45 @@ defmodule SuperWorker.Supervisor.GroupTest do
       assert {:error, :worker_not_found} = Group.kill_worker(group, :ghost, :kill)
     end
 
+    test "kill_worker by id kills the live worker", %{table: table, group: group} do
+      {:ok, _} =
+        Group.add_worker(group, %SuperWorker.Supervisor.Worker{
+          id: :killable,
+          fun: {:fun, fn -> Process.sleep(:infinity) end},
+          type: :group,
+          restart_strategy: :temporary
+        })
+
+      Process.sleep(50)
+      {:ok, {_ref, pid}} = Db.get_worker_by_id(table, :killable, {:group, group.id})
+
+      # do_spawn_worker linked the worker to this (test) process because we
+      # called add_worker directly; unlink so the :kill does not kill us.
+      Process.unlink(pid)
+
+      assert {:ok, :killed} = Group.kill_worker(group, :killable, :kill)
+      Process.sleep(20)
+      assert false == Process.alive?(pid)
+    end
+
+    test "remove_worker reports an error for a dead worker row", %{table: table, group: group} do
+      dead_pid = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      worker = %SuperWorker.Supervisor.Worker{
+        id: :dead_row,
+        fun: {:fun, fn -> :ok end},
+        type: :group,
+        parent: group.id,
+        restart_strategy: :temporary
+      }
+
+      Db.put_worker_info(table, worker)
+      Db.put_worker(table, make_ref(), :dead_row, {:group, group.id}, dead_pid)
+
+      assert {:error, :not_alive} = Group.remove_worker(group, :dead_row)
+    end
+
     test "remove_worker cleans up rows of a live worker", %{table: table, group: group} do
       worker_fun = fn -> MyTest.loop(:removable) end
 
@@ -897,11 +936,76 @@ defmodule SuperWorker.Supervisor.GroupTest do
       assert true == Sup.group_exists?(@sup_id, group_id)
     end
 
+    test "adding a worker whose start exits reports spawn_failed" do
+      group_id = :"g_exit_gs_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      assert {:error, :spawn_failed} =
+               Sup.add_group_worker(@sup_id, group_id, {MyTest, :boom}, [])
+
+      assert true == Sup.group_exists?(@sup_id, group_id)
+    end
+
+    test "adding a worker whose start raises reports spawn_failed" do
+      group_id = :"g_raise_gs_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      assert {:error, :spawn_failed} =
+               Sup.add_group_worker(@sup_id, group_id, {MyTest, [fail_with: :raise]}, [])
+
+      assert true == Sup.group_exists?(@sup_id, group_id)
+    end
+
+    test "a worker with id: false gets a random id" do
+      group_id = :"g_random_id_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: false)
+
+      assert {:ok, 1} = Sup.count_workers_in_group(@sup_id, group_id)
+    end
+
+    test "a named worker registers its name; a duplicate name logs a warning" do
+      group_id = :"g_named_#{System.unique_integer([:positive])}"
+      name = :"group_named_worker_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      {:ok, _} =
+        Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [1]}, id: 1, name: name)
+
+      wait_until(fn ->
+        case Process.whereis(name) do
+          nil -> false
+          _ -> true
+        end
+      end)
+
+      # A second worker with the same name cannot register; both stay alive.
+      {:ok, _} =
+        Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [2]}, id: 2, name: name)
+
+      Process.sleep(50)
+      assert Process.whereis(name) != nil
+    end
+
     test "adding a worker without a valid GenServer child spec returns an error" do
       group_id = :"g_no_spec_#{System.unique_integer([:positive])}"
       {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
       assert match?({:error, _}, Sup.add_group_worker(@sup_id, group_id, {String, []}, []))
+    end
+  end
+
+  defp wait_until(fun, tries \\ 50)
+
+  defp wait_until(_fun, 0), do: flunk("condition was not met")
+
+  defp wait_until(fun, tries) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(20)
+      wait_until(fun, tries - 1)
     end
   end
 end

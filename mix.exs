@@ -4,7 +4,7 @@ defmodule SuperWorker.MixProject do
   def project do
     [
       app: :super_worker,
-      version: "0.6.0",
+      version: "0.7.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -60,10 +60,13 @@ defmodule SuperWorker.MixProject do
       {:benchee, "~> 1.5", only: :dev},
       {:stream_data, "~> 1.0", only: [:test, :dev]},
 
-      # Support for AI agent
-      {:tidewave, "~> 0.5", only: :dev},
-      {:bandit, "~> 1.8", only: :dev},
-      {:usage_rules, "~> 0.1", only: [:dev]}
+      # Test dependencies
+      {:excoveralls, "~> 0.18", only: :test},
+
+      # Code quality
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -122,16 +125,10 @@ defmodule SuperWorker.MixProject do
 
   defp aliases do
     [
-      tidewave:
-        "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4115) end)'",
-      "usage_rules.update": [
-        """
-        usage_rules.sync AGENTS.md --all \
-          --inline usage_rules:all \
-          --link-to-folder deps
-        """
-        |> String.trim()
-      ]
+      # Testing & Coverage
+      coveralls: ["test --cover", "coveralls.html"],
+      # Code Quality
+      quality: ["format --check-formatted", "credo --strict", "dialyzer"]
     ]
   end
 end

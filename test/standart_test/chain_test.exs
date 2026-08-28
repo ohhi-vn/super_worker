@@ -329,6 +329,135 @@ defmodule SuperWorker.Supervisor.ChainTest do
     assert false == Chain.worker_exists?(chain, :missing)
   end
 
+  @tag :chain_restart_worker
+  test "restart existing chain worker respawns it", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    {:ok, _} = Sup.add_chain(sup_id, id: chain_id)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn data -> {:next, data} end, id: 1)
+
+    table = :sys.get_state(sup_id).supervisor.table
+    {:ok, chain} = Db.get_chain(table, chain_id)
+
+    assert true == Chain.worker_exists?(chain, 1)
+    {:ok, old_pid} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+
+    assert {:ok, _chain} = Chain.restart_worker(chain, 1)
+
+    wait_until(fn ->
+      match?({:ok, pid} when pid != old_pid, Sup.get_pid_chain_worker(sup_id, chain_id, 1))
+    end)
+  end
+
+  @tag :chain_check_options_invalid
+  test "check_options rejects invalid restart strategy, send type and callback" do
+    assert {:error, "Invalid chain restart strategy, :bogus"} =
+             Chain.check_options(id: :c1, restart_strategy: :bogus)
+
+    assert {:error, "Invalid send type, :smoke_signals"} =
+             Chain.check_options(id: :c1, send_type: :smoke_signals)
+
+    assert {:error, "Invalid callback"} =
+             Chain.check_options(id: :c1, finished_callback: :not_a_callback)
+
+    assert {:error, "Invalid queue length"} =
+             Chain.check_options(id: :c1, queue_length: 0)
+  end
+
+  @tag :chain_queue_full
+  test "a full chain queue waits for downstream confirmation before forwarding", %{
+    sup_id: sup_id
+  } do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        queue_length: 1,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    # Worker 3 is slow, so worker 2's one-slot queue fills up and it has to
+    # wait in loop_send/3 for the downstream {:processed, ...} confirmation.
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 2)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, [50]}, id: 3)
+
+    for _ <- 1..5, do: Sup.send_to_chain(sup_id, chain_id, 1)
+
+    # An unknown message while queue-blocked is logged and skipped.
+    {:ok, w2} = Sup.get_pid_chain_worker(sup_id, chain_id, 2)
+    send(w2, :garbage)
+
+    assert_receive {:finished, _}, 10_000
+    assert_receive {:finished, _}, 10_000
+    assert_receive {:finished, _}, 10_000
+    assert_receive {:finished, _}, 10_000
+    assert_receive {:finished, _}, 10_000
+  end
+
+  @tag :chain_queue_full_kill
+  test "a queue-blocked chain worker can be killed and comes back", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        queue_length: 1,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 2)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, [300]}, id: 3)
+
+    for _ <- 1..3, do: Sup.send_to_chain(sup_id, chain_id, 1)
+
+    # Worker 2 is blocked in loop_send waiting for the slow worker 3.
+    Process.sleep(50)
+    {:ok, w2} = Sup.get_pid_chain_worker(sup_id, chain_id, 2)
+    send(w2, {:kill, :killed_while_queue_blocked})
+
+    wait_until(fn ->
+      match?({:ok, pid} when pid != w2, Sup.get_pid_chain_worker(sup_id, chain_id, 2))
+    end)
+
+    # The restarted worker still processes data.
+    assert {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 1)
+    assert_receive {:finished, _}, 10_000
+  end
+
+  @tag :chain_queue_full_stop
+  test "a stop message while queue-blocked exits the worker with :queue_full", %{sup_id: sup_id} do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        queue_length: 1,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 2)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, [300]}, id: 3)
+
+    for _ <- 1..3, do: Sup.send_to_chain(sup_id, chain_id, 1)
+
+    Process.sleep(50)
+    {:ok, w2} = Sup.get_pid_chain_worker(sup_id, chain_id, 2)
+    send(w2, {:stop, chain_id})
+
+    wait_until(fn ->
+      match?({:ok, pid} when pid != w2, Sup.get_pid_chain_worker(sup_id, chain_id, 2))
+    end)
+
+    assert {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 1)
+    assert_receive {:finished, _}, 10_000
+  end
+
   @tag :chain_restart_all_on_crash
   test "one_for_all: killing one chain worker restarts all of them", %{sup_id: sup_id} do
     chain_id = make_ref()
@@ -370,6 +499,42 @@ defmodule SuperWorker.Supervisor.ChainTest do
     # All replicas of one node share a single order slot.
     assert Enum.count(Enum.uniq(Enum.map(workers, & &1.order))) == 1
     assert {:ok, {_, _}} = Db.get_chain_order(table, :chain_multi, hd(workers).order)
+  end
+
+  @tag :chain_queue_full_timeout
+  test "a chain worker stuck on a full queue gives up after the loop_send timeout", %{
+    sup_id: sup_id
+  } do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        queue_length: 1,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, []}, id: 2)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, {MyTest, :task, [6_000]}, id: 3)
+
+    for _ <- 1..2, do: Sup.send_to_chain(sup_id, chain_id, 1)
+
+    # Worker 2 blocks in loop_send (queue full) and times out after 5s,
+    # exiting with :queue_full; the supervisor respawns it.
+    {:ok, w2} = Sup.get_pid_chain_worker(sup_id, chain_id, 2)
+
+    wait_until(
+      fn ->
+        match?({:ok, pid} when pid != w2, Sup.get_pid_chain_worker(sup_id, chain_id, 2))
+      end,
+      400
+    )
+
+    assert {:ok, _} = Sup.send_to_chain(sup_id, chain_id, 1)
+    # Worker 3 may still be draining its 6s-task backlog from before the restart.
+    assert_receive {:finished, _}, 20_000
   end
 
   defp wait_until(fun, tries \\ 100) do

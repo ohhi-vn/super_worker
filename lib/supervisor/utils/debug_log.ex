@@ -15,8 +15,6 @@ defmodule SuperWorker.Log do
   which is a no-op when disabled so no message strings are built in production.
   """
 
-  require Logger
-
   @enable_debug_log Application.compile_env(:super_worker, :debug_log, false)
 
   @doc """

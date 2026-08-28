@@ -5,7 +5,7 @@ defmodule SuperWorker.Supervisor.Worker do
 
   @default_restart_strategy :transient
 
-  alias SuperWorker.Supervisor.{Validator, Constants}
+  alias SuperWorker.Supervisor.{Constants, Utils, Validator}
 
   @enforce_keys [:id, :fun]
   defstruct [
@@ -24,7 +24,9 @@ defmodule SuperWorker.Supervisor.Worker do
     # parent(group/chain) id.
     parent: nil,
     # order in chain.
-    order: nil
+    order: nil,
+    # supervisor id, populated when the worker is started.
+    supervisor: nil
   ]
 
   @type t :: %__MODULE__{
@@ -39,7 +41,8 @@ defmodule SuperWorker.Supervisor.Worker do
             | {:gen_server, {module(), atom(), [any()]}},
           num_workers: non_neg_integer(),
           parent: :standalone | {atom(), any()},
-          order: non_neg_integer() | nil
+          order: non_neg_integer() | nil,
+          supervisor: atom() | nil
         }
 
   @type from_config_result :: {:ok, t()} | {:error, term()}
@@ -69,14 +72,13 @@ defmodule SuperWorker.Supervisor.Worker do
            Validator.normalize_options(options, params),
          {:ok, options} <- default_options(options),
          {:ok, options} <- validate_restart_strategy(options),
-         {:ok, options} <- validate_options(options),
-         {:ok, options} <- map_to_struct(options) do
-      {:ok, options}
+         {:ok, options} <- validate_options(options) do
+      map_to_struct(options)
     end
   end
 
   @spec default_restart_strategy() :: atom()
-  def default_restart_strategy() do
+  def default_restart_strategy do
     @default_restart_strategy
   end
 
@@ -89,42 +91,7 @@ defmodule SuperWorker.Supervisor.Worker do
   end
 
   defp validate_options(options) do
-    errors =
-      Enum.reduce(options, [], fn
-        {:order, value}, acc ->
-          if not is_integer(value) or value < 0 do
-            [{:error, {:invalid, {:order, value}}} | acc]
-          else
-            acc
-          end
-
-        {:name, value}, acc ->
-          if is_atom(value) do
-            acc
-          else
-            [{:error, {:invalid, {:name, value}}} | acc]
-          end
-
-        {:fun, value}, acc ->
-          case value do
-            {module, function, args}
-            when is_atom(module) and is_atom(function) and is_list(args) ->
-              acc
-
-            {:fun, fun} when is_function(fun) ->
-              acc
-
-            {:gen_server, {module, function, args}}
-            when is_atom(module) and is_atom(function) and is_list(args) ->
-              acc
-
-            _ ->
-              [{:error, {:invalid, {:fun, value}}} | acc]
-          end
-
-        _other, acc ->
-          acc
-      end)
+    errors = Enum.reduce(options, [], &validate_option/2)
 
     if errors != [] do
       {:error, Enum.reverse(errors)}
@@ -133,20 +100,25 @@ defmodule SuperWorker.Supervisor.Worker do
     end
   end
 
-  defp default_options(options) do
-    options =
-      if Map.has_key?(options, :id) do
-        options
-      else
-        Map.put(options, :id, SuperWorker.Supervisor.Utils.random_id())
-      end
+  defp validate_option({:name, value}, errors) when is_atom(value), do: errors
+  defp validate_option({:name, value}, errors), do: invalid_option(:name, value, errors)
 
-    options =
-      if Map.has_key?(options, :restart_strategy) do
-        options
-      else
-        Map.put(options, :restart_strategy, default_restart_strategy())
-      end
+  defp validate_option({:fun, {module, function, args}}, errors)
+       when is_atom(module) and is_atom(function) and is_list(args), do: errors
+
+  defp validate_option({:fun, {:fun, fun}}, errors) when is_function(fun), do: errors
+
+  defp validate_option({:fun, {:gen_server, {module, function, args}}}, errors)
+       when is_atom(module) and is_atom(function) and is_list(args), do: errors
+
+  defp validate_option({:fun, value}, errors), do: invalid_option(:fun, value, errors)
+  defp validate_option(_option, errors), do: errors
+
+  defp invalid_option(key, value, errors), do: [{:error, {:invalid, {key, value}}} | errors]
+
+  defp default_options(options) do
+    options = Map.put_new(options, :id, Utils.random_id())
+    options = Map.put_new(options, :restart_strategy, default_restart_strategy())
 
     {:ok, options}
   end

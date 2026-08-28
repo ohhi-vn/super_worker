@@ -42,10 +42,11 @@ defmodule MyTest do
 
   """
   def task(n, sleep \\ 1) when is_integer(n) do
-    Enum.reduce(1..n, 0, fn _i, acc ->
-      if sleep > 0, do: :timer.sleep(sleep)
-      acc + 1
-    end)
+    _ =
+      Enum.reduce(1..n, 0, fn _i, acc ->
+        if sleep > 0, do: :timer.sleep(sleep)
+        acc + 1
+      end)
 
     {:next, n + 1}
   end
@@ -61,13 +62,14 @@ defmodule MyTest do
 
   """
   def task_crash(n, at, sleep \\ 1) do
-    Enum.reduce(1..n, 0, fn i, acc ->
-      if i == at,
-        do: raise("Task raised an error at #{i}")
+    _ =
+      Enum.reduce(1..n, 0, fn i, acc ->
+        if i == at,
+          do: raise("Task raised an error at #{i}")
 
-      if sleep > 0, do: :timer.sleep(sleep)
-      acc + i
-    end)
+        if sleep > 0, do: :timer.sleep(sleep)
+        acc + i
+      end)
 
     {:next, n + 1}
   end
@@ -94,6 +96,29 @@ defmodule MyTest do
       end
 
       :done
+    end
+  end
+
+  @doc """
+  A start_link used as a GenServer worker spec that always fails.
+
+  Used via the `{MyTest, init_arg}` child-spec form. Passing
+  `[fail_with: :raise]` raises instead of exiting, to exercise the
+  error-class spawn failure path.
+  """
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+  end
+
+  def start_link(opts \\ [])
+
+  def start_link(opts) do
+    opts = List.wrap(opts)
+
+    if Keyword.get(opts, :fail_with) == :raise do
+      raise "gen_server start raised"
+    else
+      exit(:gen_server_start_exit)
     end
   end
 

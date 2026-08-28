@@ -18,7 +18,7 @@ defmodule SuperWorker.Supervisor.Looper do
   """
 
   alias SuperWorker.Supervisor
-  alias Supervisor.{Group, Db, ApiHelper, Chain, Worker, Message, Utils}
+  alias SuperWorker.Supervisor.{ApiHelper, Chain, Db, Group, Message, Utils, Worker}
 
   require Logger
   require SuperWorker.Log
@@ -81,38 +81,55 @@ defmodule SuperWorker.Supervisor.Looper do
       "SuperWorker, Supervisor, shutting down partition: #{inspect(state.id)}"
     end)
 
+    # The partition only kills the workers it owns. `state.id` is the 1-based
+    # partition order, so compare against the hash order, not the partition pid.
+    owns? = fn key ->
+      Utils.get_hash_order(key, map_size(state.partitions)) == state.id
+    end
+
     {:ok, groups} = Db.get_all_groups(state.table)
 
     Enum.each(groups, fn group ->
-      {:ok, workers} = Group.get_all_workers(group)
+      case Db.get_worker_pids_by_parent(state.table, {:group, group.id}) do
+        {:ok, worker_pids} ->
+          Enum.each(worker_pids, fn {worker_id, pid} ->
+            # kill worker process on current partition only
+            if owns?.({group.id, worker_id}) do
+              Process.exit(pid, :kill)
+            end
+          end)
 
-      Enum.each(workers, fn worker ->
-        # kill worker process on current partition only
-        if(get_target_partition(state, {group.id, worker.id}) == state.id) do
-          Process.exit(worker.pid, :kill)
-        end
-      end)
+        _ ->
+          :ok
+      end
     end)
 
     {:ok, chains} = Db.get_all_chains(state.table)
 
     Enum.each(chains, fn chain ->
-      {:ok, workers} = Chain.get_all_workers(chain)
+      case Db.get_worker_pids_by_parent(state.table, {:chain, chain.id}) do
+        {:ok, worker_pids} ->
+          Enum.each(worker_pids, fn {worker_id, pid} ->
+            # kill worker process on current partition only
+            if owns?.({chain.id, worker_id}) do
+              Process.exit(pid, :kill)
+            end
+          end)
 
-      Enum.each(workers, fn worker ->
-        # kill worker process on current partition only
-        if(get_target_partition(state, {chain.id, worker.id}) == state.id) do
-          Process.exit(worker.pid, :kill)
-        end
-      end)
+        _ ->
+          :ok
+      end
     end)
 
     {:ok, workers} = Db.get_all_standalone_worker_infos(state.table)
 
     Enum.each(workers, fn worker ->
       # kill worker process on current partition only
-      if(get_target_partition(state, {nil, worker.id}) == state.id) do
-        Process.exit(worker.pid, :kill)
+      if owns?.({nil, worker.id}) do
+        case Db.get_worker_by_id(state.table, worker.id, {:standalone, nil}) do
+          {:ok, {_, pid}} -> Process.exit(pid, :kill)
+          _ -> :ok
+        end
       end
     end)
 
@@ -143,89 +160,22 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          message = %Message{type: :start_worker, data: worker = %Worker{}}
        ) do
-    runable =
-      case worker.type do
-        :group ->
-          cond do
-            !has_group?(state, worker.parent) ->
-              :group_not_found
-
-            has_group_worker?(state, worker.parent, worker.id) ->
-              :worker_already_exists
-
-            true ->
-              true
-          end
-
-        :chain ->
-          cond do
-            !has_chain?(state, worker.parent) ->
-              :chain_not_found
-
-            has_chain_worker?(state, worker.parent, worker.id) ->
-              :worker_already_exists
-
-            true ->
-              true
-          end
-
-        :standalone ->
-          if has_standalone_worker?(state, worker.id) do
-            :worker_already_exists
-          else
-            true
-          end
-      end
+    runable = worker_start_status(state, worker)
 
     # start child process.
     # not found group or chain, return error to the caller.
-    state =
-      if runable == true do
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{state.id} Everything is fine, starting worker: #{inspect(worker)}"
-        end)
+    case runable do
+      true ->
+        start_worker(state, message, worker)
 
-        result =
-          case worker.type do
-            :group ->
-              with {:ok, group} <- Db.get_group(state.table, worker.parent) do
-                case Group.add_worker(group, worker) do
-                  {:ok, _group} -> {:ok, worker.id}
-                  {:error, _reason} = error -> error
-                end
-              else
-                _ ->
-                  {:error, :not_found}
-              end
-
-            :chain ->
-              with {:ok, chain} <- Db.get_chain(state.table, worker.parent) do
-                case Chain.add_worker(chain, worker) do
-                  {:ok, _chain} -> {:ok, worker.id}
-                  {:error, _reason} = error -> error
-                end
-              else
-                _ ->
-                  {:error, :not_found}
-              end
-
-            :standalone ->
-              Db.put_worker_info(state.table, worker)
-              sup_start_child(state, worker)
-              {:ok, worker.id}
-          end
-
-        ApiHelper.api_response(message, result)
-
-        state
-      else
+      error ->
         Logger.error(
-          "SuperWorker, Supervisor, #{state.id} Error when starting worker: #{inspect(runable)}"
+          "SuperWorker, Supervisor, #{state.id} Error when starting worker: #{inspect(error)}"
         )
 
-        ApiHelper.api_response(message, {:error, runable})
+        ApiHelper.api_response(message, {:error, error})
         state
-      end
+    end
 
     main_loop(state)
   end
@@ -236,11 +186,12 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :broadcast_to_group, data: {group_id, data}}
        ) do
     result =
-      with {:ok, group} <- Db.get_group(state.table, group_id) do
-        Group.broadcast(group, data)
+      case Db.get_group(state.table, group_id) do
+        {:ok, group} ->
+          Group.broadcast(group, data)
 
-        {:ok, :sent}
-      else
+          {:ok, :sent}
+
         {:error, _} = error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} Not found group with id #{inspect(group_id)}"
@@ -259,10 +210,11 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          message = %Message{type: :send_to_group, data: {group_id, worker_id, data}}
        ) do
-    with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.table, worker_id, {:group, group_id}) do
-      send(pid, data)
-      ApiHelper.api_response(message, :ok)
-    else
+    case Db.get_worker_by_id(state.table, worker_id, {:group, group_id}) do
+      {:ok, {_ref, pid}} ->
+        send(pid, data)
+        ApiHelper.api_response(message, :ok)
+
       failed ->
         Logger.error(
           "SuperWorker, Supervisor, supervisor #{state.id}, send to worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: #{inspect(failed)}"
@@ -280,13 +232,14 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :restart_group_worker, data: {group_id, worker_id}}
        ) do
     result =
-      with {:ok, group} <- Db.get_group(state.table, group_id) do
-        case Group.restart_worker(group, worker_id) do
-          # Keep the historical success reply.
-          {:ok, _group} -> :ok
-          {:error, _reason} = error -> error
-        end
-      else
+      case Db.get_group(state.table, group_id) do
+        {:ok, group} ->
+          case Group.restart_worker(group, worker_id) do
+            # Keep the historical success reply.
+            {:ok, _group} -> :ok
+            {:error, _reason} = error -> error
+          end
+
         failed ->
           Logger.error(
             "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: #{inspect(failed)}"
@@ -305,15 +258,17 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          message = %Message{type: :restart_group, data: group_id}
        ) do
-    with {:ok, group} <- Db.get_group(state.table, group_id) do
-      with {:ok, workers} <- Group.get_all_workers(group) do
-        Enum.each(workers, fn worker ->
-          Group.restart_worker(group, worker)
-        end)
-      end
+    case Db.get_group(state.table, group_id) do
+      {:ok, group} ->
+        case Group.get_all_workers(group) do
+          {:ok, workers} ->
+            Enum.each(workers, &Group.restart_worker(group, &1))
+            ApiHelper.api_response(message, :ok)
 
-      ApiHelper.api_response(message, :ok)
-    else
+          failed ->
+            ApiHelper.api_response(message, failed)
+        end
+
       failed ->
         Logger.error(
           "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart group #{inspect(group_id)}, error: #{inspect(failed)}"
@@ -360,15 +315,16 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :add_data_to_chain, data: {chain_id, data}}
        ) do
     result =
-      with {:ok, chain} <- Db.get_chain(state.table, chain_id) do
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{state.id} Add data to chain: #{inspect(chain_id)}, message: #{inspect(message)}"
-        end)
+      case Db.get_chain(state.table, chain_id) do
+        {:ok, chain} ->
+          SuperWorker.Log.debug(fn ->
+            "SuperWorker, Supervisor, #{state.id} Add data to chain: #{inspect(chain_id)}, message: #{inspect(message)}"
+          end)
 
-        message = %{message | data: data}
+          message = %{message | data: data}
 
-        Chain.Messaging.new_data(chain, message)
-      else
+          Chain.Messaging.new_data(chain, message)
+
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} cannot send to chain, error: #{inspect(error)}"
@@ -391,10 +347,11 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :send_to_standalone_worker, data: {worker_id, data}}
        ) do
     result =
-      with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
-        send(pid, data)
-        :ok
-      else
+      case Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
+        {:ok, {_ref, pid}} ->
+          send(pid, data)
+          :ok
+
         error ->
           Logger.warning(
             "SuperWorker, Supervisor, not found standalone worker #{inspect(worker_id)}"
@@ -414,16 +371,19 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :remove_chain, data: chain_id}
        ) do
     result =
-      with {:ok, chain} <- Db.get_chain(state.table, chain_id) do
-        with {:ok, workers} <- Chain.get_all_workers(chain) do
-          Enum.map(workers, fn worker ->
-            Chain.remove_worker(chain, worker.id)
-          end)
+      case Db.get_chain(state.table, chain_id) do
+        {:ok, chain} ->
+          case Chain.get_all_workers(chain) do
+            {:ok, workers} ->
+              Enum.each(workers, &Chain.remove_worker(chain, &1.id))
 
-          Db.delete_chain(state.table, chain_id)
-          :ok
-        end
-      else
+              Db.delete_chain(state.table, chain_id)
+              :ok
+
+            error ->
+              error
+          end
+
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} chain #{inspect(chain_id)}, something is wrong, #{inspect(error)}"
@@ -443,9 +403,10 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :group_exists, data: group_id}
        ) do
     result =
-      with {:ok, _group} <- Db.get_group(state.table, group_id) do
-        true
-      else
+      case Db.get_group(state.table, group_id) do
+        {:ok, _group} ->
+          true
+
         _other ->
           false
       end
@@ -461,9 +422,10 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :count_workers_in_group, data: group_id}
        ) do
     result =
-      with {:ok, group} <- Db.get_group(state.table, group_id) do
-        {:ok, Group.count_workers(group)}
-      else
+      case Db.get_group(state.table, group_id) do
+        {:ok, group} ->
+          {:ok, Group.count_workers(group)}
+
         _other ->
           {:error, :group_not_found}
       end
@@ -479,16 +441,19 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :remove_group, data: group_id}
        ) do
     result =
-      with {:ok, group} <- Db.get_group(state.table, group_id) do
-        with {:ok, workers} <- Group.get_all_workers(group) do
-          Enum.map(workers, fn worker ->
-            Group.remove_worker(group, worker.id)
-          end)
+      case Db.get_group(state.table, group_id) do
+        {:ok, group} ->
+          case Group.get_all_workers(group) do
+            {:ok, workers} ->
+              Enum.each(workers, &Group.remove_worker(group, &1.id))
 
-          Db.delete_group(state.table, group_id)
-          {:ok, :deleted}
-        end
-      else
+              Db.delete_group(state.table, group_id)
+              {:ok, :deleted}
+
+            error ->
+              error
+          end
+
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} group: #{inspect(group_id)}, something is wrong, #{inspect(error)}"
@@ -508,9 +473,10 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :remove_group_worker, data: {worker_id, group_id}}
        ) do
     result =
-      with {:ok, group} <- Db.get_group(state.table, group_id) do
-        Group.remove_worker(group, worker_id)
-      else
+      case Db.get_group(state.table, group_id) do
+        {:ok, group} ->
+          Group.remove_worker(group, worker_id)
+
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} Group not found: #{inspect(group_id)}"
@@ -530,9 +496,10 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :get_worker_pid, data: {worker_id, parent}}
        ) do
     result =
-      with {:ok, {_ref, pid}} <- Db.get_worker_by_id(state.table, worker_id, parent) do
-        {:ok, pid}
-      else
+      case Db.get_worker_by_id(state.table, worker_id, parent) do
+        {:ok, {_ref, pid}} ->
+          {:ok, pid}
+
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} worker not found, worker: #{inspect(worker_id)}, group/chain/standalone: #{inspect(parent)}"
@@ -552,9 +519,10 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :count_workers_in_chain, data: chain_id}
        ) do
     result =
-      with {:ok, chain} <- Db.get_chain(state.table, chain_id) do
-        {:ok, Chain.count_workers(chain)}
-      else
+      case Db.get_chain(state.table, chain_id) do
+        {:ok, chain} ->
+          {:ok, Chain.count_workers(chain)}
+
         _other ->
           {:error, :chain_not_found}
       end
@@ -570,12 +538,13 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :remove_chain_worker, data: {worker_id, chain_id}}
        ) do
     result =
-      with {:ok, chain} <- Db.get_chain(state.table, chain_id) do
-        case Chain.remove_worker(chain, worker_id) do
-          true -> :ok
-          other -> other
-        end
-      else
+      case Db.get_chain(state.table, chain_id) do
+        {:ok, chain} ->
+          case Chain.remove_worker(chain, worker_id) do
+            true -> :ok
+            other -> other
+          end
+
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} chain not found: #{inspect(chain_id)}"
@@ -595,12 +564,13 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :remove_standalone_worker, data: worker_id}
        ) do
     result =
-      with {:ok, {ref, pid}} <- Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
-        Process.exit(pid, :kill)
-        Db.delete_worker(state.table, ref)
-        Db.delete_worker_info(state.table, worker_id, {:standalone, nil})
-        {:ok, worker_id}
-      else
+      case Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
+        {:ok, {ref, pid}} ->
+          Process.exit(pid, :kill)
+          Db.delete_worker(state.table, ref)
+          Db.delete_worker_info(state.table, worker_id, {:standalone, nil})
+          {:ok, worker_id}
+
         error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} standalone worker not found: #{inspect(worker_id)}"
@@ -676,6 +646,70 @@ defmodule SuperWorker.Supervisor.Looper do
     main_loop(state)
   end
 
+  defp start_worker(state, message, worker) do
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, #{state.id} Everything is fine, starting worker: #{inspect(worker)}"
+    end)
+
+    result =
+      case worker.type do
+        :group ->
+          case Db.get_group(state.table, worker.parent) do
+            {:ok, group} ->
+              case Group.add_worker(group, worker) do
+                {:ok, _group} -> {:ok, worker.id}
+                {:error, _reason} = error -> error
+              end
+
+            _ ->
+              {:error, :not_found}
+          end
+
+        :chain ->
+          case Db.get_chain(state.table, worker.parent) do
+            {:ok, chain} ->
+              case Chain.add_worker(chain, worker) do
+                {:ok, _chain} -> {:ok, worker.id}
+                {:error, _reason} = error -> error
+              end
+
+            _ ->
+              {:error, :not_found}
+          end
+
+        :standalone ->
+          Db.put_worker_info(state.table, worker)
+          sup_start_child(state, worker)
+          {:ok, worker.id}
+      end
+
+    ApiHelper.api_response(message, result)
+    state
+  end
+
+  defp worker_start_status(state, %Worker{type: :group, parent: parent, id: id}) do
+    case {has_group?(state, parent), has_group_worker?(state, parent, id)} do
+      {false, _} -> :group_not_found
+      {true, true} -> :worker_already_exists
+      {true, false} -> true
+    end
+  end
+
+  defp worker_start_status(state, %Worker{type: :chain, parent: parent, id: id}) do
+    case {has_chain?(state, parent), has_chain_worker?(state, parent, id)} do
+      {false, _} -> :chain_not_found
+      {true, true} -> :worker_already_exists
+      {true, false} -> true
+    end
+  end
+
+  defp worker_start_status(state, %Worker{type: :standalone, id: id}) do
+    case has_standalone_worker?(state, id) do
+      true -> :worker_already_exists
+      false -> true
+    end
+  end
+
   defp process_worker_down(state, {:DOWN, ref, :process, _pid, :restart}) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, #{state.id} ignored for died process (restarting)"
@@ -747,9 +781,10 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          %Message{type: :restart_group_worker, data: {worker_id, group_id}}
        ) do
-    with {:ok, group} <- Db.get_group(state.table, group_id) do
-      Group.restart_worker(group, worker_id)
-    else
+    case Db.get_group(state.table, group_id) do
+      {:ok, group} ->
+        Group.restart_worker(group, worker_id)
+
       other ->
         Logger.error(
           "SuperWorker, Looper, something is wrong for start group worker, #{inspect(other)}"

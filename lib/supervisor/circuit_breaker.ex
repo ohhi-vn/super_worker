@@ -222,12 +222,10 @@ defmodule SuperWorker.CircuitBreaker do
   ## Private Functions
 
   defp execute_function(fun) do
-    try do
-      fun.()
-    catch
-      type, reason ->
-        {:error, {type, reason}}
-    end
+    fun.()
+  catch
+    type, reason ->
+      {:error, {type, reason}}
   end
 
   defp record_failure(state) do

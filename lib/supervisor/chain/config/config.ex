@@ -7,8 +7,8 @@ defmodule SuperWorker.Supervisor.Chain.Config do
   `SuperWorker.Supervisor.Chain` struct.
   """
 
-  alias SuperWorker.Supervisor.{Chain, Validator, ErrorHandler}
-  alias SuperWorker.Supervisor.Constants.{Validation, Types}
+  alias SuperWorker.Supervisor.{Chain, ErrorHandler, Validator}
+  alias SuperWorker.Supervisor.Constants.{Types, Validation}
 
   @chain_params Types.chain_params()
 

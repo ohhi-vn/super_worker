@@ -12,7 +12,6 @@ defmodule SuperWorker.Supervisor.ApiHelper do
 
   alias SuperWorker.Supervisor.Message
 
-  require Logger
   require SuperWorker.Log
 
   # ============================================================================

@@ -7,8 +7,8 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
 
   @app :super_worker
 
-  alias SuperWorker.ConfigLoader.Parser
   alias SuperWorker.ConfigLoader.Bootstrap
+  alias SuperWorker.ConfigLoader.Parser
 
   require Logger
   require SuperWorker.Log
@@ -34,7 +34,7 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
   ```
   """
   @spec load() :: :ok | {:error, list()}
-  def load() do
+  def load do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, ConfigParser, loading all supervisor configurations."
     end)
@@ -47,32 +47,37 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
       Logger.info("SuperWorker, ConfigParser, no supervisor configurations found to load.")
       :ok
     else
-      results =
-        Enum.map(configs, fn {sup_id, sup_config} ->
-          case load_and_start(sup_id, sup_config) do
-            {:ok, _pid} ->
-              SuperWorker.Log.debug(fn ->
-                "SuperWorker, ConfigParser, started supervisor #{inspect(sup_id)}"
-              end)
+      load_configs(configs)
+    end
+  end
 
-              :ok
+  defp load_configs(configs) do
+    errors =
+      configs
+      |> Enum.map(fn {sup_id, sup_config} -> load_config(sup_id, sup_config) end)
+      |> Enum.filter(&match?({:error, _}, &1))
 
-            {:error, reason} = error ->
-              Logger.error(
-                "SuperWorker, ConfigParser, failed to start supervisor #{inspect(sup_id)}: #{inspect(reason)}"
-              )
+    case errors do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
+  end
 
-              error
-          end
+  defp load_config(sup_id, sup_config) do
+    case load_and_start(sup_id, sup_config) do
+      {:ok, _pid} ->
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, ConfigParser, started supervisor #{inspect(sup_id)}"
         end)
 
-      errors = Enum.filter(results, &match?({:error, _}, &1))
-
-      if Enum.empty?(errors) do
         :ok
-      else
-        {:error, errors}
-      end
+
+      {:error, reason} = error ->
+        Logger.error(
+          "SuperWorker, ConfigParser, failed to start supervisor #{inspect(sup_id)}: #{inspect(reason)}"
+        )
+
+        error
     end
   end
 
@@ -104,15 +109,16 @@ defmodule SuperWorker.ConfigLoader.ConfigParser do
       "SuperWorker, ConfigParser, processing supervisor #{inspect(sup_id)} with config: #{inspect(sup_config)}"
     end)
 
-    with {:ok, parsed_config} <- Parser.parse(sup_config) do
-      config_with_id = put_in(parsed_config, [:options, :id], sup_id)
+    case Parser.parse(sup_config) do
+      {:ok, parsed_config} ->
+        config_with_id = put_in(parsed_config, [:options, :id], sup_id)
 
-      SuperWorker.Log.debug(fn ->
-        "SuperWorker, ConfigParser, starting supervisor #{inspect(sup_id)} with processed config: #{inspect(config_with_id)}"
-      end)
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, ConfigParser, starting supervisor #{inspect(sup_id)} with processed config: #{inspect(config_with_id)}"
+        end)
 
-      Bootstrap.start_supervisor(config_with_id)
-    else
+        Bootstrap.start_supervisor(config_with_id)
+
       {:error, reason} = error ->
         Logger.error(
           "SuperWorker, ConfigParser, failed to process configuration for supervisor #{inspect(sup_id)}: #{inspect(reason)}"

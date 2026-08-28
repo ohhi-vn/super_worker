@@ -27,9 +27,8 @@ defmodule SuperWorker.Supervisor.Validator do
   def validate_and_convert(options) do
     with {:ok, opts} <- normalize_options(options, @sup_params),
          {:ok, opts} <- default_sup_options(opts),
-         {:ok, opts} <- validate_options(opts),
-         {:ok, sup} <- to_struct(opts) do
-      {:ok, sup}
+         {:ok, opts} <- validate_options(opts) do
+      to_struct(opts)
     end
   end
 
@@ -171,7 +170,7 @@ defmodule SuperWorker.Supervisor.Validator do
          {:ok, opts} <- check_type(opts, :num_partitions, &is_integer/1),
          {:ok, opts} <- check_type(opts, :num_partitions, &(&1 > 0)),
          {:ok, opts} <- check_type(opts, :owner, &is_pid/1),
-         {:ok, opts} <- check_type(opts, :link, &is_boolean/1) do
+         {:ok, opts} <- check_type(opts, :link, &(is_boolean(&1) or is_pid(&1))) do
       {:ok, opts}
     else
       {:error, reason} = error ->

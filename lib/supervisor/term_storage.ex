@@ -21,7 +21,6 @@ defmodule SuperWorker.TermStorage do
 
   """
 
-  require Logger
   require SuperWorker.Log
 
   @me __MODULE__

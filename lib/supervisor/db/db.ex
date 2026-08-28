@@ -3,7 +3,7 @@ defmodule SuperWorker.Supervisor.Db do
 
   alias :ets, as: Ets
 
-  alias SuperWorker.Supervisor.{Worker, Group, Chain}
+  alias SuperWorker.Supervisor.{Chain, Group, Worker}
 
   require Logger
   require SuperWorker.Log
@@ -78,20 +78,23 @@ defmodule SuperWorker.Supervisor.Db do
         case alive do
           # Exactly one alive pid — also drop any extra alive duplicates to be safe.
           [{{_, ref}, _, _, pid} | extras] ->
-            if extras != [] do
-              Logger.warning(
-                "SuperWorker, Db, found duplicate alive entries for worker #{inspect(worker_id)}, cleaning up"
-              )
-
-              Enum.each(extras, fn {{_, r}, _, _, _} -> Ets.delete(table, {:ref, r}) end)
-            end
-
+            cleanup_duplicate_workers(table, worker_id, extras)
             {:ok, {ref, pid}}
 
           [] ->
             {:error, :not_found}
         end
     end
+  end
+
+  defp cleanup_duplicate_workers(_table, _worker_id, []), do: :ok
+
+  defp cleanup_duplicate_workers(table, worker_id, extras) do
+    Logger.warning(
+      "SuperWorker, Db, found duplicate alive entries for worker #{inspect(worker_id)}, cleaning up"
+    )
+
+    Enum.each(extras, fn {{_, ref}, _, _, _} -> Ets.delete(table, {:ref, ref}) end)
   end
 
   def delete_worker(table, ref) do

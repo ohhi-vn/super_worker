@@ -266,5 +266,76 @@ defmodule SuperWorker.CircuitBreakerTest do
       assert {:error, :not_found} = CircuitBreaker.get_state(name)
       assert {:error, :not_found} = CircuitBreaker.reset(name)
     end
+
+    test "returns circuit_timeout when the breaker process does not reply" do
+      name = unique_name()
+
+      # A registered process that never handles GenServer calls.
+      pid = spawn(fn -> Process.sleep(:infinity) end)
+      Process.register(pid, name)
+      on_exit(fn -> Process.exit(pid, :kill) end)
+
+      assert {:error, :circuit_timeout} = CircuitBreaker.call(name, fn -> {:ok, :x} end)
+    end
+
+    test "ignores a late success report after the circuit was re-opened" do
+      name = unique_name()
+      {:ok, pid} = CircuitBreaker.start(name, failure_threshold: 1, reset_timeout: 50)
+      on_exit(fn -> Process.exit(pid, :kill) end)
+
+      assert {:error, :boom} = CircuitBreaker.call(name, fn -> {:error, :boom} end)
+      {:ok, state} = CircuitBreaker.get_state(name)
+      assert state.state == :open
+
+      Process.sleep(60)
+
+      me = self()
+
+      blocker = fn tag, result ->
+        receive do
+          {:go, ^tag} -> result
+        end
+      end
+
+      # Two half_open probes start before either finishes; the first will fail
+      # and re-open the circuit, the second reports a late success.
+      t1 =
+        spawn(fn ->
+          send(me, {:t1, CircuitBreaker.call(name, fn -> blocker.(1, {:error, :boom}) end)})
+        end)
+
+      t2 =
+        spawn(fn ->
+          send(me, {:t2, CircuitBreaker.call(name, fn -> blocker.(2, {:ok, :done}) end)})
+        end)
+
+      wait_until(fn ->
+        match?({:ok, %{state: :half_open, in_flight: 2}}, CircuitBreaker.get_state(name))
+      end)
+
+      # The failing probe re-opens the circuit while the other is still running.
+      send(t1, {:go, 1})
+      assert_receive {:t1, {:error, :boom}}, 1_000
+
+      # The late success report from the second probe is ignored.
+      send(t2, {:go, 2})
+      assert_receive {:t2, {:ok, :done}}, 1_000
+
+      {:ok, state} = CircuitBreaker.get_state(name)
+      assert state.state == :open
+    end
+  end
+
+  defp wait_until(fun, tries \\ 50)
+
+  defp wait_until(_fun, 0), do: flunk("condition was not met")
+
+  defp wait_until(fun, tries) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(20)
+      wait_until(fun, tries - 1)
+    end
   end
 end

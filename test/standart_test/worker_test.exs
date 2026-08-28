@@ -90,6 +90,18 @@ defmodule SuperWorker.Supervisor.WorkerTest do
       assert {:ok, %{fun: nil}} = Worker.from_config(type: :standalone, id: :no_fun)
     end
 
+    test "accepts a valid :name option" do
+      {:ok, worker} =
+        Worker.from_config(
+          type: :standalone,
+          id: :w1,
+          fun: {MyTest, :loop, [1]},
+          name: :worker_1
+        )
+
+      assert worker.name == :worker_1
+    end
+
     test "rejects malformed funs" do
       for bad <- ["string", {123}, {:not_a_module, 1}] do
         assert {:error, _} = Worker.from_config(type: :standalone, id: :w1, fun: bad)

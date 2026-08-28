@@ -1,7 +1,7 @@
 defmodule SuperWorker.Supervisor.DbTest do
   use ExUnit.Case, async: true
 
-  alias SuperWorker.Supervisor.{Db, Group, Chain}
+  alias SuperWorker.Supervisor.{Chain, Db, Group}
 
   doctest Db
 
@@ -394,6 +394,45 @@ defmodule SuperWorker.Supervisor.DbTest do
 
       # The stale row is gone.
       assert [] = :ets.match_object(table, {{:ref, stale_ref}, :_, :_, :_})
+    end
+
+    test "returns not_found when all duplicate rows point to dead processes", %{table: table} do
+      dead1 = spawn(fn -> :ok end)
+      dead2 = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      :ets.insert(table, [
+        {{:ref, make_ref()}, :all_dead, {:group, :g}, dead1},
+        {{:ref, make_ref()}, :all_dead, {:group, :g}, dead2}
+      ])
+
+      assert {:error, :not_found} = Db.get_worker_by_id(table, :all_dead, {:group, :g})
+
+      # Every stale row was purged.
+      assert [] =
+               :ets.match_object(table, {{:ref, :_}, :all_dead, {:group, :g}, :_})
+    end
+
+    test "extra alive duplicate rows are cleaned up on lookup", %{table: table} do
+      dead_pid = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      extra_alive = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(extra_alive, :kill) end)
+
+      :ets.insert(table, [
+        {{:ref, make_ref()}, :dup_alive, {:group, :g}, dead_pid},
+        {{:ref, make_ref()}, :dup_alive, {:group, :g}, self()},
+        {{:ref, make_ref()}, :dup_alive, {:group, :g}, extra_alive}
+      ])
+
+      assert {:ok, {_, pid}} = Db.get_worker_by_id(table, :dup_alive, {:group, :g})
+      # One of the two alive pids wins (ETS match order is not guaranteed).
+      assert pid in [self(), extra_alive]
+
+      # Only one row remains after the duplicates are cleaned up.
+      rows = :ets.match_object(table, {{:ref, :_}, :dup_alive, {:group, :g}, :_})
+      assert length(rows) == 1
     end
   end
 end

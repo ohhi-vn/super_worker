@@ -14,7 +14,7 @@ defmodule SuperWorker.Supervisor.Partition do
   """
 
   alias SuperWorker.Supervisor
-  alias Supervisor.{Db, Looper}
+  alias SuperWorker.Supervisor.{Db, Looper}
 
   alias __MODULE__
 
@@ -46,7 +46,7 @@ defmodule SuperWorker.Supervisor.Partition do
           state
 
         pid ->
-          Map.put(state, :master_monitor, Process.monitor(pid))
+          %{state | master_monitor: Process.monitor(pid)}
       end
 
     Looper.main_loop(state)
@@ -85,13 +85,11 @@ defmodule SuperWorker.Supervisor.Partition do
   def restart_partition(supervisor = %Supervisor{}, partition_id)
       when is_integer(partition_id) and partition_id > 0 do
     supervisor =
-      supervisor
-      |> Map.put(:master, supervisor.id)
-      # self/0 is the supervisor master process here; partitions need the
-      # actual pid because the master name is not registered yet while it is
-      # still inside its own init callback.
-      |> Map.put(:master_pid, self())
-      |> Map.put(:id, partition_id)
+      %{supervisor | master: supervisor.id, master_pid: self(), id: partition_id}
+
+    # self/0 is the supervisor master process here; partitions need the
+    # actual pid because the master name is not registered yet while it is
+    # still inside its own init callback.
 
     init_partition(supervisor)
   end

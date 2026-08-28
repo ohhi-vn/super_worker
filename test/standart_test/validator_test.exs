@@ -51,6 +51,33 @@ defmodule SuperWorker.Supervisor.ValidatorTest do
     test "handles boolean flag options" do
       assert {:ok, %{enabled: true}} = Validator.normalize_options([:enabled], [:enabled])
     end
+
+    test "rejects type shorthand when :type is not allowed" do
+      assert {:error, {:invalid_options, [:group]}} =
+               Validator.normalize_options([:group], [:id])
+    end
+
+    test "rejects unknown shorthand options" do
+      assert {:error, {:invalid_options, [:nope]}} =
+               Validator.normalize_options([:nope], [:id])
+    end
+
+    test "rejects options that are neither keywords nor atoms" do
+      assert {:error, {:invalid_options, [123]}} =
+               Validator.normalize_options([123], [:id])
+    end
+
+    test "collects shorthand and keyword invalid options together" do
+      assert {:error, {:invalid_options, invalid}} =
+               Validator.normalize_options([:nope, bad: 1], [:id])
+
+      assert :nope in invalid
+      assert :bad in invalid
+    end
+
+    test "accepts pid link values" do
+      assert {:ok, _} = Validator.validate_and_convert(id: :sup_link_validator, link: self())
+    end
   end
 
   describe "check_type edge cases" do

@@ -9,28 +9,44 @@ defmodule SuperWorker.Supervisor.ErrorHandler do
 
   defexception([:reason])
 
+  @messages %{
+    not_found: "Resource not found",
+    already_exists: "Resource already exists",
+    already_running: "Process is already running",
+    not_running: "Process is not running",
+    api_timeout: "API call timed out",
+    invalid_type: "Invalid type provided",
+    worker_not_found: "Worker not found",
+    group_not_found: "Group not found",
+    chain_not_found: "Chain not found",
+    supervisor_not_found: "Supervisor not found",
+    worker_already_exists: "Worker already exists",
+    group_already_exists: "Group already exists",
+    chain_already_exists: "Chain already exists",
+    supervisor_already_exists: "Supervisor already exists"
+  }
+
   def message(%{reason: reason}) do
     case reason do
-      :not_found -> "Resource not found"
-      :already_exists -> "Resource already exists"
-      :already_running -> "Process is already running"
-      :not_running -> "Process is not running"
-      :api_timeout -> "API call timed out"
-      :invalid_type -> "Invalid type provided"
-      :worker_not_found -> "Worker not found"
-      :group_not_found -> "Group not found"
-      :chain_not_found -> "Chain not found"
-      :supervisor_not_found -> "Supervisor not found"
-      :worker_already_exists -> "Worker already exists"
-      :group_already_exists -> "Group already exists"
-      :chain_already_exists -> "Chain already exists"
-      :supervisor_already_exists -> "Supervisor already exists"
-      {:invalid_options, details} -> "Invalid options provided: #{inspect(details)}"
-      {:invalid_config, details} -> "Invalid configuration: #{inspect(details)}"
-      {:custom, details} -> "A custom error occurred: #{inspect(details)}"
-      other -> "An unknown error occurred: #{inspect(other)}"
+      {type, details} when type in [:invalid_options, :invalid_config, :custom] ->
+        format_detailed_message(type, details)
+
+      reason when is_atom(reason) ->
+        Map.get(@messages, reason, "An unknown error occurred: #{inspect(reason)}")
+
+      other ->
+        "An unknown error occurred: #{inspect(other)}"
     end
   end
+
+  defp format_detailed_message(:invalid_options, details),
+    do: "Invalid options provided: #{inspect(details)}"
+
+  defp format_detailed_message(:invalid_config, details),
+    do: "Invalid configuration: #{inspect(details)}"
+
+  defp format_detailed_message(:custom, details),
+    do: "A custom error occurred: #{inspect(details)}"
 
   @type error_reason ::
           :not_found

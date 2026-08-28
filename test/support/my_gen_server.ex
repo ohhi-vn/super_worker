@@ -1,4 +1,5 @@
 defmodule MyGenServer do
+  @moduledoc false
   use GenServer, restart: :permanent
 
   def start_link(opts \\ []) do

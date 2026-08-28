@@ -2,8 +2,8 @@ defmodule SuperWorker.Supervisor.ApiCoverageTest do
   use ExUnit.Case, async: false
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.Db
   alias SuperWorker.Supervisor.ApiHelper
+  alias SuperWorker.Supervisor.Db
 
   @moduletag :capture_log
 
