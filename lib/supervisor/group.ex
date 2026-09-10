@@ -58,7 +58,7 @@ defmodule SuperWorker.Supervisor.Group do
   Get worker from the group.
   """
   @spec get_worker(t(), any()) :: {:ok, Worker.t()} | {:error, atom()}
-  def get_worker(%Group{} = group, worker_id) do
+  def get_worker(group = %Group{}, worker_id) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, supervisor #{inspect(group.supervisor)}, group #{inspect(group.id)}, get_worker: #{inspect(worker_id)}"
     end)
@@ -76,7 +76,7 @@ defmodule SuperWorker.Supervisor.Group do
   Get all workers from the group.
   """
   @spec get_all_workers(t()) :: {:ok, [Worker.t()]}
-  def get_all_workers(%Group{} = group) do
+  def get_all_workers(group = %Group{}) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, get_all_workers for supervisor #{inspect(group.supervisor)}"
     end)
@@ -85,7 +85,7 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   @spec count_workers(t()) :: non_neg_integer()
-  def count_workers(%Group{} = group) do
+  def count_workers(group = %Group{}) do
     {:ok, workers} = get_all_workers(group)
     Enum.count(workers)
   end
@@ -105,7 +105,7 @@ defmodule SuperWorker.Supervisor.Group do
   A internal function. Add a worker to the group.
   """
   @spec add_worker(t(), Worker.t()) :: worker_operation_result()
-  def add_worker(group = %Group{}, %Worker{} = worker) do
+  def add_worker(group = %Group{}, worker = %Worker{}) do
     case get_worker(group, worker.id) do
       {:ok, _} ->
         {:error, :worker_exists}
@@ -257,7 +257,7 @@ defmodule SuperWorker.Supervisor.Group do
     end
   end
 
-  defp spawn_worker(group = %Group{}, %Worker{} = worker) do
+  defp spawn_worker(group = %Group{}, worker = %Worker{}) do
     SuperWorker.Log.debug(fn -> "SuperWorker, Group, spawn_worker: #{inspect(worker)}" end)
 
     try do
@@ -348,7 +348,7 @@ defmodule SuperWorker.Supervisor.Group do
     end
   end
 
-  defp do_spawn_worker(group, %Worker{} = worker) do
+  defp do_spawn_worker(group, worker = %Worker{}) do
     {pid, ref} =
       case worker.fun do
         {:gen_server, {m, f, a}} ->

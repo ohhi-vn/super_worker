@@ -83,7 +83,7 @@ defmodule SuperWorker.Supervisor.MapQueue do
 
   """
   @spec add(t(), message()) :: {:ok, t(), msg_id()} | {:error, :queue_full}
-  def add(%__MODULE__{} = queue, msg) do
+  def add(queue = %__MODULE__{}, msg) do
     if full?(queue) do
       {:error, :queue_full}
     else
@@ -223,7 +223,7 @@ defmodule SuperWorker.Supervisor.MapQueue do
 
   """
   @spec clear(t()) :: t()
-  def clear(%__MODULE__{} = queue) do
+  def clear(queue = %__MODULE__{}) do
     %__MODULE__{queue | msgs: %{}}
   end
 

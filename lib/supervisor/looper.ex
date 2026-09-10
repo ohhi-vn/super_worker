@@ -17,7 +17,6 @@ defmodule SuperWorker.Supervisor.Looper do
   The loop only exits when a deliberate shutdown is requested.
   """
 
-  alias SuperWorker.Supervisor
   alias SuperWorker.Supervisor.{ApiHelper, Chain, Db, Group, Message, Utils, Worker}
 
   require Logger
@@ -81,51 +80,24 @@ defmodule SuperWorker.Supervisor.Looper do
       "SuperWorker, Supervisor, shutting down partition: #{inspect(state.id)}"
     end)
 
-    # The partition only kills the workers it owns. `state.id` is the 1-based
-    # partition order, so compare against the hash order, not the partition pid.
-    owns? = fn key ->
-      Utils.get_hash_order(key, map_size(state.partitions)) == state.id
-    end
-
+    # The partition only kills the workers it owns.
     {:ok, groups} = Db.get_all_groups(state.table)
 
     Enum.each(groups, fn group ->
-      case Db.get_worker_pids_by_parent(state.table, {:group, group.id}) do
-        {:ok, worker_pids} ->
-          Enum.each(worker_pids, fn {worker_id, pid} ->
-            # kill worker process on current partition only
-            if owns?.({group.id, worker_id}) do
-              Process.exit(pid, :kill)
-            end
-          end)
-
-        _ ->
-          :ok
-      end
+      kill_owned_workers(state, {:group, group.id})
     end)
 
     {:ok, chains} = Db.get_all_chains(state.table)
 
     Enum.each(chains, fn chain ->
-      case Db.get_worker_pids_by_parent(state.table, {:chain, chain.id}) do
-        {:ok, worker_pids} ->
-          Enum.each(worker_pids, fn {worker_id, pid} ->
-            # kill worker process on current partition only
-            if owns?.({chain.id, worker_id}) do
-              Process.exit(pid, :kill)
-            end
-          end)
-
-        _ ->
-          :ok
-      end
+      kill_owned_workers(state, {:chain, chain.id})
     end)
 
     {:ok, workers} = Db.get_all_standalone_worker_infos(state.table)
 
     Enum.each(workers, fn worker ->
       # kill worker process on current partition only
-      if owns?.({nil, worker.id}) do
+      if partition_owns?(state, {nil, worker.id}) do
         case Db.get_worker_by_id(state.table, worker.id, {:standalone, nil}) do
           {:ok, {_, pid}} -> Process.exit(pid, :kill)
           _ -> :ok
@@ -144,6 +116,25 @@ defmodule SuperWorker.Supervisor.Looper do
     )
 
     shutdown(state, :kill)
+  end
+
+  # Kill the workers of a group/chain parent that are owned by the current
+  # partition. `state.id` is the 1-based partition order, so compare against
+  # the hash order, not the partition pid.
+  defp kill_owned_workers(state, parent) do
+    {:ok, worker_pids} = Db.get_worker_pids_by_parent(state.table, parent)
+    parent_id = elem(parent, 1)
+
+    Enum.each(worker_pids, fn {worker_id, pid} ->
+      # kill worker process on current partition only
+      if partition_owns?(state, {parent_id, worker_id}) do
+        Process.exit(pid, :kill)
+      end
+    end)
+  end
+
+  defp partition_owns?(state, key) do
+    Utils.get_hash_order(key, map_size(state.partitions)) == state.id
   end
 
   # process exit message for outside processes.
@@ -827,31 +818,31 @@ defmodule SuperWorker.Supervisor.Looper do
   end
 
   @spec has_group?(map(), any()) :: boolean()
-  defp has_group?(%{} = state, group_id) do
+  defp has_group?(state = %{}, group_id) do
     match?({:ok, _}, Db.get_group(state.table, group_id))
   end
 
   @spec has_chain?(map(), any()) :: boolean()
-  defp has_chain?(%{} = state, chain_id) do
+  defp has_chain?(state = %{}, chain_id) do
     match?({:ok, _}, Db.get_chain(state.table, chain_id))
   end
 
   @spec has_group_worker?(map(), any(), any()) :: boolean()
-  defp has_group_worker?(%{} = state, group_id, worker_id) do
+  defp has_group_worker?(state = %{}, group_id, worker_id) do
     match?({:ok, _}, Db.get_worker_info(state.table, worker_id, {:group, group_id}))
   end
 
   @spec has_chain_worker?(map(), any(), any()) :: boolean()
-  defp has_chain_worker?(%{} = state, chain_id, worker_id) do
+  defp has_chain_worker?(state = %{}, chain_id, worker_id) do
     match?({:ok, _}, Db.get_worker_info(state.table, worker_id, {:chain, chain_id}))
   end
 
   @spec has_standalone_worker?(map(), any()) :: boolean()
-  defp has_standalone_worker?(%{} = state, worker_id) do
+  defp has_standalone_worker?(state = %{}, worker_id) do
     match?({:ok, _}, Db.get_worker_info(state.table, worker_id, {:standalone, nil}))
   end
 
-  defp sup_start_child(state, %Worker{id: id, type: :standalone} = worker) do
+  defp sup_start_child(state, worker = %Worker{id: id, type: :standalone}) do
     # Start a child process
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, starting standalone worker process(#{inspect(id)})"
@@ -914,21 +905,21 @@ defmodule SuperWorker.Supervisor.Looper do
     state
   end
 
-  defp add_new_group(state, %Group{} = group) do
+  defp add_new_group(state, group = %Group{}) do
     group = %Group{group | supervisor: state.master, table: state.table}
     Db.put_group(state.table, group)
 
     state
   end
 
-  defp add_new_chain(state, %Chain{} = chain) do
+  defp add_new_chain(state, chain = %Chain{}) do
     chain = %Chain{chain | supervisor: state.master, table: state.table}
     Db.put_chain(state.table, chain)
 
     state
   end
 
-  defp restart_standalone(state, %Worker{} = child, {_pid, reason}) do
+  defp restart_standalone(state, child = %Worker{}, {_pid, reason}) do
     case child.restart_strategy do
       :permanent ->
         SuperWorker.Log.debug(fn ->
@@ -964,7 +955,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
   defp restart_group(
          state,
-         %Group{restart_strategy: :one_for_one} = group,
+         group = %Group{restart_strategy: :one_for_one},
          worker,
          {_child_pid, child_reason}
        ) do
@@ -989,7 +980,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
   defp restart_group(
          state,
-         %Group{restart_strategy: :one_for_all} = group,
+         group = %Group{restart_strategy: :one_for_all},
          _worker,
          {_child_pid, child_reason}
        ) do
@@ -1032,7 +1023,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
   defp restart_chain(
          state,
-         %Chain{restart_strategy: :one_for_one} = chain,
+         chain = %Chain{restart_strategy: :one_for_one},
          worker = %Worker{},
          {_child_pid, child_reason}
        ) do
@@ -1055,7 +1046,7 @@ defmodule SuperWorker.Supervisor.Looper do
 
   defp restart_chain(
          state,
-         %Chain{restart_strategy: :one_for_all} = chain,
+         chain = %Chain{restart_strategy: :one_for_all},
          %Worker{},
          {_child_pid, child_reason}
        ) do

@@ -110,6 +110,86 @@ graph LR
     P2 --> W3(Worker)
 ```
 
+## Pool — a simple, partitioned job pool
+
+`SuperWorker.Pool` is a job pool on top of the same ideas: hand it a function,
+an MFA or a worker module, then submit jobs — no supervision tree to design,
+no message protocols to implement.
+
+```elixir
+# 1. A bare function
+{:ok, _} =
+  SuperWorker.Pool.start_link(
+    name: MyPool,
+    task: fn job -> do_work(job) end,
+    size: 20
+  )
+
+# 2. An MFA
+{:ok, _} =
+  SuperWorker.Pool.start_link(name: MyPool, task: {MyMod, :process, []}, size: 20)
+
+# 3. A stateful worker module (holds a connection, a buffer, ...)
+{:ok, _} =
+  SuperWorker.Pool.start_link(
+    name: MyPool,
+    worker: MyApp.ImageResizer,
+    size: 20,
+    retry: [max_attempts: 5, backoff: {:exponential, base: 200, max: 10_000, jitter: true}],
+    on_failure: {MyApp.DeadLetter, :store, []},
+    middleware: [SuperWorker.Pool.Middleware.Telemetry, SuperWorker.Pool.Middleware.CircuitBreaker]
+  )
+```
+
+```elixir
+{:ok, result} = SuperWorker.Pool.run(MyPool, job)      # sync: blocks until done
+{:ok, ref} = SuperWorker.Pool.run_async(MyPool, job)   # Task-like ref
+{:ok, result} = SuperWorker.Pool.await(ref)
+:ok = SuperWorker.Pool.cast(MyPool, job)               # fire-and-forget
+```
+
+Key properties:
+
+- **Partitioned** — workers and queues are split over `partitions`
+  (default: schedulers online) independent bottlenecks; jobs are routed by
+  round robin or by hashing the job (`:routing: :hash`).
+- **Backpressure** — each partition has a bounded queue (`max_queue`);
+  overflow submissions immediately fail with `{:error, :overloaded}`.
+- **Retries with backoff** — `{:retry, reason, state}` from a worker
+  reschedules the job (via `Process.send_after`, never `Process.sleep`) until
+  `max_attempts`; `{:error, reason, state}` is a final failure.
+- **Crash isolation** — a worker crash restarts only that worker and its
+  in-flight job is requeued once (poison-pill safe) and charged to its retry
+  budget; after retries are exhausted, `:on_failure` fires — no silent job
+  loss.
+- **Pluggable middleware** — Plug-style pipeline around job execution
+  (`SuperWorker.Pool.Middleware`); `Telemetry` and `CircuitBreaker` ship as
+  built-ins, roll your own for rate limiting, request-id propagation, etc.
+
+The worker behaviour for stateful workers:
+
+```elixir
+defmodule MyApp.ImageResizer do
+  @behaviour SuperWorker.Pool.Worker
+
+  @impl true
+  def init(opts), do: {:ok, open_connection(opts)}
+
+  @impl true
+  def handle_job(job, conn) do
+    case resize(conn, job) do
+      {:ok, result, conn} -> {:ok, result, conn}
+      {:timeout, conn} -> {:retry, :timeout, conn}   # transient: try again
+      {:invalid, conn} -> {:error, :invalid, conn}   # final: fail the job
+    end
+  end
+end
+```
+
+Durability is in-memory only: queued jobs survive worker crashes and
+partition restarts, not a node crash. See `SuperWorker.Pool` moduledoc for
+the full option list and error shapes.
+
 ## Introspection & observability
 
 Running supervisors can be discovered and inspected at runtime:

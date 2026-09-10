@@ -172,7 +172,7 @@ defmodule SuperWorker.Supervisor do
   start_link for using supervisor as child in other supervisor or link to current process.
   """
   @spec start_link(t()) :: {:ok, pid} | {:error, any()}
-  def start_link(%Supervisor{} = options) do
+  def start_link(options = %Supervisor{}) do
     if running?(options.id) do
       {:error, {:already_started, options.id}}
     else
@@ -198,7 +198,7 @@ defmodule SuperWorker.Supervisor do
   Start supervisor as independent process (no link process).
   """
   @spec start(t()) :: {:ok, pid} | {:error, any()}
-  def start(%Supervisor{} = options) do
+  def start(options = %Supervisor{}) do
     if running?(options.id) do
       {:error, {:already_started, options.id}}
     else

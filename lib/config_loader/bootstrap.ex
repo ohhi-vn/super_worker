@@ -128,7 +128,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
   end
 
   # Adds a single child (group, chain, or standalone worker)
-  defp add_child(sup_id, %{type: :group} = group) do
+  defp add_child(sup_id, group = %{type: :group}) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Bootstrap, adding group #{inspect(group.id)}, options: #{inspect(group.options)}"
     end)
@@ -152,7 +152,7 @@ defmodule SuperWorker.ConfigLoader.Bootstrap do
     end
   end
 
-  defp add_child(sup_id, %{type: :chain} = chain) do
+  defp add_child(sup_id, chain = %{type: :chain}) do
     SuperWorker.Log.debug(fn -> "SuperWorker, Bootstrap, adding chain #{inspect(chain.id)}" end)
 
     chain_options = Keyword.put(chain.options, :id, chain.id)

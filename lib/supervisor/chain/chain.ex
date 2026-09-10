@@ -111,7 +111,7 @@ defmodule SuperWorker.Supervisor.Chain do
   end
 
   @spec do_add_worker(Chain.t(), Worker.t()) :: {:error, :already_exists} | {:ok, Chain.t()}
-  defp do_add_worker(chain = %Chain{}, %Worker{} = worker) do
+  defp do_add_worker(chain = %Chain{}, worker = %Worker{}) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Chain, adding worker #{inspect(worker.id)} to the chain #{inspect(chain.id)}"
     end)
@@ -162,10 +162,9 @@ defmodule SuperWorker.Supervisor.Chain do
             :ok
         end
 
-        case do_spawn_worker(chain, worker) do
-          %Worker{} -> {:ok, worker.id}
-          other -> other
-        end
+        do_spawn_worker(chain, worker)
+
+        {:ok, worker.id}
       end)
 
     {failures, _successes} =
@@ -401,7 +400,7 @@ defmodule SuperWorker.Supervisor.Chain do
     loop_chain(table, queue, worker)
   end
 
-  defp ensure_queue_capacity(queue, %Worker{id: id} = worker) do
+  defp ensure_queue_capacity(queue, worker = %Worker{id: id}) do
     case MapQueue.full?(queue) do
       false ->
         queue
@@ -425,7 +424,7 @@ defmodule SuperWorker.Supervisor.Chain do
     end
   end
 
-  defp loop_send(queue, %Worker{id: id, parent: chain_id} = worker, timeout) do
+  defp loop_send(queue, %Worker{id: id, parent: chain_id}, timeout) do
     # NOTE: there is deliberately no catch-all clause here. Non-matching
     # messages (e.g. {:new_data, _} arriving while the queue is full) must
     # stay in the mailbox so they are processed by loop_chain/3 once the

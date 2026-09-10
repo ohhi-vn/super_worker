@@ -263,7 +263,7 @@ defmodule SuperWorker.CircuitBreaker do
     }
   end
 
-  defp close_circuit(%__MODULE__{} = state) do
+  defp close_circuit(state = %__MODULE__{}) do
     %__MODULE__{state | state: :closed, in_flight: 0}
     |> reset_failure_count()
     |> Map.put(:success_count, 0)

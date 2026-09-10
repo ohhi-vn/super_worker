@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0]
+
+### Added
+
+- **`SuperWorker.Pool`** — a simple, partitioned process pool:
+  - start with a bare function, an MFA (`task:`), or a module implementing the
+    `SuperWorker.Pool.Worker` behaviour (`worker:` — stateful workers with
+    `init/1` + `handle_job/2` returning `{:ok, ...}` / `{:error, ...}` /
+    `{:retry, ...}`);
+  - three submission styles: `run/2,3` (sync), `run_async/2` + `await/2`
+    (Task-like ref), `cast/2` (fire-and-forget with optional `:on_result`);
+  - partitioned for scalability: jobs are routed to one of `:partitions`
+    (default `System.schedulers_online()`) independent queue + worker groups
+    via round robin or `:erlang.phash2` hash (`:routing` option);
+  - bounded per-partition queue (`:max_queue`) — overflow callers immediately
+    get `{:error, :overloaded}`;
+  - configurable retries (`:max_attempts`) with fixed/exponential backoff and
+    jitter, rescheduled via `Process.send_after` (never `Process.sleep` — a
+    retrying job never holds its worker);
+  - crash isolation: each worker is a supervised process; a crash restarts
+    only that worker, its in-flight job is requeued **once** (charged to the
+    retry budget) so poison-pill jobs cannot crash-loop;
+  - `:on_failure` dead-letter callback after retries are exhausted (no silent
+    job loss);
+  - Plug-style `SuperWorker.Pool.Middleware` pipeline with built-in
+    `Telemetry` (`[:super_worker, :pool, :job, :start/:stop/:exception/:retry/...]`)
+    and `CircuitBreaker` (per-partition, trips after N consecutive failures
+    and rejects submissions with `{:error, :circuit_open}`);
+  - `size < partitions` rounds workers up (`ceil(size/partitions)`, min 1) so
+    no partition is dead; `info/1` reports live per-partition counters.
+
 ## [0.7.0]
 
 ### Fixed

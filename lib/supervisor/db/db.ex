@@ -131,7 +131,7 @@ defmodule SuperWorker.Supervisor.Db do
     end
   end
 
-  def put_worker_info(table, %Worker{} = worker_info) do
+  def put_worker_info(table, worker_info = %Worker{}) do
     key = {:worker, worker_info.id, {worker_info.type, worker_info.parent}}
 
     # Use insert (upsert) instead of insert_new to handle restart scenarios
@@ -149,7 +149,7 @@ defmodule SuperWorker.Supervisor.Db do
     Ets.delete(table, {:worker, worker_id, parent})
   end
 
-  def get_worker_infos_by_parent(table, {type, parent_value} = _parent) do
+  def get_worker_infos_by_parent(table, {type, parent_value}) do
     # The ETS table stores: {{:worker, worker_id, {type, parent_value}}, worker_info}
     # Filter inside ETS with a match spec instead of scanning the whole
     # table into the caller process.
@@ -180,7 +180,7 @@ defmodule SuperWorker.Supervisor.Db do
     {:ok, result}
   end
 
-  def put_group(table, %Group{} = group) do
+  def put_group(table, group = %Group{}) do
     key = {:group, group.id}
 
     if Ets.insert_new(table, {key, group}) do
@@ -226,7 +226,7 @@ defmodule SuperWorker.Supervisor.Db do
     Ets.delete(table, {:chain_order, chain_id, order})
   end
 
-  def put_chain(table, %Chain{} = chain) do
+  def put_chain(table, chain = %Chain{}) do
     key = {:chain, chain.id}
 
     if Ets.insert_new(table, {key, chain}) do

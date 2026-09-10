@@ -27,7 +27,12 @@ defmodule SuperWorker.Application do
         )
     end
 
-    children = []
+    # Pool Registry: partitions, their supervisors and circuit breakers
+    # register here by {pool_name, kind, id} keys, so callers can resolve a
+    # partition pid directly (no central dispatcher in the job path).
+    children = [
+      {Registry, keys: :unique, name: SuperWorker.Pool.Registry}
+    ]
 
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Application, load with children: #{inspect(children)}"

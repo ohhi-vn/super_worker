@@ -47,7 +47,7 @@ defmodule MyGenServer do
   end
 
   @impl true
-  def handle_info({:ping, from} = msg, state) do
+  def handle_info(msg = {:ping, from}, state) do
     IO.puts("Received ping message: #{inspect(msg)}")
     send(from, {:pong, self()})
     {:noreply, state}

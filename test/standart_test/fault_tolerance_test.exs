@@ -2,7 +2,7 @@ defmodule SuperWorker.Supervisor.FaultToleranceTest do
   use ExUnit.Case, async: true
 
   alias SuperWorker.Supervisor, as: Sup
-  alias SuperWorker.Supervisor.{ApiHelper, Db, Message}
+  alias SuperWorker.Supervisor.{ApiHelper, Db, Message, Partition}
 
   @moduletag :capture_log
 
@@ -140,11 +140,8 @@ defmodule SuperWorker.Supervisor.FaultToleranceTest do
   end
 
   describe "partition lifecycle" do
-    test "a partition without a resolvable master pid still runs its loop" do
-      import SuperWorker.Supervisor.Partition
-
-      table =
-        SuperWorker.Supervisor.Db.init(:"partition_nil_#{System.unique_integer([:positive])}")
+    test "a partition without a resolvable master pid still runs its loop", %{} do
+      table = Db.init(:"partition_nil_#{System.unique_integer([:positive])}")
 
       # master is a live pid (so the start notification is deliverable) but
       # master_pid is unset, exercising the fallback warning branch.
@@ -154,10 +151,10 @@ defmodule SuperWorker.Supervisor.FaultToleranceTest do
         spawn(fn ->
           # :master is added at runtime by Partition.restart_partition/2.
           state =
-            %SuperWorker.Supervisor{id: 98, master_pid: nil, table: table}
+            %Sup{id: 98, master_pid: nil, table: table}
             |> Map.put(:master, parent)
 
-          start_partition(state)
+          Partition.start_partition(state)
         end)
 
       assert_receive {:partition_started, 98}, 1_000
