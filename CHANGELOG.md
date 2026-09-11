@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+
+## [0.8.0]
+
+### Added
+
+- ** `SuperWorker.Pool`** - Function chain for easy work with pipe of functions.
+
 ## [0.8.0]
 
 ### Added
