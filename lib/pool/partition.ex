@@ -39,7 +39,7 @@ defmodule SuperWorker.Pool.Partition do
     :id,
     # workers wanted on this partition: ceil(size / partitions), min 1
     :workers_wanted,
-    # idle worker pids
+    # idle worker pids (list; monitored in :monitors, so no duplicates)
     :idle,
     # %{job_id => worker_pid}
     :busy,
@@ -49,6 +49,8 @@ defmodule SuperWorker.Pool.Partition do
     :queue,
     # %{job_id => entry}
     :jobs,
+    # cached :queue length (O(1) overload checks; :queue.len/1 is O(n))
+    :queue_len,
     # %{job_id => retry timer ref}
     :timers,
     # last allocated job id
@@ -89,10 +91,11 @@ defmodule SuperWorker.Pool.Partition do
        config: config,
        id: id,
        workers_wanted: max(1, ceil(config.size / config.partitions)),
-       idle: MapSet.new(),
+       idle: [],
        busy: %{},
        monitors: %{},
        queue: :queue.new(),
+       queue_len: 0,
        jobs: %{},
        timers: %{},
        seq: 0
@@ -123,9 +126,9 @@ defmodule SuperWorker.Pool.Partition do
      %{
        id: state.id,
        alive?: true,
-       queue: :queue.len(state.queue),
+       queue: state.queue_len,
        busy: map_size(state.busy),
-       idle: MapSet.size(state.idle)
+       idle: length(state.idle)
      }, state}
   end
 
@@ -162,7 +165,7 @@ defmodule SuperWorker.Pool.Partition do
       state =
         state
         |> Map.put(:monitors, Map.put(state.monitors, pid, ref))
-        |> Map.put(:idle, MapSet.put(state.idle, pid))
+        |> Map.put(:idle, state.idle ++ [pid])
         |> dispatch()
 
       {:noreply, state}
@@ -175,7 +178,7 @@ defmodule SuperWorker.Pool.Partition do
          {:ok, entry} <- fetch_entry(state, job_id) do
       state =
         state
-        |> release_worker(pid)
+        |> release_worker(pid, job_id)
         |> process_outcome(entry, outcome)
         |> dispatch()
 
@@ -197,7 +200,7 @@ defmodule SuperWorker.Pool.Partition do
         state =
           state
           |> Map.put(:monitors, Map.delete(state.monitors, pid))
-          |> Map.put(:idle, MapSet.delete(state.idle, pid))
+          |> Map.put(:idle, List.delete(state.idle, pid))
           |> handle_worker_down(pid, reason)
           |> dispatch()
 
@@ -218,6 +221,7 @@ defmodule SuperWorker.Pool.Partition do
           |> Map.put(:timers, Map.delete(state.timers, job_id))
           |> Map.put(:jobs, Map.put(state.jobs, job_id, %{entry | timer: nil}))
           |> Map.put(:queue, :queue.in_r(job_id, state.queue))
+          |> Map.put(:queue_len, state.queue_len + 1)
           |> dispatch()
 
         {:noreply, state}
@@ -235,72 +239,78 @@ defmodule SuperWorker.Pool.Partition do
   # Common path for all three submission forms. The circuit breaker (when
   # configured) rejects here, before the job ever touches the queue.
   defp enqueue(state, job, reply_to) do
-    meta = %{pool: state.config.name, partition: state.id, job_id: nil, attempts: 0}
-
-    case Middleware.check_enqueue(state.config.middleware, job, meta) do
-      :ok ->
-        # Overload when the backlog is full AND no idle worker can take the
-        # job straight away (max_queue 0 therefore means "never queue").
-        if :queue.len(state.queue) >= state.config.max_queue and MapSet.size(state.idle) == 0 do
-          :telemetry.execute(
-            [:super_worker, :pool, :overloaded],
-            %{},
-            %{pool: state.config.name, partition: state.id}
-          )
-
-          {:error, :overloaded}
-        else
-          {:ok, submit(state, job, reply_to)}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+    case check_middleware(state, job) do
+      :ok -> accept(state, job, reply_to)
+      {:error, reason} -> {:error, reason}
     end
   end
 
+  # No middleware configured: skip the pipeline and the meta map entirely.
+  defp check_middleware(%{config: %{middleware: []}}, _job), do: :ok
+
+  defp check_middleware(state, job) do
+    meta = %{pool: state.config.name, partition: state.id, job_id: nil, attempts: 0}
+    Middleware.check_enqueue(state.config.middleware, job, meta)
+  end
+
+  # Overload when the backlog is full AND no idle worker can take the job
+  # straight away (max_queue 0 therefore means "never queue").
+  defp accept(state = %{config: %{max_queue: max_queue}, idle: []}, _job, _reply_to)
+       when state.queue_len >= max_queue do
+    :telemetry.execute(
+      [:super_worker, :pool, :overloaded],
+      %{},
+      %{pool: state.config.name, partition: state.id}
+    )
+
+    {:error, :overloaded}
+  end
+
+  defp accept(state, job, reply_to), do: {:ok, submit(state, job, reply_to)}
+
   defp submit(state, job, reply_to) do
     job_id = state.seq + 1
-    state = %{state | seq: job_id}
 
     state = %{
       state
-      | jobs: Map.put(state.jobs, job_id, entry(job_id, job, reply_to)),
-        queue: :queue.in(job_id, state.queue)
+      | seq: job_id,
+        jobs: Map.put(state.jobs, job_id, entry(job_id, job, reply_to)),
+        queue: :queue.in(job_id, state.queue),
+        queue_len: state.queue_len + 1
     }
 
     dispatch(state)
   end
 
   # Assigns queued jobs to idle workers while both are available.
-  defp dispatch(state = %{queue: queue, idle: idle}) do
-    if :queue.is_empty(queue) or MapSet.size(idle) == 0 do
+  defp dispatch(state = %{idle: [worker_pid | rest_idle], queue_len: queue_len})
+       when queue_len > 0 do
+    {{:value, job_id}, queue} = :queue.out(state.queue)
+    entry = Map.fetch!(state.jobs, job_id)
+
+    meta = %{
+      pool: state.config.name,
+      partition: state.id,
+      job_id: job_id,
+      attempts: entry.attempts + 1
+    }
+
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Pool, partition #{inspect(state.id)} dispatching job #{inspect(job_id)} to #{inspect(worker_pid)}"
+    end)
+
+    send(worker_pid, {:run_job, job_id, entry.job, meta})
+
+    dispatch(%{
       state
-    else
-      {{:value, job_id}, queue} = :queue.out(queue)
-      [worker_pid | rest_idle] = MapSet.to_list(idle)
-      entry = Map.fetch!(state.jobs, job_id)
-
-      meta = %{
-        pool: state.config.name,
-        partition: state.id,
-        job_id: job_id,
-        attempts: entry.attempts + 1
-      }
-
-      SuperWorker.Log.debug(fn ->
-        "SuperWorker, Pool, partition #{inspect(state.id)} dispatching job #{inspect(job_id)} to #{inspect(worker_pid)}"
-      end)
-
-      send(worker_pid, {:run_job, job_id, entry.job, meta})
-
-      dispatch(%{
-        state
-        | queue: queue,
-          idle: MapSet.new(rest_idle),
-          busy: Map.put(state.busy, job_id, worker_pid)
-      })
-    end
+      | queue: queue,
+        idle: rest_idle,
+        queue_len: queue_len - 1,
+        busy: Map.put(state.busy, job_id, worker_pid)
+    })
   end
+
+  defp dispatch(state), do: state
 
   ## Outcome handling
 
@@ -399,7 +409,8 @@ defmodule SuperWorker.Pool.Partition do
                     | attempts: attempts,
                       crash_requeued: true
                   }),
-                queue: :queue.in_r(job_id, state.queue)
+                queue: :queue.in_r(job_id, state.queue),
+                queue_len: state.queue_len + 1
             }
         end
 
@@ -495,6 +506,9 @@ defmodule SuperWorker.Pool.Partition do
     Logger.error("SuperWorker, Pool, :on_result callback crashed: #{kind}: #{inspect(reason)}")
   end
 
+  # No middleware configured: skip the notify pipeline and the meta map build.
+  defp notify_middleware(state = %{config: %{middleware: []}}, _outcome, _entry), do: state
+
   defp notify_middleware(state, outcome, entry) do
     Middleware.notify(
       state.config.middleware,
@@ -518,16 +532,10 @@ defmodule SuperWorker.Pool.Partition do
     |> Map.merge(extra)
   end
 
-  defp release_worker(state, pid) do
-    state
-    |> Map.put(:idle, MapSet.put(state.idle, pid))
-    |> Map.put(:busy, Map.delete(state.busy, from_pid(state, pid)))
-  end
-
-  defp from_pid(state, pid) do
-    Enum.find_value(state.busy, fn {job_id, worker_pid} ->
-      if worker_pid == pid, do: job_id, else: nil
-    end)
+  # The job_id is already known (validated against :busy by validate_sender/3),
+  # so releasing a worker is O(1) — no scan of the busy map.
+  defp release_worker(state, pid, job_id) do
+    %{state | idle: [pid | state.idle], busy: Map.delete(state.busy, job_id)}
   end
 
   # The job must still be in flight on this exact worker; results from
