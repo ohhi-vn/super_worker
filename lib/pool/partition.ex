@@ -322,9 +322,11 @@ defmodule SuperWorker.Pool.Partition do
         |> notify_middleware(:ok, entry)
 
       {:error, reason} ->
-        state
-        |> complete(entry, {:error, reason})
-        |> notify_middleware({:error, reason}, entry)
+        # An expected, final failure: dead-letter it like exhausted retries
+        # and worker crashes so `:on_failure` is the single source of truth
+        # for "this job did not complete" (the Worker behaviour contract).
+        # The bare reason keeps the caller's shape: `{:error, reason}`.
+        dead_letter(state, entry, reason, reason)
 
       {:retry, reason} ->
         handle_retry(state, entry, reason)

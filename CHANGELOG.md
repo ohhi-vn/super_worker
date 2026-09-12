@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0]
+
+### Added
+
+- **FunctionChain integration** — run `SuperWorker.FunctionChain` through the
+  pool and the supervisor:
+  - `SuperWorker.Pool.FunctionChain` — a ready-made
+    `SuperWorker.Pool.Worker` (`worker:` option) that runs a chain for every
+    pool job, with per-job `run_opts` (`:arg_overrides`/`:context`) and an
+    `:on_error` policy (`:error` fails the job, `:retry` hands it to the
+    pool's retry budget);
+  - `SuperWorker.Supervisor.FunctionChain.chain_node_fun/2` — run a chain as
+    one node of a supervisor process chain (`add_chain_worker/4`);
+  - `SuperWorker.Supervisor.FunctionChain.job_loop/2` — a standalone/group
+    worker loop that runs every received message through a chain, with a
+    request/response envelope (`{:run, ref, job, from}`) and an optional
+    `:on_result` callback.
+- **Pool restart tuning** — `:max_restarts` / `:max_seconds` options shared
+  by the pool supervisor and each partition supervisor (defaults: 10/10).
+
+### Fixed
+
+- **Pool**: an expected, final failure (`{:error, reason, state}` from a
+  `SuperWorker.Pool.Worker`) now dead-letters like exhausted retries and
+  worker crashes — `:on_failure` is the single source of truth for "this job
+  did not complete", as documented in the `SuperWorker.Pool.Worker`
+  behaviour. Previously such failures were only delivered to the caller.
+- **Pool docs**: documented the queue owner (`SuperWorker.Pool.Partition`
+  GenServer), retry ordering (retried jobs re-enter the **front** of their
+  partition queue), `run/3` / `await/2` timeout options, the `:on_result`
+  payload shape, and the `:circuit_open` vs `:on_failure` boundary.
+
 
 ## [0.8.0]
 

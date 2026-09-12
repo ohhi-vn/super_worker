@@ -102,8 +102,10 @@ defmodule SuperWorker.Pool.RetryTest do
     assert System.monotonic_time() - start_time <
              System.convert_time_unit(100, :millisecond, :native)
 
-    # Expected errors are delivered to the caller; on_failure is not fired.
-    refute_receive {:dead_letter, _, _}, 100
+    # Expected errors are delivered to the caller immediately (no backoff),
+    # and dead-lettered: on_failure is the single source of truth for
+    # "this job did not complete" (see SuperWorker.Pool.Worker).
+    assert_receive {:dead_letter, :job, :boom}, 1_000
 
     Pool.stop(name)
   end

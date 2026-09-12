@@ -24,10 +24,17 @@ defmodule SuperWorker.Pool do
       {:ok, _pid} =
         SuperWorker.Pool.start_link(name: MyPool, worker: MyApp.ImageResizer, size: 20)
 
-      {:ok, result} = SuperWorker.Pool.run(MyPool, job)   # sync: blocks until done
+      {:ok, result} = SuperWorker.Pool.run(MyPool, job)    # sync: blocks until done
+      {:ok, result} = SuperWorker.Pool.run(MyPool, job, timeout: 5_000)
       {:ok, ref} = SuperWorker.Pool.run_async(MyPool, job) # Task-like ref
       {:ok, result} = SuperWorker.Pool.await(ref)
+      {:ok, result} = SuperWorker.Pool.await(ref, 5_000)   # custom timeout
       :ok = SuperWorker.Pool.cast(MyPool, job)             # fire-and-forget
+
+  This is a **single-node, in-memory pool**: queued jobs survive worker
+  crashes and partition restarts, but not a node crash, and there is no
+  cross-node distribution. For durable, cross-node jobs use a persisted
+  queue (e.g. Oban) instead — or put a persisted layer behind `:on_failure`.
 
   ## Architecture
 
@@ -36,9 +43,8 @@ defmodule SuperWorker.Pool do
   bottlenecks, each holding `ceil(size / partitions)` workers. A job is
   routed to a partition by round robin or by hashing the job term
   (`:erlang.phash2`) — hash routing gives partition affinity for
-  order-sensitive jobs. Each partition owns a bounded FIFO queue and
-  dispatches to its idle workers; each worker is a supervised process, so a
-  crash restarts just that worker.
+  order-sensitive jobs. Each worker is a supervised process, so a crash
+  restarts just that worker.
 
       Pool supervisor (one_for_one)
       ├── Pool.Server (config housekeeping)
@@ -47,6 +53,12 @@ defmodule SuperWorker.Pool do
       ├── Partition 2 supervisor
       └── ...
 
+  The **queue lives in the `Partition` GenServer** — a process sibling of the
+  workers under each partition supervisor, not in the supervisor itself. It
+  owns the bounded FIFO queue, dispatches jobs to idle workers, schedules
+  retries, and handles crash requeues and dead-lettering. See
+  `SuperWorker.Pool.Partition`.
+
   ## Options
 
   - `:name` (required) — atom, the registered name of the pool.
@@ -54,7 +66,9 @@ defmodule SuperWorker.Pool do
     `{module, function, args}` (job prepended to args), or a
     `SuperWorker.Pool.Worker` behaviour module.
   - `:worker_opts` — keyword passed to a `:worker` module's `init/1`
-    (default: `[]`).
+    (default: `[]`). The library ships a ready-made chain worker:
+    `SuperWorker.Pool.FunctionChain` runs a `SuperWorker.FunctionChain` per
+    job (`worker_opts: [chain: my_chain, ...]`).
   - `:size` — total number of workers (default: `System.schedulers_online()`).
   - `:partitions` — number of partitions (default: `System.schedulers_online()`).
     When `size < partitions`, workers are rounded up (`ceil(size/partitions)`,
@@ -71,32 +85,59 @@ defmodule SuperWorker.Pool do
     dropped — dead-letter it, log it or alert on it).
   - `:on_result` — `fun/2` or `{module, function, args}` invoked as
     `(job, {:ok, result} | {:error, reason})` for `cast` jobs whose caller
-    cannot await a result.
+    cannot await a result. The payload covers **both outcomes** — success,
+    expected failures, and permanent failures (exhausted retries or a crash):
+    the error reason is the same one `:on_failure` would receive. Without
+    `:on_result`, cast results are dropped.
   - `:middleware` — list of `SuperWorker.Pool.Middleware` modules
     (default: `[]`).
   - `:circuit_breaker` — options for
     `SuperWorker.Pool.Middleware.CircuitBreaker` when it is in `:middleware`:
     `failure_threshold:` (default 5), `reset_timeout:` ms (default 10_000).
+  - `:max_restarts` — restart intensity ceiling shared by the pool supervisor
+    and each partition supervisor (default: 10). A worker that crash-loops in
+    `init/1` burns this budget and then takes its partition down instead of
+    spinning forever.
+  - `:max_seconds` — the window for `:max_restarts` (default: 10).
 
   ## Error handling & durability
 
   Two separate concerns, handled differently:
 
   - **Worker crashes** (bugs, `raise`, exits): the worker is restarted by its
-    partition supervisor and its in-flight job is **requeued once** and
-    charged against its own retry budget — a poison-pill job cannot crash-
-    loop the pool. A crash of the worker loses its behaviour state
-    (`init/1` runs again).
+    partition supervisor and its in-flight job is **requeued once** — at the
+    **front** of its partition queue — and charged against its own retry
+    budget; a poison-pill job cannot crash-loop the pool. A crash of the
+    worker loses its behaviour state (`init/1` runs again).
   - **Expected failures** (`{:error, ...}` / `{:retry, ...}`): never crash
     anything. `{:retry, ...}` reschedules via `Process.send_after` after a
     backoff delay (sleeping inside a worker would hold it hostage); after
     `max_attempts` the `:on_failure` callback fires.
 
-  `run/2` returns `{:error, reason}` where reason is the job's error, or one
+  **Retry ordering**: a retried job re-enters the **front** of its partition
+  queue when the backoff delay elapses, so it is not starved behind fresh
+  submissions — but the backoff delay itself is inherent to retries, so a
+  later job submitted during the delay can still complete first. `:hash`
+  routing keeps a job and its retries on the same partition, which is what
+  preserves relative order for order-sensitive jobs; it does not promise
+  strict FIFO across retries.
+
+  `run/3` returns `{:error, reason}` where reason is the job's error, or one
   of `:overloaded`, `:timeout`, `{:retries_exhausted, reason}`,
   `{:worker_crashed, reason}`, `:circuit_open`, `:pool_not_found`,
   `:pool_unavailable`. `cast/2` drops the result unless `:on_result` is
   configured (overloaded casts are dropped with a warning log).
+
+  **Timeouts**: `run/3` and `await/2` take a `timeout` in ms (default
+  30_000). When the caller gives up, the job keeps running — only the result
+  is dropped.
+
+  **`:circuit_open` vs `:on_failure`**: a job rejected by the circuit
+  breaker (`check_enqueue/2`) never enters the queue and never runs, so
+  `:on_failure` does **not** fire for it — the rejection is returned to the
+  caller (and dropped, with a warning, for casts). `:on_failure` is only the
+  source of truth for jobs that ran and finally failed (exhausted retries or
+  a final worker crash).
 
   **Durability is in-memory only**: queued jobs survive worker crashes and
   partition restarts, but NOT a node crash. If jobs must survive `kill -9`,
@@ -106,6 +147,24 @@ defmodule SuperWorker.Pool do
   ## Telemetry
 
   See `SuperWorker.Pool.Middleware.Telemetry` for the full event list.
+
+  ## Testing
+
+  For deterministic tests start a single-worker pool and run jobs
+  synchronously:
+
+      {:ok, _} =
+        SuperWorker.Pool.start_link(
+          name: TestPool,
+          task: fn job -> ... end,
+          size: 1,
+          partitions: 1
+        )
+
+      {:ok, result} = SuperWorker.Pool.run(TestPool, job)
+
+  Avoid `cast/2` and multi-worker pools in assertions on ordering: jobs may
+  run on any worker, in any order.
   """
 
   require Logger
@@ -133,6 +192,10 @@ defmodule SuperWorker.Pool do
     :on_result,
     :middleware,
     :circuit_breaker,
+    # restart intensity shared by the pool supervisor and each partition
+    # supervisor
+    :max_restarts,
+    :max_seconds,
     # atomics counter for round-robin partition routing
     :counter
   ]
@@ -149,6 +212,8 @@ defmodule SuperWorker.Pool do
   @default_backoff {:exponential, base: 200, max: 10_000, jitter: true}
   @default_run_timeout 30_000
   @default_enqueue_timeout 5_000
+  @default_max_restarts 10
+  @default_max_seconds 10
 
   ## Public API
 
@@ -176,8 +241,8 @@ defmodule SuperWorker.Pool do
 
       opts = [
         strategy: :one_for_one,
-        max_restarts: 10,
-        max_seconds: 10,
+        max_restarts: config.max_restarts,
+        max_seconds: config.max_seconds,
         name: config.name
       ]
 
@@ -358,7 +423,9 @@ defmodule SuperWorker.Pool do
          {:ok, routing} <- validate_routing(opts),
          {:ok, max_queue} <- validate_non_negative(opts, :max_queue, @default_max_queue),
          {:ok, retry} <- validate_retry(opts),
-         {:ok, middleware} <- validate_middleware(opts) do
+         {:ok, middleware} <- validate_middleware(opts),
+         {:ok, max_restarts} <- validate_positive(opts, :max_restarts, @default_max_restarts),
+         {:ok, max_seconds} <- validate_positive(opts, :max_seconds, @default_max_seconds) do
       {:ok,
        %__MODULE__{
          name: name,
@@ -374,6 +441,8 @@ defmodule SuperWorker.Pool do
          on_result: validate_callback(opts, :on_result),
          middleware: middleware,
          circuit_breaker: Keyword.get(opts, :circuit_breaker, []),
+         max_restarts: max_restarts,
+         max_seconds: max_seconds,
          counter: :atomics.new(1, [])
        }}
     end

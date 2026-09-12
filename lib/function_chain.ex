@@ -79,6 +79,16 @@ defmodule SuperWorker.FunctionChain do
   - `{:from_step, step_id}` — a prior step's result
   - `{:call, fun}` — `fun.(context)` or `fun.(value, context)` computed lazily
 
+  ## Running chains through SuperWorker.Pool / Supervisor
+
+  Chains can also be executed by the library's process machinery:
+
+  - `SuperWorker.Pool.FunctionChain` — a `SuperWorker.Pool.Worker` impl that
+    fans chain runs out over the pool's partitions.
+  - `SuperWorker.Supervisor.FunctionChain` — run a chain as a supervisor
+    chain node (`chain_node_fun/2`) or as a standalone/group worker job loop
+    (`job_loop/2`).
+
   ## Persistence / resumability
 
   Checkpoints are written only on a `:halt` failure when a `store` is

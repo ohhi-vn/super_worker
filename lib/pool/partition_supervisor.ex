@@ -47,7 +47,12 @@ defmodule SuperWorker.Pool.PartitionSupervisor do
         [%{id: Partition, start: {Partition, :start_link, [[config, id]]}}] ++
         worker_children(config, id)
 
-    Supervisor.init(children, strategy: :rest_for_one, max_restarts: 10, max_seconds: 5)
+    Supervisor.init(
+      children,
+      strategy: :rest_for_one,
+      max_restarts: config.max_restarts,
+      max_seconds: config.max_seconds
+    )
   end
 
   defp breaker_children(config, id) do

@@ -1,10 +1,13 @@
 defmodule SuperWorker.MixProject do
   use Mix.Project
 
+  @version "0.10.0"
+  @source_url "https://github.com/ohhi-vn/super_worker"
+
   def project do
     [
       app: :super_worker,
-      version: "0.9.0",
+      version: @version,
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -12,13 +15,12 @@ defmodule SuperWorker.MixProject do
 
       # Docs
       name: "SuperWorker",
-      source_url: "https://github.com/ohhi-vn/super_worker",
+      source_url: @source_url,
       home_url: "https://ohhi.vn",
       docs: docs(),
       description: description(),
       package: package(),
       aliases: aliases(),
-      elixirc_paths: elixirc_paths(Mix.env()),
       test_coverage: [
         # Test-support modules, compile-time macros and the application
         # bootstrap are not meaningful coverage targets.
@@ -83,8 +85,11 @@ defmodule SuperWorker.MixProject do
     [
       licenses: ["MPL-2.0"],
       maintainers: ["Manh Van Vu"],
+      files: ~w(lib guides mix.exs README.md CHANGELOG.md LICENSE),
       links: %{
-        "GitHub" => "https://github.com/ohhi-vn/super_worker",
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
+        "Guides" => "#{@source_url}/tree/main/guides",
         "About us" => "https://ohhi.vn"
       }
     ]
@@ -93,7 +98,15 @@ defmodule SuperWorker.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: extras()
+      source_ref: "v#{@version}",
+      extras: extras(),
+      groups_for_extras: [
+        Introduction: ~r"README\.md",
+        Configuration: ~r"guides/config",
+        Supervisor: ~r"guides/supervisor",
+        Pool: ~r"guides/pool",
+        FunctionChain: ~r"guides/function_chain"
+      ]
     ]
   end
 
@@ -119,7 +132,7 @@ defmodule SuperWorker.MixProject do
       {String.to_atom(path),
        [
          title: title,
-         default: title == "Guide"
+         default: path == "README.md"
        ]}
     end)
   end

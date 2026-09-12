@@ -5,6 +5,15 @@ Easy to add & identify processes in system.
 
 *Note: Library is still unstable, please don't use for product.*
 
+## Guides
+
+Full guides ship with the docs (`mix docs`) and in the Hex package:
+
+- [Supervisor Guide](guides/supervisor/SUPERVISOR_GUIDE.md) — groups, chains and standalone workers, fault tolerance, introspection.
+- [Pool Guide](guides/pool/POOL_GUIDE.md) — a partitioned job pool: run/cast, retries with backoff, middleware.
+- [FunctionChain Guide](guides/function_chain/FUNCTION_CHAIN_GUIDE.md) — composable in-process pipelines with retry, branches and checkpoint/resume.
+- [Config Guide](guides/config/CONFIG_GUIDE.md) — declarative supervisor trees in config files ([Quickstart](guides/config/CONFIG_QUICKSTART.md)).
+
 ## Guide
 
 Just declare function for worker (task) and input (in param or stream) and run.
@@ -114,7 +123,9 @@ graph LR
 
 `SuperWorker.Pool` is a job pool on top of the same ideas: hand it a function,
 an MFA or a worker module, then submit jobs — no supervision tree to design,
-no message protocols to implement.
+no message protocols to implement. It is a **single-node, in-memory pool**:
+queued jobs survive worker crashes and partition restarts, but not a node
+crash.
 
 ```elixir
 # 1. A bare function
@@ -143,8 +154,10 @@ no message protocols to implement.
 
 ```elixir
 {:ok, result} = SuperWorker.Pool.run(MyPool, job)      # sync: blocks until done
+{:ok, result} = SuperWorker.Pool.run(MyPool, job, timeout: 5_000)
 {:ok, ref} = SuperWorker.Pool.run_async(MyPool, job)   # Task-like ref
 {:ok, result} = SuperWorker.Pool.await(ref)
+{:ok, result} = SuperWorker.Pool.await(ref, 5_000)     # custom timeout
 :ok = SuperWorker.Pool.cast(MyPool, job)               # fire-and-forget
 ```
 
