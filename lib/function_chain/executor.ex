@@ -53,6 +53,17 @@ defmodule SuperWorker.FunctionChain.Executor do
     end
   end
 
+  @doc """
+  Drops the metadata element of a failed run result, so hosts that do not
+  expose run context see the plain `{:error, reason}` shape.
+
+  `{:error, reason, meta}` becomes `{:error, reason}`; any other value,
+  including `{:ok, _}` and `{:error, reason}`, passes through unchanged.
+  """
+  @spec drop_meta({:error, term(), map()} | term()) :: term()
+  def drop_meta({:error, reason, _meta}), do: {:error, reason}
+  def drop_meta(other), do: other
+
   defp resolve_chain(chain = %FunctionChain{}), do: chain
   defp resolve_chain(fun) when is_function(fun, 0), do: fun.()
 

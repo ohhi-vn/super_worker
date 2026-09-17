@@ -77,7 +77,6 @@ defmodule SuperWorker.MixProject do
     """
     SuperWorker is a powerful Elixir library for working with supervisors and background jobs.
     It provides a much simpler approach than traditional supervisors.
-    This library is currently under development and is unstable, so it is not recommended for production use.
     """
   end
 

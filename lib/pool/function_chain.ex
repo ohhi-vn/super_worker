@@ -73,15 +73,11 @@ defmodule SuperWorker.Pool.FunctionChain do
 
   @impl true
   def handle_job(job, state) do
-    case Executor.run(state.chain, state.run_opts, job) do
+    case Executor.drop_meta(Executor.run(state.chain, state.run_opts, job)) do
       {:ok, result} ->
         {:ok, result, state}
 
       {:error, reason} ->
-        classify_failure(state, reason)
-
-      # return_context: true shape
-      {:error, reason, _meta} ->
         classify_failure(state, reason)
     end
   end

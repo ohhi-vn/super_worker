@@ -203,6 +203,34 @@ defmodule SuperWorker.Supervisor.ChainTest do
     assert is_integer(msg_id)
   end
 
+  test "plain return acknowledgments drain the queue without restarting workers", %{
+    sup_id: sup_id
+  } do
+    chain_id = make_ref()
+    parent = self()
+
+    {:ok, _} =
+      Sup.add_chain(sup_id,
+        id: chain_id,
+        queue_length: 1,
+        finished_callback: {:fun, fn data -> send(parent, {:finished, data}) end}
+      )
+
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn data -> data end, id: 1)
+    {:ok, _} = Sup.add_chain_worker(sup_id, chain_id, fn data -> {:next, data} end, id: 2)
+    {:ok, upstream} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+    monitor = Process.monitor(upstream)
+
+    for input <- 1..5 do
+      assert {:ok, _} = Sup.send_to_chain(sup_id, chain_id, input)
+      assert_receive {:finished, {^input, ^input}}, 1_000
+    end
+
+    refute_receive {:DOWN, ^monitor, :process, ^upstream, _}, 100
+    assert {:ok, ^upstream} = Sup.get_pid_chain_worker(sup_id, chain_id, 1)
+    Process.demonitor(monitor, [:flush])
+  end
+
   @tag :chain_result_protocol_drop
   test "worker returning {:drop, reason} stops forwarding", %{sup_id: sup_id} do
     chain_id = make_ref()

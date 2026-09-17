@@ -101,21 +101,15 @@ defmodule SuperWorker.Supervisor.FunctionChain do
   defp do_job_loop(state, on_result) do
     receive do
       {:run, ref, job, from} when is_reference(ref) and is_pid(from) ->
-        result = Executor.run(state.chain, state.run_opts, job)
+        result = Executor.drop_meta(Executor.run(state.chain, state.run_opts, job))
 
-        case result do
-          {:error, reason, _meta} ->
-            send(from, {:super_worker_function_chain, ref, {:error, reason}})
+        send(from, {:super_worker_function_chain, ref, result})
 
-          other ->
-            send(from, {:super_worker_function_chain, ref, other})
-        end
-
-        maybe_on_result(on_result, job, normalize(result))
+        maybe_on_result(on_result, job, result)
 
       job ->
-        result = Executor.run(state.chain, state.run_opts, job)
-        maybe_on_result(on_result, job, normalize(result))
+        result = Executor.drop_meta(Executor.run(state.chain, state.run_opts, job))
+        maybe_on_result(on_result, job, result)
     end
 
     do_job_loop(state, on_result)
@@ -125,11 +119,6 @@ defmodule SuperWorker.Supervisor.FunctionChain do
 
   defp maybe_on_result(on_result, job, result) when is_function(on_result, 2),
     do: on_result.(job, result)
-
-  # normalize() strips the return_context meta so :on_result always sees a
-  # 2-tuple, matching the Pool's :on_result shape.
-  defp normalize({:error, reason, _meta}), do: {:error, reason}
-  defp normalize(other), do: other
 
   ## Shared internals
 
@@ -150,10 +139,9 @@ defmodule SuperWorker.Supervisor.FunctionChain do
   end
 
   defp chain_node_run(state, data) do
-    case Executor.run(state.chain, state.run_opts, data) do
+    case Executor.drop_meta(Executor.run(state.chain, state.run_opts, data)) do
       {:ok, result} -> {:next, result}
       {:error, reason} -> {:error, reason}
-      {:error, reason, _meta} -> {:error, reason}
     end
   end
 end

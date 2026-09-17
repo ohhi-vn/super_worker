@@ -376,8 +376,11 @@ defmodule SuperWorker.Supervisor.Chain do
 
     message =
       case message_type do
-        :new_data -> %Message{id: msg_id, data: data, type: :new_data, from: self()}
-        :chain_message -> Message.new(:chain_message, nil, {msg_id, data})
+        :new_data ->
+          %Message{id: msg_id, data: data, type: :new_data, from: self()}
+
+        :chain_message ->
+          %Message{id: msg_id, data: {msg_id, data}, type: :chain_message, from: self()}
       end
 
     result = Messaging.send_next(chain, worker.order + 1, message)
