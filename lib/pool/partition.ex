@@ -39,10 +39,12 @@ defmodule SuperWorker.Pool.Partition do
     :id,
     # workers wanted on this partition: ceil(size / partitions), min 1
     :workers_wanted,
-    # idle worker pids (list; monitored in :monitors, so no duplicates)
+    # idle worker pids (MapSet; membership mirrors :monitors, so no duplicates)
     :idle,
     # %{job_id => worker_pid}
     :busy,
+    # %{worker_pid => job_id} (reverse index of :busy for O(1) crash lookup)
+    :busy_by_worker,
     # %{worker_pid => monitor_ref}
     :monitors,
     # FIFO queue of job_ids (:queue)
@@ -91,8 +93,9 @@ defmodule SuperWorker.Pool.Partition do
        config: config,
        id: id,
        workers_wanted: max(1, ceil(config.size / config.partitions)),
-       idle: [],
+       idle: MapSet.new(),
        busy: %{},
+       busy_by_worker: %{},
        monitors: %{},
        queue: :queue.new(),
        queue_len: 0,
@@ -128,7 +131,7 @@ defmodule SuperWorker.Pool.Partition do
        alive?: true,
        queue: state.queue_len,
        busy: map_size(state.busy),
-       idle: length(state.idle)
+       idle: MapSet.size(state.idle)
      }, state}
   end
 
@@ -152,23 +155,34 @@ defmodule SuperWorker.Pool.Partition do
 
   @impl true
   def handle_info({:worker_ready, pid}, state) do
-    if Map.has_key?(state.monitors, pid) do
-      # Already tracked (duplicate ready message).
-      {:noreply, state}
-    else
-      SuperWorker.Log.debug(fn ->
-        "SuperWorker, Pool, partition #{inspect(state.id)} registered worker #{inspect(pid)}"
-      end)
+    cond do
+      Map.has_key?(state.monitors, pid) ->
+        # Already tracked (duplicate ready message).
+        {:noreply, state}
 
-      ref = Process.monitor(pid)
+      not Process.alive?(pid) ->
+        # Stale ready from a worker that died before this message was
+        # handled (e.g. a rest_for_one cascade killed it while its ready
+        # was in flight). Dropping it keeps dead pids out of the idle set;
+        # the replacement worker re-registers itself. Without this, jobs
+        # dispatched to the dead pid are lost and dead-lettered as
+        # {:worker_crashed, :noproc}.
+        {:noreply, state}
 
-      state =
-        state
-        |> Map.put(:monitors, Map.put(state.monitors, pid, ref))
-        |> Map.put(:idle, state.idle ++ [pid])
-        |> dispatch()
+      true ->
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Pool, partition #{inspect(state.id)} registered worker #{inspect(pid)}"
+        end)
 
-      {:noreply, state}
+        ref = Process.monitor(pid)
+
+        state =
+          state
+          |> Map.put(:monitors, Map.put(state.monitors, pid, ref))
+          |> Map.put(:idle, MapSet.put(state.idle, pid))
+          |> dispatch()
+
+        {:noreply, state}
     end
   end
 
@@ -200,7 +214,7 @@ defmodule SuperWorker.Pool.Partition do
         state =
           state
           |> Map.put(:monitors, Map.delete(state.monitors, pid))
-          |> Map.put(:idle, List.delete(state.idle, pid))
+          |> Map.put(:idle, MapSet.delete(state.idle, pid))
           |> handle_worker_down(pid, reason)
           |> dispatch()
 
@@ -255,15 +269,19 @@ defmodule SuperWorker.Pool.Partition do
 
   # Overload when the backlog is full AND no idle worker can take the job
   # straight away (max_queue 0 therefore means "never queue").
-  defp accept(state = %{config: %{max_queue: max_queue}, idle: []}, _job, _reply_to)
+  defp accept(state = %{config: %{max_queue: max_queue}}, job, reply_to)
        when state.queue_len >= max_queue do
-    :telemetry.execute(
-      [:super_worker, :pool, :overloaded],
-      %{},
-      %{pool: state.config.name, partition: state.id}
-    )
+    if MapSet.size(state.idle) == 0 do
+      :telemetry.execute(
+        [:super_worker, :pool, :overloaded],
+        %{},
+        %{pool: state.config.name, partition: state.id}
+      )
 
-    {:error, :overloaded}
+      {:error, :overloaded}
+    else
+      {:ok, submit(state, job, reply_to)}
+    end
   end
 
   defp accept(state, job, reply_to), do: {:ok, submit(state, job, reply_to)}
@@ -282,32 +300,39 @@ defmodule SuperWorker.Pool.Partition do
     dispatch(state)
   end
 
-  # Assigns queued jobs to idle workers while both are available.
-  defp dispatch(state = %{idle: [worker_pid | rest_idle], queue_len: queue_len})
-       when queue_len > 0 do
-    {{:value, job_id}, queue} = :queue.out(state.queue)
-    entry = Map.fetch!(state.jobs, job_id)
+  # Assigns queued jobs to idle workers while both are available. Worker
+  # selection order is unspecified; the job queue stays strictly FIFO.
+  defp dispatch(state) when state.queue_len > 0 do
+    case Enum.take(state.idle, 1) do
+      [] ->
+        state
 
-    meta = %{
-      pool: state.config.name,
-      partition: state.id,
-      job_id: job_id,
-      attempts: entry.attempts + 1
-    }
+      [worker_pid] ->
+        {{:value, job_id}, queue} = :queue.out(state.queue)
+        entry = Map.fetch!(state.jobs, job_id)
 
-    SuperWorker.Log.debug(fn ->
-      "SuperWorker, Pool, partition #{inspect(state.id)} dispatching job #{inspect(job_id)} to #{inspect(worker_pid)}"
-    end)
+        meta = %{
+          pool: state.config.name,
+          partition: state.id,
+          job_id: job_id,
+          attempts: entry.attempts + 1
+        }
 
-    send(worker_pid, {:run_job, job_id, entry.job, meta})
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Pool, partition #{inspect(state.id)} dispatching job #{inspect(job_id)} to #{inspect(worker_pid)}"
+        end)
 
-    dispatch(%{
-      state
-      | queue: queue,
-        idle: rest_idle,
-        queue_len: queue_len - 1,
-        busy: Map.put(state.busy, job_id, worker_pid)
-    })
+        send(worker_pid, {:run_job, job_id, entry.job, meta})
+
+        dispatch(%{
+          state
+          | queue: queue,
+            idle: MapSet.delete(state.idle, worker_pid),
+            queue_len: state.queue_len - 1,
+            busy: Map.put(state.busy, job_id, worker_pid),
+            busy_by_worker: Map.put(state.busy_by_worker, worker_pid, job_id)
+        })
+    end
   end
 
   defp dispatch(state), do: state
@@ -365,61 +390,92 @@ defmodule SuperWorker.Pool.Partition do
   end
 
   defp handle_worker_down(state, pid, reason) do
-    case Enum.find(state.busy, fn {_job_id, worker_pid} -> worker_pid == pid end) do
-      {job_id, ^pid} ->
-        entry = Map.fetch!(state.jobs, job_id)
-        attempts = entry.attempts + 1
-
-        :telemetry.execute(
-          [:super_worker, :pool, :job, :crash],
-          %{},
-          meta_of(state, %{entry | attempts: attempts}, %{reason: crash_reason(reason)})
-        )
-
-        state = %{state | busy: Map.delete(state.busy, job_id)}
-
-        cond do
-          attempts >= state.config.retry.max_attempts ->
-            dead_letter(
-              state,
-              %{entry | attempts: attempts},
-              {:worker_crashed, crash_reason(reason)},
-              crash_reason(reason)
-            )
-
-          entry.crash_requeued ->
-            # Already crash-requeued once: a poison-pill job, dead-letter it
-            # instead of queueing it again — no crash loop.
-            dead_letter(
-              state,
-              %{entry | attempts: attempts},
-              {:worker_crashed, crash_reason(reason)},
-              crash_reason(reason)
-            )
-
-          true ->
-            SuperWorker.Log.debug(fn ->
-              "SuperWorker, Pool, partition #{inspect(state.id)} requeued job #{inspect(job_id)} " <>
-                "after worker crash (once)"
-            end)
-
-            %{
-              state
-              | jobs:
-                  Map.put(state.jobs, job_id, %{
-                    entry
-                    | attempts: attempts,
-                      crash_requeued: true
-                  }),
-                queue: :queue.in_r(job_id, state.queue),
-                queue_len: state.queue_len + 1
-            }
-        end
-
+    case Map.get(state.busy_by_worker, pid) do
       nil ->
         # An idle (or unknown) worker died — the restart will arrive as a
         # fresh `worker_ready`. Nothing to requeue.
         state
+
+      job_id ->
+        entry = Map.fetch!(state.jobs, job_id)
+
+        state = %{
+          state
+          | busy: Map.delete(state.busy, job_id),
+            busy_by_worker: Map.delete(state.busy_by_worker, pid)
+        }
+
+        if uncharged_requeue?(reason) do
+          # Never the job's fault, so requeue without charging the crash
+          # budget — a healthy job must not be dead-lettered as a poison
+          # pill. See uncharged_requeue?/1 for the covered exits.
+          :telemetry.execute(
+            [:super_worker, :pool, :job, :crash],
+            %{},
+            meta_of(state, entry, %{reason: crash_reason(reason)})
+          )
+
+          SuperWorker.Log.debug(fn ->
+            "SuperWorker, Pool, partition #{inspect(state.id)} requeued job #{inspect(job_id)} " <>
+              "after worker shutdown (not charged)"
+          end)
+
+          %{
+            state
+            | queue: :queue.in_r(job_id, state.queue),
+              queue_len: state.queue_len + 1
+          }
+        else
+          crash_requeue(state, job_id, entry, reason)
+        end
+    end
+  end
+
+  defp crash_requeue(state, job_id, entry, reason) do
+    attempts = entry.attempts + 1
+
+    :telemetry.execute(
+      [:super_worker, :pool, :job, :crash],
+      %{},
+      meta_of(state, %{entry | attempts: attempts}, %{reason: crash_reason(reason)})
+    )
+
+    cond do
+      attempts >= state.config.retry.max_attempts ->
+        dead_letter(
+          state,
+          %{entry | attempts: attempts},
+          {:worker_crashed, crash_reason(reason)},
+          crash_reason(reason)
+        )
+
+      entry.crash_requeued ->
+        # Already crash-requeued once: a poison-pill job, dead-letter it
+        # instead of queueing it again — no crash loop.
+        dead_letter(
+          state,
+          %{entry | attempts: attempts},
+          {:worker_crashed, crash_reason(reason)},
+          crash_reason(reason)
+        )
+
+      true ->
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Pool, partition #{inspect(state.id)} requeued job #{inspect(job_id)} " <>
+            "after worker crash (once)"
+        end)
+
+        %{
+          state
+          | jobs:
+              Map.put(state.jobs, job_id, %{
+                entry
+                | attempts: attempts,
+                  crash_requeued: true
+              }),
+            queue: :queue.in_r(job_id, state.queue),
+            queue_len: state.queue_len + 1
+        }
     end
   end
 
@@ -432,7 +488,7 @@ defmodule SuperWorker.Pool.Partition do
       meta_of(state, entry, %{reason: reason_tagged})
     )
 
-    invoke_on_failure(state.config, entry.job, reason_raw)
+    invoke_on_failure(state, entry.job, reason_raw)
     notify_middleware(state, {:error, reason_raw}, entry)
 
     complete(state, entry, {:error, reason_tagged})
@@ -442,6 +498,19 @@ defmodule SuperWorker.Pool.Partition do
   # stacktrace is internal noise for users, unwrap the exception.
   defp crash_reason({exception, stacktrace}) when is_list(stacktrace), do: exception
   defp crash_reason(reason), do: reason
+
+  # Exits that are never the job's fault, so their jobs requeue without
+  # charging the crash budget:
+  # - `:shutdown` / `{:shutdown, _}` — supervisor-initiated (a rest_for_one
+  #   cascade after a sibling crashed, or pool shutdown);
+  # - `:noproc` — a registration race: the worker died between its ready
+  #   liveness check and its monitor, so it never ran while tracked. A
+  #   dispatch in the same handler may still have handed it a job (the send
+  #   to the dead pid is lost); the pending :noproc DOWN requeues that job.
+  defp uncharged_requeue?(:shutdown), do: true
+  defp uncharged_requeue?({:shutdown, _}), do: true
+  defp uncharged_requeue?(:noproc), do: true
+  defp uncharged_requeue?(_other), do: false
 
   ## Completion helpers
 
@@ -454,7 +523,7 @@ defmodule SuperWorker.Pool.Partition do
         send(caller_pid, {:super_worker_pool_result, ref, result})
 
       :none ->
-        invoke_on_result(state.config, entry.job, result)
+        invoke_on_result(state, entry.job, result)
     end
 
     state
@@ -462,7 +531,9 @@ defmodule SuperWorker.Pool.Partition do
     |> Map.put(:timers, Map.delete(state.timers, entry.job_id))
   end
 
-  defp invoke_on_failure(config, job, reason) do
+  defp invoke_on_failure(state, job, reason) do
+    config = state.config
+
     case config.on_failure do
       nil ->
         Logger.error(
@@ -471,41 +542,59 @@ defmodule SuperWorker.Pool.Partition do
         )
 
       fun when is_function(fun, 2) ->
-        log_on_failure_result(Utils.safe_call(fn -> fun.(job, reason) end))
+        log_callback_result(:on_failure, state, Utils.safe_call(fn -> fun.(job, reason) end))
 
       {module, function, args} ->
-        log_on_failure_result(Utils.safe_call(module, function, [job, reason | args]))
+        log_callback_result(
+          :on_failure,
+          state,
+          Utils.safe_call(module, function, [job, reason | args])
+        )
     end
 
     :ok
   end
 
-  defp log_on_failure_result({:ok, _}), do: :ok
+  defp invoke_on_result(state, job, result) do
+    config = state.config
 
-  defp log_on_failure_result({:error, {kind, reason}}) do
-    Logger.error("SuperWorker, Pool, :on_failure callback crashed: #{kind}: #{inspect(reason)}")
-  end
-
-  defp invoke_on_result(config, job, result) do
     case config.on_result do
       nil ->
         # Fire-and-forget cast without on_result: the result is dropped.
         :ok
 
       fun when is_function(fun, 2) ->
-        log_on_result_result(Utils.safe_call(fn -> fun.(job, result) end))
+        log_callback_result(:on_result, state, Utils.safe_call(fn -> fun.(job, result) end))
 
       {module, function, args} ->
-        log_on_result_result(Utils.safe_call(module, function, [job, result | args]))
+        log_callback_result(
+          :on_result,
+          state,
+          Utils.safe_call(module, function, [job, result | args])
+        )
     end
 
     :ok
   end
 
-  defp log_on_result_result({:ok, _}), do: :ok
+  defp log_callback_result(_callback, _state, {:ok, _}), do: :ok
 
-  defp log_on_result_result({:error, {kind, reason}}) do
-    Logger.error("SuperWorker, Pool, :on_result callback crashed: #{kind}: #{inspect(reason)}")
+  defp log_callback_result(callback, state, {:error, {kind, reason}}) do
+    Logger.error(
+      "SuperWorker, Pool, #{inspect(callback)} callback crashed: #{kind}: #{inspect(reason)}"
+    )
+
+    :telemetry.execute(
+      [:super_worker, :pool, :callback, :error],
+      %{},
+      %{
+        pool: state.config.name,
+        partition: state.id,
+        callback: callback,
+        kind: kind,
+        reason: reason
+      }
+    )
   end
 
   # No middleware configured: skip the notify pipeline and the meta map build.
@@ -537,7 +626,12 @@ defmodule SuperWorker.Pool.Partition do
   # The job_id is already known (validated against :busy by validate_sender/3),
   # so releasing a worker is O(1) — no scan of the busy map.
   defp release_worker(state, pid, job_id) do
-    %{state | idle: [pid | state.idle], busy: Map.delete(state.busy, job_id)}
+    %{
+      state
+      | idle: MapSet.put(state.idle, pid),
+        busy: Map.delete(state.busy, job_id),
+        busy_by_worker: Map.delete(state.busy_by_worker, pid)
+    }
   end
 
   # The job must still be in flight on this exact worker; results from

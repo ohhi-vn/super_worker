@@ -59,6 +59,7 @@ defmodule SuperWorker.TermStorage do
   @spec delete(term()) :: :ok
   def delete(key) do
     :persistent_term.erase({@me, key})
+    :ok
   end
 
   @doc """

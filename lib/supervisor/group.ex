@@ -27,10 +27,12 @@ defmodule SuperWorker.Supervisor.Group do
         }
 
   @type check_options_result :: {:ok, t()} | {:error, atom() | {atom(), any()}}
-  @type worker_operation_result :: {:ok, t()} | {:error, atom()}
+  @type worker_operation_result :: {:ok, t()} | {:error, atom() | {atom(), any()}}
+  @type worker_ref_result :: {:ok, :killed} | {:error, atom() | {atom(), any()}}
 
   alias __MODULE__
   alias SuperWorker.Supervisor.{Constants, Db, Validator, Worker}
+  alias SuperWorker.Supervisor.ErrorHandler
   alias SuperWorker.Supervisor.Utils
 
   require Logger
@@ -57,20 +59,24 @@ defmodule SuperWorker.Supervisor.Group do
   @doc """
   Get worker from the group.
   """
-  @spec get_worker(t(), any()) :: {:ok, Worker.t()} | {:error, atom()}
+  @spec get_worker(t(), any()) :: {:ok, Worker.t()} | {:error, atom() | {atom(), any()}}
   def get_worker(group = %Group{}, worker_id) do
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Group, supervisor #{inspect(group.supervisor)}, group #{inspect(group.id)}, get_worker: #{inspect(worker_id)}"
     end)
 
-    worker_id =
-      case worker_id do
-        {_, id} -> id
-        _ -> worker_id
-      end
+    worker_id = normalize_worker_id(worker_id)
 
-    Db.get_worker_info(group.table, worker_id, {:group, group.id})
+    case Db.get_worker_info(group.table, worker_id, {:group, group.id}) do
+      {:ok, _} = ok -> ok
+      {:error, _} -> ErrorHandler.not_found(:worker)
+    end
   end
+
+  # Worker ids may arrive as {_, id} tuples from partition routing.
+  # Unwrap consistently so every entry point resolves the same logical id.
+  defp normalize_worker_id({_, id}), do: id
+  defp normalize_worker_id(id), do: id
 
   @doc """
   Get all workers from the group.
@@ -86,8 +92,8 @@ defmodule SuperWorker.Supervisor.Group do
 
   @spec count_workers(t()) :: non_neg_integer()
   def count_workers(group = %Group{}) do
-    {:ok, workers} = get_all_workers(group)
-    Enum.count(workers)
+    {:ok, count} = Db.count_workers_by_parent(group.table, {:group, group.id})
+    count
   end
 
   @doc """
@@ -106,25 +112,31 @@ defmodule SuperWorker.Supervisor.Group do
   """
   @spec add_worker(t(), Worker.t()) :: worker_operation_result()
   def add_worker(group = %Group{}, worker = %Worker{}) do
-    case get_worker(group, worker.id) do
+    worker = %Worker{worker | parent: group.id}
+
+    worker =
+      case normalize_worker_id(worker.id) do
+        nil -> %Worker{worker | id: Utils.random_id()}
+        false -> %Worker{worker | id: Utils.random_id()}
+        id -> %Worker{worker | id: id}
+      end
+
+    # Single info-row read: no separate exists? round-trip.
+    case Db.get_worker_info(group.table, worker.id, {:group, group.id}) do
       {:ok, _} ->
-        {:error, :worker_exists}
+        ErrorHandler.already_exists(:worker)
 
       {:error, _} ->
-        worker = %Worker{worker | parent: group.id}
-
-        worker =
-          case worker.id do
-            nil -> %Worker{worker | id: Utils.random_id()}
-            false -> %Worker{worker | id: Utils.random_id()}
-            _ -> worker
-          end
-
-        Db.put_worker_info(group.table, worker)
-
         case spawn_worker(group, worker) do
-          {:ok, _} = ok -> ok
-          {:error, _} = error -> error
+          {:ok, _} = ok ->
+            Db.put_worker_info(group.table, worker)
+            ok
+
+          {:error, _} = error ->
+            # Spawn failed: ensure no orphan rows remain.
+            Db.delete_worker_by_id(group.table, worker.id, {:group, group.id})
+            Db.delete_worker_info(group.table, worker.id, {:group, group.id})
+            error
         end
     end
   end
@@ -136,26 +148,21 @@ defmodule SuperWorker.Supervisor.Group do
   def restart_worker(group = %Group{}, worker = %Worker{}) do
     SuperWorker.Log.debug(fn -> "SuperWorker, Group, restart worker #{inspect(worker)}" end)
 
-    case kill_worker(group, worker, :restart) do
+    worker = %Worker{worker | parent: group.id, id: normalize_worker_id(worker.id)}
+
+    case kill_worker(group, worker.id, :restart) do
       {:ok, _} ->
         # Worker was alive and killed, now spawn a new one
         spawn_worker(group, worker)
 
-      {:error, :not_alive} ->
-        # Worker process is already dead, clean up ETS and spawn new one
+      {:error, :worker_not_found} ->
+        # Stale or missing ref row: clean both row kinds, then respawn.
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Group, worker #{inspect(worker.id)} already dead, spawning new one"
+          "SuperWorker, Group, worker #{inspect(worker.id)} dead or missing, cleaning stale rows and spawning new one"
         end)
 
+        Db.delete_worker_by_id(group.table, worker.id, {:group, group.id})
         Db.delete_worker_info(group.table, worker.id, {:group, group.id})
-        spawn_worker(group, worker)
-
-      {:error, :not_found} ->
-        # Worker not in ETS, just spawn a new one
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Group, worker #{inspect(worker.id)} not found in ETS, spawning new one"
-        end)
-
         spawn_worker(group, worker)
     end
   end
@@ -165,86 +172,90 @@ defmodule SuperWorker.Supervisor.Group do
       "SuperWorker, Group, restart worker by id #{inspect(worker_id)}"
     end)
 
-    case get_worker(group, worker_id) do
+    worker_id = normalize_worker_id(worker_id)
+
+    case Db.get_worker_info(group.table, worker_id, {:group, group.id}) do
       {:ok, worker} ->
         restart_worker(group, worker)
 
-      {:error, _} = error ->
+      {:error, _} ->
         Logger.error(
-          "SuperWorker, Group, cannot get worker #{inspect(worker_id)}, #{inspect(error)}"
+          "SuperWorker, Group, cannot get worker #{inspect(worker_id)} for restart"
         )
 
-        {:error, :worker_not_found}
+        ErrorHandler.not_found(:worker)
     end
   end
 
   def remove_worker(group = %Group{}, worker_id) do
-    if worker_exists?(group, worker_id) do
-      with {:ok, worker} <- get_worker(group, worker_id),
-           {:ok, _} <- kill_worker(group, worker, :removed) do
-        table = group.table
-        parent = {:group, group.id}
-        Db.delete_worker_by_id(table, worker_id, parent)
-        Db.delete_worker_info(table, worker_id, parent)
+    worker_id = normalize_worker_id(worker_id)
+    parent = {:group, group.id}
+
+    # Single info read + single ref read; no exists? pre-check round-trip.
+    with {:ok, _worker} <- Db.get_worker_info(group.table, worker_id, parent),
+         {:ok, {ref, pid}} <- Db.get_worker_by_id(group.table, worker_id, parent) do
+      if Process.alive?(pid) do
+        Process.exit(pid, :removed)
+        # Delete by key: no extra lookup round-trip.
+        Db.delete_worker(group.table, ref)
+        Db.delete_worker_info(group.table, worker_id, parent)
 
         {:ok, :worker_removed}
       else
-        {:error, reason} = error ->
-          Logger.error(
-            "SuperWorker, Group, failed to kill worker #{inspect(worker_id)} in group #{inspect(group.id)}, error: #{inspect(reason)}"
-          )
+        Logger.error(
+          "SuperWorker, Group, failed to remove dead worker #{inspect(worker_id)} in group #{inspect(group.id)}"
+        )
 
-          error
+        ErrorHandler.not_found(:worker)
       end
     else
-      {:error, :worker_not_found}
+      {:error, _} ->
+        ErrorHandler.not_found(:worker)
     end
   end
 
   def kill_worker(group = %Group{}, worker = %Worker{}, reason) do
-    case Db.get_worker_by_id(group.table, worker.id, {:group, group.id}) do
+    do_kill_worker(group, normalize_worker_id(worker.id), reason)
+  end
+
+  def kill_worker(group = %Group{}, worker_id, reason) do
+    do_kill_worker(group, normalize_worker_id(worker_id), reason)
+  end
+
+  defp do_kill_worker(group = %Group{}, worker_id, reason) do
+    case Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
       {:ok, {_, pid}} ->
         if Process.alive?(pid) do
           SuperWorker.Log.debug(fn ->
-            "SuperWorker, Group, group: #{inspect(group.id)}, kill_worker: #{inspect(worker)}, reason: #{inspect(reason)}"
+            "SuperWorker, Group, group: #{inspect(group.id)}, kill_worker: #{inspect(worker_id)}, reason: #{inspect(reason)}"
           end)
 
           Process.exit(pid, reason)
           {:ok, :killed}
         else
-          {:error, :not_alive}
+          ErrorHandler.not_found(:worker)
         end
 
-      _ ->
-        {:error, :not_found}
-    end
-  end
-
-  def kill_worker(group = %Group{}, worker_id, reason) do
-    case get_worker(group, worker_id) do
-      {:ok, worker} ->
-        kill_worker(group, worker, reason)
-
       {:error, _} ->
-        {:error, :worker_not_found}
+        ErrorHandler.not_found(:worker)
     end
   end
 
   def kill_all_workers(group = %Group{}, reason \\ :kill) do
-    {:ok, list_worker} = get_all_workers(group)
+    # Pid-only select: one ETS scan, no per-worker ref lookups, no full structs.
+    {:ok, worker_pids} = Db.get_worker_pids_by_parent(group.table, {:group, group.id})
 
     results =
-      Enum.map(list_worker, fn worker ->
-        case kill_worker(group, worker, reason) do
-          {:ok, _} ->
-            :ok
+      Enum.map(worker_pids, fn {worker_id, pid} ->
+        if Process.alive?(pid) do
+          Process.exit(pid, reason)
+          :ok
+        else
+          Logger.warning(
+            "SuperWorker, Group, failed to kill worker #{inspect(worker_id)} in group #{inspect(group.id)}, reason: :worker_not_found"
+          )
 
-          {:error, kill_reason} ->
-            Logger.warning(
-              "SuperWorker, Group, failed to kill worker #{inspect(worker.id)} in group #{inspect(group.id)}, reason: #{inspect(kill_reason)}"
-            )
-
-            {:error, worker.id, kill_reason}
+          {:error, worker_id, :worker_not_found}
         end
       end)
 
@@ -267,26 +278,39 @@ defmodule SuperWorker.Supervisor.Group do
     catch
       # A failed GenServer start throws {:spawn_failed, reason}; convert it to
       # an error tuple instead of crashing the partition process.
+      # All failure shapes preserve the cause and clean the ref row so no
+      # orphan state remains for restart/add callers to compensate.
       :throw, {:spawn_failed, reason} ->
         Logger.error(
           "SuperWorker, Group, failed to spawn worker #{inspect(worker.id)}: #{inspect(reason)}"
         )
 
-        {:error, :spawn_failed}
+        Db.delete_worker_by_id(group.table, worker.id, {:group, group.id})
+        {:error, {:spawn_failed, reason}}
+
+      :throw, {:link_failed, reason} ->
+        Logger.error(
+          "SuperWorker, Group, failed to link worker #{inspect(worker.id)}: #{inspect(reason)}"
+        )
+
+        Db.delete_worker_by_id(group.table, worker.id, {:group, group.id})
+        {:error, {:spawn_failed, {:link_failed, reason}}}
 
       :exit, reason ->
         Logger.error(
           "SuperWorker, Group, failed to spawn worker #{inspect(worker.id)}: #{inspect(reason)}"
         )
 
-        {:error, :spawn_failed}
+        Db.delete_worker_by_id(group.table, worker.id, {:group, group.id})
+        {:error, {:spawn_failed, {:exit, reason}}}
 
       error, reason ->
         Logger.error(
           "SuperWorker, Group, unexpected error spawning worker #{inspect(worker.id)}: #{inspect(error)}: #{inspect(reason)}"
         )
 
-        {:error, :spawn_failed}
+        Db.delete_worker_by_id(group.table, worker.id, {:group, group.id})
+        {:error, {:spawn_failed, {error, reason}}}
     end
   end
 
@@ -294,19 +318,22 @@ defmodule SuperWorker.Supervisor.Group do
   def broadcast(group = %Group{}, message) do
     case Db.get_worker_pids_by_parent(group.table, {:group, group.id}) do
       {:ok, worker_pids} ->
-        # Use Enum.each for side effects (sending messages)
         errors =
           Enum.map(worker_pids, fn {_worker_id, pid} ->
-            try do
-              send(pid, message)
-              :ok
-            catch
-              :exit, reason ->
-                Logger.error(
-                  "SuperWorker, Group, failed to send to pid #{inspect(pid)}: #{inspect(reason)}"
-                )
+            if Process.alive?(pid) do
+              try do
+                send(pid, message)
+                :ok
+              catch
+                :exit, reason ->
+                  Logger.error(
+                    "SuperWorker, Group, failed to send to pid #{inspect(pid)}: #{inspect(reason)}"
+                  )
 
-                {:error, pid, reason}
+                  {:error, pid, reason}
+              end
+            else
+              {:error, pid, :worker_not_found}
             end
           end)
           |> Enum.filter(&match?({:error, _, _}, &1))
@@ -320,17 +347,27 @@ defmodule SuperWorker.Supervisor.Group do
   end
 
   def send_message(group = %Group{}, worker_id, message) do
+    worker_id = normalize_worker_id(worker_id)
+
     case Db.get_worker_by_id(group.table, worker_id, {:group, group.id}) do
       {:ok, {_, pid}} ->
-        send(pid, message)
-        :ok
+        if Process.alive?(pid) do
+          send(pid, message)
+          :ok
+        else
+          Logger.error(
+            "SuperWorker, Group, send to dead worker #{inspect(worker_id)} failed"
+          )
 
-      error ->
+          ErrorHandler.not_found(:worker)
+        end
+
+      {:error, _} ->
         Logger.error(
-          "SuperWorker, Group, send to worker #{inspect(worker_id)} failed, #{inspect(error)}"
+          "SuperWorker, Group, send to worker #{inspect(worker_id)} failed: :worker_not_found"
         )
 
-        {:error, :cannot_send}
+        ErrorHandler.not_found(:worker)
     end
   end
 
@@ -339,12 +376,13 @@ defmodule SuperWorker.Supervisor.Group do
   defp register_worker_name(nil), do: :ok
 
   defp register_worker_name(name) do
-    case Process.whereis(name) do
-      nil ->
-        Process.register(self(), name)
-
-      _pid ->
+    try do
+      Process.register(self(), name)
+      :ok
+    rescue
+      ArgumentError ->
         Logger.warning("SuperWorker, Group, worker name already registered: #{inspect(name)}")
+        :ok
     end
   end
 
@@ -409,30 +447,27 @@ defmodule SuperWorker.Supervisor.Group do
     if options.restart_strategy in Constants.Strategies.group_restart_strategies() do
       {:ok, options}
     else
-      {:error, "Invalid group restart strategy, #{inspect(options.restart_strategy)}"}
+      {:error,
+       {:invalid_options, {:invalid_restart_strategy, options.restart_strategy}}}
+    end
+  end
+
+  defp validate_id(options) do
+    case Map.get(options, :id) do
+      nil -> {:error, {:invalid_options, {:missing_id, nil}}}
+      _ -> {:ok, options}
     end
   end
 
   defp validate_options(options) do
-    validate_restart_strategy(options)
+    with {:ok, options} <- validate_id(options) do
+      validate_restart_strategy(options)
+    end
   end
 
   defp to_struct(options) when is_map(options) do
-    fields =
-      %Group{id: nil}
-      |> Map.from_struct()
-      |> Map.keys()
+    fields = Map.keys(%Group{id: nil})
 
-    result =
-      %Group{} =
-      Enum.reduce(fields, %Group{id: nil}, fn field, acc ->
-        if Map.has_key?(options, field) do
-          %{acc | field => Map.get(options, field)}
-        else
-          acc
-        end
-      end)
-
-    {:ok, result}
+    {:ok, struct(Group, Map.take(options, fields))}
   end
 end

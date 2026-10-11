@@ -27,6 +27,65 @@ defmodule SuperWorker.Supervisor.ChainMessagingTest do
     end
   end
 
+  describe "routing contract (new_data/2 and send_next/3)" do
+    setup do
+      Process.flag(:trap_exit, true)
+      table = Db.init(:"messaging_contract_#{System.unique_integer([:positive])}")
+      %{table: table}
+    end
+
+    test "new_data/2 delivers to the node at order 1", %{table: table} do
+      parent = self()
+      chain = %Chain{id: make_ref(), table: table, send_type: :random}
+
+      {:ok, chain} =
+        Chain.add_worker(chain, %SuperWorker.Supervisor.Worker{
+          id: :first,
+          type: :chain,
+          fun:
+            {:fun,
+             fn d ->
+               send(parent, {:got, d})
+               {:drop, :seen}
+             end}
+        })
+
+      msg = Message.new(:new_data, nil, :hello)
+      assert {:ok, :sent_to_one} = Messaging.new_data(chain, msg)
+      assert_receive {:got, :hello}, 2_000
+    end
+
+    test "send_next/3 past the last node runs the finished callback", %{table: table} do
+      parent = self()
+
+      chain = %Chain{
+        id: make_ref(),
+        table: table,
+        finished_callback: {:fun, fn d -> send(parent, {:done, d}) end}
+      }
+
+      msg = Message.new(:new_data, nil, :end_data)
+      assert {:ok, :callback_executed} = Messaging.send_next(chain, 1, msg)
+      assert_receive {:done, :end_data}
+    end
+
+    test "send_next/3 reports :no_live_replica when every replica is dead", %{table: table} do
+      chain = %Chain{id: make_ref(), table: table}
+
+      {:ok, chain} =
+        Chain.add_worker(chain, %SuperWorker.Supervisor.Worker{
+          id: :dead,
+          type: :chain,
+          fun: {:fun, fn d -> {:drop, d} end}
+        })
+
+      {:ok, _} = Chain.kill_worker(chain, :dead)
+
+      msg = Message.new(:new_data, nil, :payload)
+      assert {:error, :no_live_replica} = Messaging.send_next(chain, 1, msg)
+    end
+  end
+
   describe "finished callback failures via the running supervisor" do
     setup do
       sup_id = :"messaging_sup_#{System.unique_integer([:positive])}"

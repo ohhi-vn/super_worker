@@ -1,14 +1,15 @@
 # ConfigLoader Quick Start Guide
 
-Get started with SuperWorker's ConfigLoader in 5 minutes.
+Get started with SuperWorker's ConfigLoader in 5 minutes. It automatically
+starts SuperWorker supervisors from your application configuration files —
+define your supervision tree in `config.exs` instead of writing code.
 
-## What is ConfigLoader?
+New to the concepts (groups, chains, standalone workers, restart strategies)?
+Read the [Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md) first; this
+guide only shows the config shapes. Full option reference lives in the
+[Config Guide](CONFIG_GUIDE.md).
 
-ConfigLoader automatically starts SuperWorker supervisors from your application configuration files. Define your supervision tree in `config.exs` instead of writing code.
-
-## Basic Setup
-
-### 1. Add Configuration
+## Basic setup
 
 In `config/config.exs`:
 
@@ -33,13 +34,12 @@ config :super_worker, :my_app_supervisor,
   ]
 ```
 
-### 2. That's It!
+That's it — the supervisor starts automatically when your application boots.
+No additional code needed.
 
-The supervisor starts automatically when your application boots. No additional code needed.
+## Common patterns
 
-## Common Patterns
-
-### Pattern 1: Background Job Workers
+### Pattern 1: Background job workers
 
 ```elixir
 config :super_worker, :job_supervisor,
@@ -55,7 +55,7 @@ config :super_worker, :job_supervisor,
   ]
 ```
 
-### Pattern 2: Processing Pipeline (Chain)
+### Pattern 2: Processing pipeline (chain)
 
 ```elixir
 config :super_worker, :pipeline_supervisor,
@@ -73,7 +73,7 @@ config :super_worker, :pipeline_supervisor,
   ]
 ```
 
-### Pattern 3: Mixed Workers
+### Pattern 3: Mixed workers
 
 ```elixir
 config :super_worker, :app_supervisor,
@@ -93,7 +93,7 @@ config :super_worker, :app_supervisor,
   ]
 ```
 
-## Worker Requirements
+## Worker requirements
 
 Your worker modules must implement `start_link/0` (or similar arity) and return:
 
@@ -115,7 +115,7 @@ defmodule MyApp.Worker do
 end
 ```
 
-## Runtime Control
+## Runtime control
 
 Load supervisors manually:
 
@@ -139,32 +139,7 @@ Stop a supervisor:
 SuperWorker.Supervisor.stop(:my_app_supervisor)
 ```
 
-## Configuration Options
-
-### Supervisor Options
-
-- `num_partitions` - Number of partitions (default: CPU cores)
-- `link` - Link to caller process (true/false)
-- `report_to` - List of PIDs for event reporting
-
-### Group Options
-
-- `id` - **Required**. Unique atom identifier
-- `restart_strategy` - `:one_for_one` or `:one_for_all`
-
-### Chain Options
-
-- `id` - **Required**. Unique atom identifier
-- `restart_strategy` - `:one_for_one`, `:one_for_all`, `:rest_for_one`
-- `send_type` - `:broadcast`, `:random`, `:partition`, `:round_robin`
-- `queue_length` - Max queue size
-
-### Worker Options
-
-- `id` - **Required**. Unique atom identifier
-- `restart_strategy` - (Standalone only) `:permanent`, `:transient`, `:temporary`
-
-## Environment-Specific Config
+## Environment-specific config
 
 ```elixir
 # config/dev.exs
@@ -178,34 +153,21 @@ config :super_worker, :my_supervisor,
   options: [num_partitions: 8, link: false]
 ```
 
-## Troubleshooting
+## Troubleshooting pointers
 
-**Supervisor not starting?**
-- Check logs for parsing errors
-- Ensure all required fields (`:id`) are present
-- Verify worker modules exist and are compiled
+**Supervisor not starting?** Check logs for parsing errors, ensure every
+group/chain/worker has an `:id`, and verify worker modules exist and are
+compiled.
 
-**Workers crashing?**
-- Ensure worker `start_link` returns `{:ok, pid}`
-- Check worker implementation doesn't exit immediately
-- Review restart strategy settings
+**Workers crashing on boot?** Ensure worker `start_link` returns
+`{:ok, pid}` and the process doesn't exit immediately.
 
-## Next Steps
+Full error catalog lives in the [Config Guide](CONFIG_GUIDE.md#troubleshooting).
 
-- Read [CONFIG_GUIDE.md](CONFIG_GUIDE.md) for complete documentation
-- See [config/examples/config_loader_example.exs](../../config/examples/config_loader_example.exs) for more examples
-- Check [tests](../../../test/config_loader/) for usage patterns
+## Next steps
 
-## Quick Reference
-
-| Component | Config Key | Required Fields |
-|-----------|-----------|-----------------|
-| Supervisor | Top-level atom | `:options` with `:id` |
-| Group | `:groups` list | `:id` |
-| Chain | `:chains` list | `:id` |
-| Standalone | `:workers` list | `:id`, `:restart_strategy` |
-| Worker (in group/chain) | `:workers` list | `:mfa` or `:fun`, `:options` with `:id` |
-
-## Help
-
-Questions? Check the [full CONFIG GUIDE](CONFIG_GUIDE.md) or the test files for examples.
+- Read the [Config Guide](CONFIG_GUIDE.md) for the complete option reference,
+  validation rules, and troubleshooting.
+- See [config/examples/config_loader_example.exs](../../config/examples/config_loader_example.exs)
+  for more examples.
+- Check [tests](../../test/config_loader/) for usage patterns.

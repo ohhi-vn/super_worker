@@ -189,6 +189,49 @@ defmodule SuperWorker.Pool.ApiTest do
              )
   end
 
+  test "invalid circuit breaker options are rejected" do
+    base = [task: fn job -> job end, size: 1, partitions: 1]
+
+    assert {:error, {:invalid, _}} =
+             Pool.start_link(
+               Keyword.merge(base,
+                 name: TestPool.unique_name(),
+                 circuit_breaker: [failure_threshold: 0]
+               )
+             )
+
+    assert {:error, {:invalid, _}} =
+             Pool.start_link(
+               Keyword.merge(base,
+                 name: TestPool.unique_name(),
+                 circuit_breaker: [reset_timeout: -1]
+               )
+             )
+
+    assert {:error, {:invalid, {:circuit_breaker, _}}} =
+             Pool.start_link(
+               Keyword.merge(base,
+                 name: TestPool.unique_name(),
+                 circuit_breaker: :not_a_list
+               )
+             )
+
+    # Valid breaker options start the pool.
+    name = TestPool.unique_name()
+
+    {:ok, _} =
+      Pool.start_link(
+        Keyword.merge(base,
+          name: name,
+          circuit_breaker: [failure_threshold: 2, reset_timeout: 100]
+        )
+      )
+
+    assert Pool.run(name, :job) == {:ok, :job}
+
+    Pool.stop(name)
+  end
+
   test "start_link fails when the name is already taken" do
     name = TestPool.unique_name()
 

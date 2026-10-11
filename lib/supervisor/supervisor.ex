@@ -68,6 +68,41 @@ defmodule SuperWorker.Supervisor do
     without letting exceptions escape (`{:ok, result}` /
     `{:error, {kind, reason}}`).
 
+  ## Group error contract
+
+  Group APIs return only these error reasons:
+
+  - `:worker_not_found` - the worker id is unknown, or its process is dead
+    (send, kill, restart, remove, get pid);
+  - `:worker_already_exists` - a worker with that id is already in the group;
+  - `:group_not_found` - the group id is unknown;
+  - `{:error, {:spawn_failed, cause}}` - the worker could not be started;
+    the cause is kept for logs, and no worker rows are left behind;
+  - `{:error, {:invalid_options, detail}}` - group options are invalid
+    (missing `id`, unknown restart strategy).
+
+  `broadcast_to_group/4` returns `{:error, [{:error, pid, reason}]}` when one
+  or more members cannot receive the message.
+
+  ## Standalone error contract
+
+  Standalone APIs return only these error reasons:
+
+  - `{:error, {:spawn_failed, cause}}` - the worker could not be started; the
+    cause is kept for logs, and no worker info or ref row is left behind;
+  - `{:error, :worker_not_found}` - the worker id is unknown, already removed,
+    or stopped (send, get pid, remove);
+  - `{:error, :worker_already_exists}` - a worker with that id already exists;
+  - `{:error, {:invalid_options, detail}}` - worker options are invalid
+    (unknown type, invalid restart strategy, non-positive restart intensity);
+  - `{:error, :supervisor_not_found}` - the supervisor id is not running.
+
+  Restart intensity is configurable per worker through `:max_restarts`
+  (default 10), `:max_seconds` (default 10), and `:auto_restart_time`
+  (default `nil`). A `:permanent`/`:transient` worker that crashes past the
+  ceiling within the window stops being restarted; when `:auto_restart_time`
+  is set, a cooldown timer resumes restarts (unless the worker was removed).
+
   ## Examples
   ```elixir
   # Start a supervisor with 2 partitions & 2 groups:
@@ -128,7 +163,9 @@ defmodule SuperWorker.Supervisor do
     # for internal use only.
     partitions: %{},
     # storage data for supervisor, workers/groups/chains, for internal use only.
-    table: nil
+    table: nil,
+    # per-worker restart timestamps kept by a partition, for internal use only.
+    restarts: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -141,7 +178,8 @@ defmodule SuperWorker.Supervisor do
           master_pid: nil | pid(),
           master: atom() | nil,
           master_monitor: reference() | nil,
-          linked_pids: pid() | nil
+          linked_pids: pid() | nil,
+          restarts: %{any() => [integer()]}
         }
 
   @default_time 3_000
@@ -422,6 +460,17 @@ defmodule SuperWorker.Supervisor do
   function for start worker can be a function or a {module, function, arguments} or a GenServer.
   Standalone worker is run independently from other workers follow :one_to_one strategy.
   If worker crashes, it will check the restart strategy of worker then act accordingly.
+
+  Returns `{:ok, id}` only when the worker started. If it fails to start, returns
+  `{:error, {:spawn_failed, cause}}` and leaves no worker rows behind. Duplicate
+  ids return `{:error, :worker_already_exists}`.
+
+  Options:
+  - `:restart_strategy` - `:permanent` (default `:transient`), `:transient`, `:temporary`;
+  - `:max_restarts` (default 10) and `:max_seconds` (default 10) - restart
+    intensity ceiling and window; a crash loop past the ceiling stops restarting;
+  - `:auto_restart_time` (ms, default `nil`) - cooldown before restarts resume
+    after the ceiling is exceeded.
   """
   @spec add_standalone_worker(
           atom(),
@@ -481,6 +530,9 @@ defmodule SuperWorker.Supervisor do
 
   @doc """
   Send data directly to the worker standalone in the supervisor.
+
+  Returns `:ok` when the message was delivered, or
+  `{:error, :worker_not_found}` when the worker id is unknown, removed, or stopped.
   """
   @spec send_to_standalone_worker(atom(), any(), any(), non_neg_integer()) ::
           :ok | {:error, term()}
@@ -494,6 +546,10 @@ defmodule SuperWorker.Supervisor do
 
   @doc """
   Remove standalone worker from supervisor.
+
+  Stops the live process (if any) and deletes both its worker-info and ref rows,
+  including a worker that was stopped by restart intensity. Returns `{:ok, id}`,
+  or `{:error, :worker_not_found}` when the id is unknown.
   """
   @spec remove_standalone_worker(atom(), any(), non_neg_integer()) ::
           :ok | {:error, term()}
@@ -507,6 +563,9 @@ defmodule SuperWorker.Supervisor do
 
   @doc """
   get pid of standalone worker
+
+  Returns `{:ok, pid}` for a live worker, or `{:error, :worker_not_found}` when
+  the worker id is unknown, removed, or stopped.
   """
   @spec get_pid_standalone_worker(atom(), any(), non_neg_integer()) ::
           {:ok, pid()} | {:error, term()}
@@ -994,7 +1053,7 @@ defmodule SuperWorker.Supervisor do
 
     {:ok, groups} = Db.get_all_groups(table)
     {:ok, chains} = Db.get_all_chains(table)
-    {:ok, standalone} = Db.get_all_standalone_worker_infos(table)
+    {:ok, num_standalone} = Db.count_workers_by_parent(table, {:standalone, nil})
     {:ok, workers} = Db.get_all_workers(table)
 
     partitions =
@@ -1015,7 +1074,7 @@ defmodule SuperWorker.Supervisor do
       partitions: partitions,
       num_groups: length(groups),
       num_chains: length(chains),
-      num_standalone_workers: length(standalone),
+      num_standalone_workers: num_standalone,
       total_worker_processes: length(workers)
     }
 

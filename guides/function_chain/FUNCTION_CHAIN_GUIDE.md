@@ -5,6 +5,15 @@ step is a function (MFA, anonymous function, or captured function with bound
 args) that receives the previous step's result and returns
 `{:ok, result} | {:error, reason}`.
 
+> Which primitive do I need? A **FunctionChain** runs in the calling process —
+> no processes, no supervision. A **supervisor
+> [chain](../supervisor/SUPERVISOR_GUIDE.md)** is process-based: each node is a
+> supervised worker passing messages to the next. A
+> [**pool**](../pool/POOL_GUIDE.md) distributes jobs over workers. Use a
+> FunctionChain for data transformation; embed it in pool or supervisor workers
+> when you need processes to run it (see
+> [Running chains through the pool / supervisor](#running-chains-through-the-pool--supervisor)).
+
 Unlike the process-based `Chain` of `SuperWorker.Supervisor`, a FunctionChain
 runs **in the calling process** — no supervision tree to design. It supports
 per-step retry/ignore/skip policies, runtime-overridable arguments,
@@ -19,6 +28,16 @@ tracing, and optional checkpoint/resume.
 - **Dynamic args** — override step arguments at run time without touching the
   chain definition.
 - **Checkpoint/resume** — persist progress on failure and resume mid-retry.
+
+## When to use
+
+Use a FunctionChain when the work is a **sequence of data transformations**
+in one process: fetch → normalize → enrich → save, with per-step error
+policies. When steps must be independently supervised processes, or messages
+must flow between processes, use a supervisor
+[chain](../supervisor/SUPERVISOR_GUIDE.md) instead. When many such pipelines
+must run concurrently over incoming jobs, fan chain runs out through a
+[pool](../pool/POOL_GUIDE.md).
 
 ## Quick start
 
@@ -35,22 +54,9 @@ chain =
 {:ok, result} = SuperWorker.FunctionChain.run(chain, %{id: 123})
 ```
 
-Chain options (`new/1`):
+## Core concepts
 
-| Option             | Default | Meaning                                              |
-|--------------------|---------|------------------------------------------------------|
-| `:id`              | ref     | Chain identifier                                     |
-| `:log`             | `false` | Debug logging for steps                              |
-| `:telemetry`       | `false` | Emit `[:function_chain, *]` telemetry events         |
-| `:on_error`        | `:halt` | Chain-wide error strategy                            |
-| `:max_retries`     | `3`     | Default retry budget per step                        |
-| `:retry_delay`     | `0`     | Milliseconds between retry attempts                  |
-| `:rescue_exceptions` | `true`| Rescue raised exceptions into `{:error, ...}`        |
-| `:return_context`  | `false` | Return `{:error, reason, meta}` on failure           |
-| `:tracing`         | `false` | Create spans per step (see `Tracer`)                 |
-| `:store`           | `nil`   | Checkpoint store module for resumable chains         |
-
-## Function representation
+### Function representation
 
 The incoming value is always prepended as the first argument. Everything else
 in a step's `args` is "extra" and is exactly what runtime `arg_overrides`
@@ -64,7 +70,7 @@ replace.
 
 Arity is validated at `add/3` time so a mismatch fails fast.
 
-## Step options
+### Step options
 
 ```elixir
 SuperWorker.FunctionChain.add(chain, :step_name, fun_spec,
@@ -81,26 +87,7 @@ SuperWorker.FunctionChain.add(chain, :step_name, fun_spec,
 
 Setting both `:when` and `:unless` raises.
 
-## Error handling strategies
-
-| Strategy          | Behavior on failure                                                  |
-|-------------------|----------------------------------------------------------------------|
-| `:halt` (default) | Stop chain, return `{:error, reason}`                                |
-| `:retry`          | Retry the same step with its original input up to `max_retries`, waiting `retry_delay` ms between attempts, then fall back to `on_retry_exhausted`. A step runs at most `1 + max_retries` times |
-| `:ignore`         | Forward the previous value unchanged, continue the chain             |
-
-Raised exceptions are rescued by default (`rescue_exceptions: true`) and
-normalized to `{:error, {:exception, exception, stacktrace}}`, then handled
-through the same `on_error` logic. Any return other than `{:ok, _}` /
-`{:error, _}` becomes `{:error, {:invalid_return, value}}`.
-
-Return value contract:
-
-- Success: `{:ok, final_result}`
-- Failure: `{:error, reason}`
-- Failure with `return_context: true`: `{:error, reason, %{step: id, index: i, attempts: n}}`
-
-## Runtime argument overrides
+### Runtime argument overrides
 
 Per-run overrides of a step's extra (non-data) arguments, without touching the
 chain definition — safe for concurrent runs of a shared chain:
@@ -126,7 +113,7 @@ original untouched:
 staging_chain = SuperWorker.FunctionChain.override_args(chain, :charge_card, [gateway: :stripe_test])
 ```
 
-## Dynamic argument markers
+### Dynamic argument markers
 
 Static `args` entries may be dynamic markers, resolved just before invocation:
 
@@ -145,7 +132,7 @@ chain =
 {:ok, _} = SuperWorker.FunctionChain.run(chain, 42, context: %{template: :reactivation})
 ```
 
-## Parallel & branch steps
+### Parallel and branch steps
 
 Fan the same input out to several sub-chains concurrently and join the results:
 
@@ -181,7 +168,7 @@ chain =
 If no route matches and there is no `:default`, the step fails with
 `{:no_matching_branch, value}`.
 
-## Checkpoint / resume
+### Checkpoint and resume
 
 Configure a `store` (e.g. `SuperWorker.FunctionChain.Store.ETS`) and checkpoints
 are written only on a `:halt` failure, and deleted on eventual success:
@@ -217,7 +204,47 @@ SuperWorker.FunctionChain.resume(chain, run_id: "order-123",
 `resume/2` returns `{:error, {:no_checkpoint, run_id}}` when the store has no
 checkpoint for the given run.
 
-## Telemetry & tracing
+## Reference
+
+Chain options (`new/1`):
+
+| Option             | Default | Meaning                                              |
+|--------------------|---------|------------------------------------------------------|
+| `:id`              | ref     | Chain identifier                                     |
+| `:log`             | `false` | Debug logging for steps                              |
+| `:telemetry`       | `false` | Emit `[:function_chain, *]` telemetry events         |
+| `:on_error`        | `:halt` | Chain-wide error strategy                            |
+| `:max_retries`     | `3`     | Default retry budget per step                        |
+| `:retry_delay`     | `0`     | Milliseconds between retry attempts                  |
+| `:rescue_exceptions` | `true`| Rescue raised exceptions into `{:error, ...}`        |
+| `:return_context`  | `false` | Return `{:error, reason, meta}` on failure           |
+| `:tracing`         | `false` | Create spans per step (see `Tracer`)                 |
+| `:store`           | `nil`   | Checkpoint store module for resumable chains         |
+
+## Error handling strategies
+
+This is the canonical definition of **step** policies. For **process** restart
+strategies (supervisor groups/chains/standalone workers), see the
+[Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md#error-handling).
+
+| Strategy          | Behavior on failure                                                  |
+|-------------------|----------------------------------------------------------------------|
+| `:halt` (default) | Stop chain, return `{:error, reason}`                                |
+| `:retry`          | Retry the same step with its original input up to `max_retries`, waiting `retry_delay` ms between attempts, then fall back to `on_retry_exhausted`. A step runs at most `1 + max_retries` times |
+| `:ignore`         | Forward the previous value unchanged, continue the chain             |
+
+Raised exceptions are rescued by default (`rescue_exceptions: true`) and
+normalized to `{:error, {:exception, exception, stacktrace}}`, then handled
+through the same `on_error` logic. Any return other than `{:ok, _}` /
+`{:error, _}` becomes `{:error, {:invalid_return, value}}`.
+
+Return value contract:
+
+- Success: `{:ok, final_result}`
+- Failure: `{:error, reason}`
+- Failure with `return_context: true`: `{:error, reason, %{step: id, index: i, attempts: n}}`
+
+## Introspection and observability
 
 Set `telemetry: true` to emit `[:function_chain, :run, :start | :stop]` events;
 set `tracing: true` for per-step spans via `SuperWorker.FunctionChain.Tracer`.
@@ -229,7 +256,8 @@ machinery can fan them out:
 
 - **Through the Pool** — `SuperWorker.Pool.FunctionChain` runs the chain for
   every pool job, distributing runs over partitions with the pool's retries,
-  backpressure and `:on_failure`:
+  backpressure and `:on_failure`. See the
+  [Pool Guide](../pool/POOL_GUIDE.md#running-a-functionchain-through-the-pool):
 
   ```elixir
   {:ok, _} =
@@ -247,10 +275,8 @@ machinery can fan them out:
   `chain_node_fun/2` runs the chain as one node of a process chain
   (`Sup.add_chain_worker/4`), and `job_loop/2` turns a standalone/group
   worker into a chain-serving loop (`Sup.send_to_standalone_worker/3` with
-  `{:run, ref, job, from}` for request/response).
-
-See the [Pool Guide](../pool/POOL_GUIDE.md) and
-[Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md) for the full context.
+  `{:run, ref, job, from}` for request/response). See the
+  [Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md#running-a-functionchain-in-the-supervisor).
 
 ## Next steps
 

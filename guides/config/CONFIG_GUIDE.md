@@ -1,28 +1,32 @@
-# SuperWorker ConfigLoader
+# SuperWorker ConfigLoader Guide
 
 The ConfigLoader module provides a declarative way to configure and automatically start SuperWorker supervisors from the application environment. Instead of manually starting supervisors and adding workers programmatically, you can define your entire supervision tree in configuration files.
 
+For the 5-minute path, start with the
+[Config Quickstart](CONFIG_QUICKSTART.md). This guide is the full format
+reference. For what groups, chains, and restart strategies mean, see the
+[Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md).
+
 ## Overview
 
-The ConfigLoader system consists of three main modules:
+The ConfigLoader system consists of three modules:
 
-- **`ConfigParser`** - Main entry point that loads configurations from the application environment
-- **`Parser`** - Validates and transforms raw configurations into structured data
-- **`Bootstrap`** - Starts supervisors and their children from parsed configurations
+- **`ConfigParser`** — main entry point; loads configurations from the
+  application environment (`load/0` loads all, `load_one/1` loads one).
+- **`Parser`** — validates and transforms raw configurations into structured data.
+- **`Bootstrap`** — starts supervisors and their children from parsed configurations.
 
-## Concept
+## When to use
 
-Each supervisor has a main process and number of partitions process.
-When supervisor api is called, main process find a partition process
-then forward api to that.
+Use config declaration when your supervision tree is **static and known at
+deploy time**: declare it in `config/config.exs` or `config/runtime.exs` and
+it boots with the application. Use the runtime API (see the
+[Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md#quick-start)) when workers
+must be added dynamically in response to runtime events.
 
-Supervisor uses partition technic for handle amount of requests/workers.
+## Quick start
 
-Each supervisor has an ETS table for keeping worker/group/chain information and runtime information.
-
-## Quick Start
-
-### 1. Define Configuration
+### 1. Define configuration
 
 Add supervisor configurations to your `config/config.exs` or `config/runtime.exs`:
 
@@ -47,11 +51,22 @@ config :super_worker, :my_supervisor,
   ]
 ```
 
-### 2. Automatic Loading
+### 2. Automatic loading
 
-Supervisors are automatically loaded when your application starts via the `SuperWorker.Application` module.
+Supervisors are automatically loaded when your application starts via the `SuperWorker.Application` module:
 
-### 3. Manual Loading
+```elixir
+def start(_type, _args) do
+  SuperWorker.ConfigLoader.ConfigParser.load()
+
+  children = []
+  Supervisor.start_link(children, strategy: :one_for_one, name: SuperWorker.MainAppSupervisor)
+end
+```
+
+All configured supervisors are started before the main application supervisor.
+
+### 3. Manual loading
 
 You can also load supervisors manually:
 
@@ -63,17 +78,31 @@ SuperWorker.ConfigLoader.ConfigParser.load()
 SuperWorker.ConfigLoader.ConfigParser.load_one(:my_supervisor)
 ```
 
-## Configuration Format
+`load/0` returns `:ok`; `load_one/1` returns `{:ok, pid}` or `{:error, reason}`.
 
-### Supervisor Options
+## Core concepts
+
+Each supervisor has one master process plus a number of partition processes.
+When a supervisor API is called, the master picks a partition and forwards the
+request to it, so a high volume of workers/requests does not bottleneck a single
+process.
+
+Worker, group, chain and runtime information is kept in an ETS table shared by
+the partitions. See the [Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md)
+for the full picture.
+
+## Reference
+
+### Supervisor options
 
 ```elixir
-options: [
-  num_partitions: 2,  # Number of partitions (default: number of schedulers)
-  link: false,              # Whether to link supervisor to caller
-  report_to: [],            # List of PIDs to report events to
-  strategy: :one_for_one    # Supervisor strategy (optional)
-]
+config :super_worker, :my_supervisor,
+  options: [
+    num_partitions: 2,  # Number of partitions (default: number of schedulers)
+    link: false,              # Whether to link supervisor to caller
+    report_to: [],            # List of PIDs to report events to
+    strategy: :one_for_one    # Supervisor strategy (optional)
+  ]
 ```
 
 ### Groups
@@ -81,17 +110,18 @@ options: [
 Groups are collections of workers that share a restart strategy:
 
 ```elixir
-groups: [
-  my_group: [
-    restart_strategy: :one_for_one,   # :one_for_one or :one_for_all
-    type: :normal,                    # Optional: group type
-    max_restarts: 3,                  # Optional: max restarts
-    max_seconds: 5,                   # Optional: time window for restarts
-    workers: [
-      # Worker specifications (see below)
+config :super_worker, :my_supervisor,
+  groups: [
+    my_group: [
+      restart_strategy: :one_for_one,   # :one_for_one or :one_for_all
+      type: :normal,                    # Optional: group type
+      max_restarts: 3,                  # Optional: max restarts
+      max_seconds: 5,                   # Optional: time window for restarts
+      workers: [
+        # Worker specifications (see below)
+      ]
     ]
   ]
-]
 ```
 
 ### Chains
@@ -99,53 +129,53 @@ groups: [
 Chains enable sequential data processing where output flows from one worker to the next:
 
 ```elixir
-chains: [
-  processing_chain: [
-    restart_strategy: :rest_for_one,    # :one_for_one, :one_for_all, :rest_for_one
-    send_type: :round_robin,            # :broadcast, :random, :partition, :round_robin
-    queue_length: 100,                  # Optional: max queue size
-    finished_callback: {M, :f, [a]},    # Optional: callback when chain completes
-    workers: [
-      # Worker specifications (see below)
+config :super_worker, :my_supervisor,
+  chains: [
+    processing_chain: [
+      restart_strategy: :rest_for_one,    # :one_for_one, :one_for_all, :rest_for_one
+      send_type: :round_robin,            # :broadcast, :random, :partition, :round_robin
+      queue_length: 100,                  # Optional: max queue size
+      finished_callback: {M, :f, [a]},    # Optional: callback when chain completes
+      workers: [
+        # Worker specifications (see below)
+      ]
     ]
   ]
-]
 ```
 
-### Standalone Workers
+### Standalone workers
 
 Independent workers with their own restart strategies:
 
 ```elixir
-workers: [
-  [
-    mfa: {MyModule, :start_link, [arg1, arg2]},  # Worker MFA
-    options: [
-      id: :my_worker,                # Required: Unique atom identifier
-      restart_strategy: :permanent,  # :permanent, :transient, :temporary
-      max_restarts: 5,               # Optional
-      max_seconds: 10                # Optional
+config :super_worker, :my_supervisor,
+  workers: [
+    [
+      mfa: {MyModule, :start_link, [arg1, arg2]},  # Worker MFA
+      options: [
+        id: :my_worker,                # Required: Unique atom identifier
+        restart_strategy: :permanent,  # :permanent, :transient, :temporary
+        max_restarts: 5,               # Optional
+        max_seconds: 10                # Optional
+      ]
     ]
   ]
-]
 ```
 
-### Worker Specifications
+### Worker specifications
 
 Workers can be specified in two ways:
 
-#### Using MFA (Module, Function, Arguments)
-
 ```elixir
+# Using MFA (Module, Function, Arguments)
 [
   mfa: {MyApp.Workers.EmailWorker, :start_link, []},
   options: [id: :email_worker]
 ]
 ```
 
-#### Using Anonymous Functions
-
 ```elixir
+# Using an anonymous function (must have 0 arity)
 [
   fun: fn ->
     # Worker loop
@@ -157,9 +187,7 @@ Workers can be specified in two ways:
 ]
 ```
 
-**Note:** Anonymous functions must have 0 arity.
-
-## Complete Example
+### Complete example
 
 ```elixir
 config :super_worker, :app_supervisor,
@@ -195,107 +223,29 @@ config :super_worker, :app_supervisor,
   ]
 ```
 
-## Module Details
+### Loading and validation
 
-### ConfigParser
+`Parser.parse/1` validates raw configuration and returns
+`{:ok, parsed_config}` or `{:error, reason}`. It checks that all required
+fields are present, restart strategies and chain send types are valid, IDs are
+atoms, and MFA tuples are well-formed.
 
-Main entry point for loading configurations.
+`Bootstrap.start_supervisor/1` starts the supervisor process, adds all groups,
+chains, and workers, and performs cleanup if children fail to start. It
+returns `{:ok, pid}` or `{:error, reason}`.
 
-**Functions:**
+## Error handling
 
-- `load/0` - Loads all supervisor configurations from application environment
-- `load_one(sup_id)` - Loads a specific supervisor configuration
+Process restart strategies are defined in the
+[Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md#error-handling):
+`:one_for_one` / `:one_for_all` for groups, plus `:rest_for_one` for chains,
+and `:permanent` / `:transient` / `:temporary` for standalone workers. Use
+those names verbatim in config; invalid values fall back to defaults with a
+parser warning (see Troubleshooting below).
 
-**Returns:**
+### Troubleshooting
 
-- `load/0` returns `:ok`
-- `load_one/1` returns `{:ok, pid}` or `{:error, reason}`
-
-### Parser
-
-Validates and transforms raw configuration into structured format.
-
-**Functions:**
-
-- `parse(config)` - Parses and validates a configuration
-
-**Returns:**
-
-- `{:ok, parsed_config}` - Successfully parsed
-- `{:error, reason}` - Validation failed
-
-**Validation:**
-
-- Ensures all required fields are present
-- Validates restart strategies
-- Validates send types for chains
-- Checks that IDs are atoms
-- Verifies MFA tuples are well-formed
-
-### Bootstrap
-
-Starts supervisors from parsed configurations.
-
-**Functions:**
-
-- `start_supervisor(parsed_config)` - Starts a supervisor with parsed config
-
-**Returns:**
-
-- `{:ok, pid}` - Supervisor started successfully
-- `{:error, reason}` - Failed to start
-
-**Behavior:**
-
-- Starts the supervisor process
-- Adds all groups, chains, and workers
-- Performs cleanup if children fail to start
-
-## Restart Strategies
-
-### Group Restart Strategies
-
-- **`:one_for_one`** - Only restart the failed worker
-- **`:one_for_all`** - Restart all workers in the group when one fails
-
-### Chain Restart Strategies
-
-- **`:one_for_one`** - Only restart the failed worker
-- **`:one_for_all`** - Restart all workers in the chain
-- **`:rest_for_one`** - Restart the failed worker and all workers after it
-
-### Standalone Restart Strategies
-
-- **`:permanent`** - Always restart the worker
-- **`:transient`** - Restart only on abnormal termination
-- **`:temporary`** - Never restart the worker
-
-## Best Practices
-
-1. **Use Descriptive IDs**: Choose clear, meaningful atom IDs for all supervisors, groups, chains, and workers
-
-2. **Start Simple**: Begin with basic configurations and add complexity as needed
-
-3. **Environment-Specific Configs**: Use different configurations for dev/test/prod environments:
-   ```elixir
-   # config/dev.exs
-   config :super_worker, :my_sup, options: [num_partitions: 1]
-
-   # config/prod.exs
-   config :super_worker, :my_sup, options: [num_partitions: 8]
-   ```
-
-4. **Validate Early**: Invalid configurations are caught during parsing, so test your configs in development
-
-5. **Use Groups for Related Workers**: Group workers that need to work together or share restart behavior
-
-6. **Use Chains for Pipelines**: Chains are ideal for data processing pipelines with sequential steps
-
-7. **Monitor Startup**: Check logs during application startup to ensure supervisors start correctly
-
-## Troubleshooting
-
-### Configuration Not Found
+#### Configuration not found
 
 ```
 {:error, :config_not_found}
@@ -306,7 +256,7 @@ Starts supervisors from parsed configurations.
 Application.get_env(:super_worker, :my_supervisor)
 ```
 
-### Invalid Configuration Format
+#### Invalid configuration format
 
 ```
 {:error, :invalid_config_format}
@@ -314,7 +264,7 @@ Application.get_env(:super_worker, :my_supervisor)
 
 **Solution:** Configuration must be a keyword list. Check syntax in config file.
 
-### Missing Required Field
+#### Missing required field
 
 ```
 {:error, {:missing_id, ...}}
@@ -322,7 +272,7 @@ Application.get_env(:super_worker, :my_supervisor)
 
 **Solution:** All groups, chains, and workers must have an `:id` field.
 
-### Invalid Restart Strategy
+#### Invalid restart strategy
 
 Configuration will use defaults, but check logs for warnings:
 ```
@@ -331,7 +281,7 @@ SuperWorker, Parser, invalid restart_strategy: ...
 
 **Solution:** Use valid restart strategies (see above).
 
-### Supervisor Already Running
+#### Supervisor already running
 
 ```
 {:error, :already_running}
@@ -342,7 +292,7 @@ SuperWorker, Parser, invalid restart_strategy: ...
 SuperWorker.Supervisor.stop(:my_supervisor)
 ```
 
-### Worker Module Not Found
+#### Worker module not found
 
 ```
 {:error, {:workers_parsing_errors, ...}}
@@ -350,17 +300,24 @@ SuperWorker.Supervisor.stop(:my_supervisor)
 
 **Solution:** Ensure all worker modules exist and are compiled before the supervisor starts.
 
-## Examples
+## Introspection and observability
 
-See `config/examples/config_loader_example.exs` for comprehensive examples covering:
+Runtime control after boot:
 
-- Simple supervisors with groups
-- Chain-based processing pipelines
-- Standalone workers
-- Complex multi-type supervisors
-- Development/testing configurations
+```elixir
+# Load all configured supervisors / a specific one
+SuperWorker.ConfigLoader.ConfigParser.load()
+SuperWorker.ConfigLoader.ConfigParser.load_one(:my_supervisor)
 
-## Testing
+# Check if running, then stop
+SuperWorker.Supervisor.running?(:my_supervisor)
+SuperWorker.Supervisor.stop(:my_supervisor)
+```
+
+Monitor startup logs to confirm supervisors start correctly, and test configs
+in development — invalid configurations are caught during parsing.
+
+### Testing
 
 Run the ConfigLoader tests:
 
@@ -373,31 +330,10 @@ Specific test files:
 - `test/config_loader/bootstrap_test.exs` - Bootstrap functionality tests
 - `test/config_loader/config_wrapper_test.exs` - Integration tests
 
-## API Reference
+## Next steps
 
-For detailed API documentation, see:
-
-```bash
-mix docs
-```
-
-Then open `doc/index.html` and navigate to the ConfigLoader modules.
-
-## Integration with SuperWorker.Application
-
-The ConfigLoader is automatically invoked in `SuperWorker.Application.start/2`:
-
-```elixir
-def start(_type, _args) do
-  SuperWorker.ConfigLoader.ConfigParser.load()
-
-  children = []
-  Supervisor.start_link(children, strategy: :one_for_one, name: SuperWorker.MainAppSupervisor)
-end
-```
-
-All configured supervisors are started before the main application supervisor.
-
-## License
-
-This module is part of SuperWorker, licensed under MPL-2.0.
+- [Config Quickstart](CONFIG_QUICKSTART.md) — the 5-minute path.
+- [Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md) — groups, chains and standalone workers.
+- See `config/examples/config_loader_example.exs` for comprehensive examples covering
+  simple supervisors, chain pipelines, standalone workers, and dev/test configs.
+- For detailed module API documentation, run `mix docs` and open `doc/index.html`.

@@ -35,6 +35,38 @@ defmodule SuperWorker.Pool.OverloadTest do
     Pool.stop(name)
   end
 
+  test "overload rejection stays prompt with a large backlog" do
+    name = TestPool.unique_name()
+
+    {:ok, _} =
+      Pool.start_link(
+        name: name,
+        worker: TestPool.SlowWorker,
+        worker_opts: [ms: 500],
+        size: 1,
+        partitions: 1,
+        max_queue: 2_000
+      )
+
+    assert Pool.run(name, :warmup) == {:ok, :warmup}
+
+    {:ok, running} = Pool.run_async(name, :running)
+
+    # Fill the backlog to the bound: 1 running + 2_000 queued.
+    Enum.each(1..2_000, fn i -> {:ok, _} = Pool.run_async(name, {:fill, i}) end)
+
+    # The partition is full: rejections must stay prompt even with a deep
+    # backlog (per-job partition work is bounded, not linear in backlog).
+    {micros, results} = :timer.tc(fn -> Enum.map(1..50, fn _ -> Pool.run(name, :extra) end) end)
+
+    assert Enum.all?(results, &(&1 == {:error, :overloaded}))
+    assert micros < 1_000_000
+
+    assert Pool.await(running) == {:ok, :running}
+
+    Pool.stop(name)
+  end
+
   test "the queue drains and accepts jobs again" do
     name = TestPool.unique_name()
 

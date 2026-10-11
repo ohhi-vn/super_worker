@@ -63,6 +63,7 @@ defmodule SuperWorker.Supervisor.ApiHelper do
 
   def api_response(message = %Message{}, result) do
     send(message.from, {message.id, result})
+    :ok
   end
 
   @doc """

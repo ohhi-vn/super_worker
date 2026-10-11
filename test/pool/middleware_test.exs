@@ -176,6 +176,91 @@ defmodule SuperWorker.Pool.MiddlewareTest do
       Pool.stop(name)
     end
 
+    test "rejected jobs do not fire on_failure" do
+      name = TestPool.unique_name()
+      test_pid = self()
+
+      {:ok, _} =
+        Pool.start_link(
+          name: name,
+          worker: TestPool.ErrorWorker,
+          size: 1,
+          partitions: 1,
+          middleware: [SuperWorker.Pool.Middleware.CircuitBreaker],
+          circuit_breaker: [failure_threshold: 1, reset_timeout: 10_000],
+          on_failure: fn job, reason -> send(test_pid, {:dead_letter, job, reason}) end
+        )
+
+      assert Pool.run(name, :job1) == {:error, :boom}
+      assert_receive {:dead_letter, :job1, :boom}, 1_000
+
+      # Open: rejected before running, so on_failure must NOT fire.
+      assert Pool.run(name, :job2) == {:error, :circuit_open}
+      refute_receive {:dead_letter, :job2, _}, 200
+
+      Pool.stop(name)
+    end
+
+    test "emits telemetry when the circuit opens and closes" do
+      name = TestPool.unique_name()
+      test_pid = self()
+      fail = :atomics.new(1, [])
+
+      handler =
+        String.to_atom("pool_cir_" <> Integer.to_string(System.unique_integer([:positive])))
+
+      # Telemetry is global: only forward this pool's events, so breaker
+      # unit tests running concurrently cannot inject foreign events.
+      handler_fun = fn event, _measurements, meta, _config ->
+        if meta.pool == name, do: send(test_pid, {:telemetry, event, meta})
+      end
+
+      :telemetry.attach_many(
+        handler,
+        [
+          [:super_worker, :pool, :circuit, :open],
+          [:super_worker, :pool, :circuit, :closed]
+        ],
+        handler_fun,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      {:ok, _} =
+        Pool.start_link(
+          name: name,
+          task: fn job ->
+            if :atomics.get(fail, 1) > 0 do
+              :atomics.sub(fail, 1, 1)
+              raise "boom"
+            end
+
+            {:fine, job}
+          end,
+          size: 1,
+          partitions: 1,
+          middleware: [SuperWorker.Pool.Middleware.CircuitBreaker],
+          circuit_breaker: [failure_threshold: 1, reset_timeout: 200]
+        )
+
+      :atomics.add(fail, 1, 1)
+      assert {:error, {:error, %RuntimeError{}}} = Pool.run(name, :job1)
+
+      assert_receive {:telemetry, [:super_worker, :pool, :circuit, :open], open_meta}, 1_000
+      assert open_meta.pool == name and open_meta.partition == 1
+
+      Process.sleep(250)
+
+      # Probe succeeds: the circuit closes.
+      assert Pool.run(name, :job2) == {:ok, {:fine, :job2}}
+
+      assert_receive {:telemetry, [:super_worker, :pool, :circuit, :closed], closed_meta}, 1_000
+      assert closed_meta.pool == name and closed_meta.partition == 1
+
+      Pool.stop(name)
+    end
+
     test "a success closes the circuit again" do
       name = TestPool.unique_name()
       fail = :atomics.new(1, [])

@@ -104,6 +104,10 @@ defmodule SuperWorker.Supervisor.ChainWorkloadTest do
       Sup.remove_chain_worker(sup_id, chain_id, i)
     end
 
+    # Removal kills workers asynchronously; allow registry cleanup to settle
+    # (sibling tests use the same sleep before asserting counts).
+    Process.sleep(200)
+
     # All pids should be gone
     gone_count =
       Enum.count(1..num_workers, fn i ->

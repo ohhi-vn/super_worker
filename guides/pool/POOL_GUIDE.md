@@ -4,6 +4,13 @@
 function, an MFA or a worker module, then submit jobs — no supervision tree to
 design, no message protocols to implement, no OTP knowledge required.
 
+> Which primitive do I need? A **pool** distributes short jobs over workers
+> with retries, backpressure and crash isolation. A
+> [**supervisor**](../supervisor/SUPERVISOR_GUIDE.md) keeps long-lived,
+> addressable processes alive. A
+> [**FunctionChain**](../function_chain/FUNCTION_CHAIN_GUIDE.md) is an
+> in-process pipeline with no processes at all.
+
 This is a **single-node, in-memory pool**: queued jobs survive worker crashes
 and partition restarts, but not a node crash, and there is no cross-node
 distribution. For durable, cross-node jobs use a persisted queue (e.g. Oban)
@@ -32,34 +39,16 @@ Key properties:
 - **Pluggable middleware** — Plug-style pipeline around job execution;
   `Telemetry` and `CircuitBreaker` ship as built-ins.
 
-## Architecture
+## When to use
 
-The pool is partitioned: workers and the job queue are split over
-`partitions` (default: `System.schedulers_online()`) independent bottlenecks,
-each holding `ceil(size / partitions)` workers. A job is routed to a partition
-by round robin or by hashing the job term (`:erlang.phash2`) — hash routing
-gives partition affinity for order-sensitive jobs. Each worker is a supervised
-process, so a crash restarts just that worker.
-
-```mermaid
-graph TD
-    Sup(Pool supervisor, one_for_one) --> Server(Server)
-    Sup --> PS1(Partition 1 supervisor, rest_for_one)
-    Sup --> PS2(Partition 2 supervisor)
-    PS1 --> CB1("CircuitBreaker (optional)")
-    PS1 --> P1("Partition GenServer (queue, dispatch, retries)")
-    PS1 --> W1(Worker 1)
-    PS1 --> W2(Worker 2)
-    PS2 --> P2("Partition GenServer")
-    PS2 --> W3(Worker 3)
-```
-
-The **queue lives in the `Partition` GenServer** — a process sibling of the
-workers under each partition supervisor, not in the supervisor itself. It owns
-the bounded FIFO queue, dispatches jobs to idle workers, schedules retries
-(`Process.send_after` + `SuperWorker.Pool.Backoff`), requeues jobs after
-worker crashes, and dead-letters exhausted jobs. See
-`SuperWorker.Pool.Partition`.
+Use the pool for **fire-and-submit background jobs**: image resizing, API
+fan-out, chain runs fanned over partitions. Each job runs on some worker in
+some order — if you need a specific long-lived process to message by id, use
+the [Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md). If the work is a
+pure data transformation with no processes needed, use the
+[FunctionChain Guide](../function_chain/FUNCTION_CHAIN_GUIDE.md) directly. If
+jobs must survive a node crash, use a durable queue such as Oban instead of
+(or in front of) this pool.
 
 ## Quick start
 
@@ -101,7 +90,43 @@ SuperWorker.Pool.stop(MyPool)
 **Timeouts**: `run/3` and `await/2` take a `timeout` in ms (default: 30_000).
 When the caller gives up, the job keeps running — only the result is dropped.
 
-## Options
+## Core concepts
+
+The pool is partitioned: workers and the job queue are split over
+`partitions` (default: `System.schedulers_online()`) independent bottlenecks,
+each holding `ceil(size / partitions)` workers. A job is routed to a partition
+by round robin or by hashing the job term (`:erlang.phash2`) — hash routing
+gives partition affinity for order-sensitive jobs. Each worker is a supervised
+process, so a crash restarts just that worker.
+
+```mermaid
+graph TD
+    Sup(Pool supervisor, one_for_one) --> Server(Server)
+    Sup --> PS1(Partition 1 supervisor, rest_for_one)
+    Sup --> PS2(Partition 2 supervisor)
+    PS1 --> CB1("CircuitBreaker (optional)")
+    PS1 --> P1("Partition GenServer (queue, dispatch, retries)")
+    PS1 --> W1(Worker 1)
+    PS1 --> W2(Worker 2)
+    PS2 --> P2("Partition GenServer")
+    PS2 --> W3(Worker 3)
+```
+
+The **queue lives in the `Partition` GenServer** — a process sibling of the
+workers under each partition supervisor, not in the supervisor itself. It owns
+the bounded FIFO queue, dispatches jobs to idle workers, schedules retries
+(`Process.send_after` + `SuperWorker.Pool.Backoff`), requeues jobs after
+worker crashes, and dead-letters exhausted jobs. See
+`SuperWorker.Pool.Partition`.
+
+For the general partition/monitor fault-tolerance pattern this builds on, see
+the [Supervisor Guide](../supervisor/SUPERVISOR_GUIDE.md#fault-tolerance).
+What follows here is pool-specific: front-of-queue requeue, poison-pill
+safety, and `:on_failure` — no silent job loss.
+
+## Reference
+
+### Start options
 
 ```elixir
 SuperWorker.Pool.start_link(
@@ -140,7 +165,7 @@ SuperWorker.Pool.start_link(
 - Submissions beyond `max_queue` fail immediately with `{:error, :overloaded}`
   instead of growing unbounded.
 
-## Stateful workers
+### Stateful workers
 
 Implement the `SuperWorker.Pool.Worker` behaviour to keep state (a connection,
 a buffer, ...) across jobs:
@@ -166,81 +191,7 @@ end
 A crash of a worker loses its behaviour state — `init/1` runs again on
 restart.
 
-## Running a FunctionChain through the pool
-
-`SuperWorker.Pool.FunctionChain` is a ready-made worker that runs a
-`SuperWorker.FunctionChain` for every job — fanning chain runs out over the
-pool's partitions:
-
-```elixir
-chain =
-  SuperWorker.FunctionChain.new()
-  |> SuperWorker.FunctionChain.add(:fetch, {MyApp.Users, :fetch, []})
-  |> SuperWorker.FunctionChain.add(:normalize, fn user -> {:ok, normalize(user)} end)
-
-{:ok, _} =
-  SuperWorker.Pool.start_link(
-    name: MyChainPool,
-    worker: SuperWorker.Pool.FunctionChain,
-    worker_opts: [
-      chain: chain,          # %SuperWorker.FunctionChain{} or fun/0
-      run_opts: [],          # keyword, or fun/1 job -> keyword (per-job arg_overrides/context)
-      on_error: :error       # :error (default) | :retry — failed run vs pool retry budget
-    ],
-    size: 20
-  )
-
-{:ok, result} = SuperWorker.Pool.run(MyChainPool, %{id: 123})
-```
-
-- The chain's own per-step retry strategies run first; a still-failed run is
-  then either failed (`:error`, the pool's `:on_failure` fires) or handed to
-  the pool's retry budget (`:retry`).
-- A raising chain is normalized to `{:error, {:exception, exception}}` — it
-  never crashes the worker.
-
-See the [FunctionChain Guide](../function_chain/FUNCTION_CHAIN_GUIDE.md).
-
-## Error handling & durability
-
-Two separate concerns, handled differently:
-
-- **Worker crashes** (bugs, `raise`, exits): the worker is restarted by its
-  partition supervisor and its in-flight job is **requeued once** — at the
-  **front** of its partition queue — and charged against its own retry budget;
-  a poison-pill job cannot crash-loop the pool.
-- **Expected failures** (`{:error, ...}` / `{:retry, ...}`): never crash
-  anything. `{:retry, ...}` reschedules after a backoff delay; after
-  `max_attempts` the `:on_failure` callback fires.
-
-`run/2` returns `{:error, reason}` where `reason` is the job's error, or one of:
-
-| Reason                   | Meaning                                              |
-|--------------------------|------------------------------------------------------|
-| `:overloaded`            | Queue bound exceeded                                 |
-| `:timeout`               | `run/2` timed out                                    |
-| `{:retries_exhausted, reason}` | Retry budget spent                             |
-| `{:worker_crashed, reason}` | Worker crashed while running the job             |
-| `:circuit_open`          | CircuitBreaker middleware rejected the job           |
-| `:pool_not_found`        | Unknown pool name                                    |
-| `:pool_unavailable`      | Pool is starting/stopping                            |
-
-| `cast/2` drops the result unless `:on_result` is configured (overloaded casts
-are dropped with a warning log).
-
-**`:circuit_open` vs `:on_failure`**: a job rejected by the circuit breaker
-(`check_enqueue/2`) never enters the queue and never runs, so `:on_failure`
-does **not** fire for it — the rejection is returned to the caller (and
-dropped, with a warning, for casts). `:on_failure` is only the source of truth
-for jobs that ran and finally failed (exhausted retries or a final worker
-crash).
-
-**Durability is in-memory only**: queued jobs survive worker crashes and
-partition restarts, but NOT a node crash. If jobs must survive `kill -9`, put a
-persisted layer behind `:on_failure` (or use a durable queue such as Oban for
-the pipeline instead of this pool).
-
-## Middleware
+### Middleware
 
 `SuperWorker.Pool.Middleware` is a Plug-style behaviour wrapping job
 execution. Built-ins:
@@ -274,7 +225,46 @@ defmodule MyApp.Pool.RequestId do
 end
 ```
 
-## Introspection
+## Error handling and durability
+
+Two separate concerns, handled differently:
+
+- **Worker crashes** (bugs, `raise`, exits): the worker is restarted by its
+  partition supervisor and its in-flight job is **requeued once** — at the
+  **front** of its partition queue — and charged against its own retry budget;
+  a poison-pill job cannot crash-loop the pool.
+- **Expected failures** (`{:error, ...}` / `{:retry, ...}`): never crash
+  anything. `{:retry, ...}` reschedules after a backoff delay; after
+  `max_attempts` the `:on_failure` callback fires.
+
+`run/2` returns `{:error, reason}` where `reason` is the job's error, or one of:
+
+| Reason                          | Meaning                                  |
+|---------------------------------|------------------------------------------|
+| `:overloaded`                   | Queue bound exceeded                     |
+| `:timeout`                      | `run/2` timed out                        |
+| `{:retries_exhausted, reason}`  | Retry budget spent                       |
+| `{:worker_crashed, reason}`     | Worker crashed while running the job     |
+| `:circuit_open`                 | CircuitBreaker middleware rejected the job |
+| `:pool_not_found`               | Unknown pool name                        |
+| `:pool_unavailable`             | Pool is starting/stopping                |
+
+Note: `cast/2` drops the result unless `:on_result` is configured (overloaded
+casts are dropped with a warning log).
+
+**`:circuit_open` vs `:on_failure`**: a job rejected by the circuit breaker
+(`check_enqueue/2`) never enters the queue and never runs, so `:on_failure`
+does **not** fire for it — the rejection is returned to the caller (and
+dropped, with a warning, for casts). `:on_failure` is only the source of truth
+for jobs that ran and finally failed (exhausted retries or a final worker
+crash).
+
+**Durability is in-memory only**: queued jobs survive worker crashes and
+partition restarts, but NOT a node crash. If jobs must survive `kill -9`, put a
+persisted layer behind `:on_failure` (or use a durable queue such as Oban for
+the pipeline instead of this pool).
+
+## Introspection and observability
 
 ```elixir
 {:ok, info} = SuperWorker.Pool.info(MyPool)
@@ -282,7 +272,7 @@ info.size                 # 20
 info.partition_details    # per-partition queue/worker state
 ```
 
-## Telemetry events
+### Telemetry events
 
 | event                                        | measurements           | metadata |
 |----------------------------------------------|------------------------|----------|
@@ -298,7 +288,7 @@ The first three come from the `Telemetry` middleware (job execution, in the
 worker process); the rest are emitted by the partition process — no
 middleware needed.
 
-## Testing
+### Testing
 
 For deterministic tests start a single-worker pool and run jobs
 synchronously:
@@ -317,6 +307,40 @@ synchronously:
 
 Avoid `cast/2` and multi-worker pools in assertions on ordering: jobs may run
 on any worker, in any order.
+
+## Running a FunctionChain through the pool
+
+`SuperWorker.Pool.FunctionChain` is a ready-made worker that runs a
+`SuperWorker.FunctionChain` for every job — fanning chain runs out over the
+pool's partitions. Step retry/ignore policies are defined by the FunctionChain
+itself — see the [FunctionChain Guide](../function_chain/FUNCTION_CHAIN_GUIDE.md):
+
+```elixir
+chain =
+  SuperWorker.FunctionChain.new()
+  |> SuperWorker.FunctionChain.add(:fetch, {MyApp.Users, :fetch, []})
+  |> SuperWorker.FunctionChain.add(:normalize, fn user -> {:ok, normalize(user)} end)
+
+{:ok, _} =
+  SuperWorker.Pool.start_link(
+    name: MyChainPool,
+    worker: SuperWorker.Pool.FunctionChain,
+    worker_opts: [
+      chain: chain,          # %SuperWorker.FunctionChain{} or fun/0
+      run_opts: [],          # keyword, or fun/1 job -> keyword (per-job arg_overrides/context)
+      on_error: :error       # :error (default) | :retry — failed run vs pool retry budget
+    ],
+    size: 20
+  )
+
+{:ok, result} = SuperWorker.Pool.run(MyChainPool, %{id: 123})
+```
+
+- The chain's own per-step retry strategies run first; a still-failed run is
+  then either failed (`:error`, the pool's `:on_failure` fires) or handed to
+  the pool's retry budget (`:retry`).
+- A raising chain is normalized to `{:error, {:exception, exception}}` — it
+  never crashes the worker.
 
 ## Next steps
 

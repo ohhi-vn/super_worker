@@ -406,7 +406,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     {:ok, _} = Sup.remove_group_worker(@sup_id, group_id, worker_id)
     result = Sup.send_to_group_worker(@sup_id, group_id, worker_id, {:ping, self()})
 
-    assert {:error, :not_found} = result
+    assert {:error, :worker_not_found} = result
   end
 
   @tag :remove_group
@@ -778,7 +778,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
     end
 
     test "check_options rejects invalid strategies" do
-      assert {:error, "Invalid group restart strategy, :sometimes"} =
+      assert {:error, {:invalid_options, _}} =
                Group.check_options(id: :g, restart_strategy: :sometimes)
     end
 
@@ -819,11 +819,12 @@ defmodule SuperWorker.Supervisor.GroupTest do
       Db.put_worker_info(table, %{worker | parent: :unit_group})
       Db.put_worker(table, make_ref(), :dead_worker, {:group, :unit_group}, dead)
 
-      assert match?({:error, _}, Group.kill_all_workers(group))
+      assert {:error, [{:error, :dead_worker, :worker_not_found}]} =
+               Group.kill_all_workers(group)
     end
 
     test "send_message to unknown worker fails", %{group: group} do
-      assert {:error, :cannot_send} = Group.send_message(group, :missing, :hello)
+      assert {:error, :worker_not_found} = Group.send_message(group, :missing, :hello)
     end
 
     test "add_worker rejects a duplicate id", %{table: table, group: group} do
@@ -838,7 +839,8 @@ defmodule SuperWorker.Supervisor.GroupTest do
       assert match?({:ok, _}, Group.add_worker(group, %{worker | parent: group.id}))
 
       # Second add with the same id is rejected without spawning.
-      assert {:error, :worker_exists} = Group.add_worker(group, %{worker | parent: group.id})
+      assert {:error, :worker_already_exists} =
+               Group.add_worker(group, %{worker | parent: group.id})
       assert {:ok, infos} = Db.get_worker_infos_by_parent(table, {:group, :unit_group})
       assert length(infos) == 1
     end
@@ -883,7 +885,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
       Db.put_worker_info(table, worker)
       Db.put_worker(table, make_ref(), :dead_row, {:group, group.id}, dead_pid)
 
-      assert {:error, :not_alive} = Group.remove_worker(group, :dead_row)
+      assert {:error, :worker_not_found} = Group.remove_worker(group, :dead_row)
     end
 
     test "remove_worker cleans up rows of a live worker", %{table: table, group: group} do
@@ -902,7 +904,13 @@ defmodule SuperWorker.Supervisor.GroupTest do
       Process.sleep(50)
       assert Group.worker_exists?(group, :removable)
 
+      # add_worker links the worker to this test process; unlink so the
+      # removal's exit signal does not take the test down with it.
+      {:ok, {_ref, pid}} = Db.get_worker_by_id(table, :removable, {:group, group.id})
+      Process.unlink(pid)
+
       assert {:ok, :worker_removed} = Group.remove_worker(group, :removable)
+      refute Process.alive?(pid)
 
       refute Group.worker_exists?(group, :removable)
       assert [] = :ets.match_object(table, {{:ref, :_}, :removable, :_, :_})
@@ -928,8 +936,8 @@ defmodule SuperWorker.Supervisor.GroupTest do
       group_id = :"g_bad_gs_#{System.unique_integer([:positive])}"
       {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
-      result = Sup.add_group_worker(@sup_id, group_id, {FailingGenServer, []}, [])
-      assert match?({:error, _}, result)
+      assert {:error, {:spawn_failed, _}} =
+               Sup.add_group_worker(@sup_id, group_id, {FailingGenServer, []}, [])
       Process.sleep(50)
 
       # Partition is still healthy and serves API calls.
@@ -940,7 +948,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
       group_id = :"g_exit_gs_#{System.unique_integer([:positive])}"
       {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
-      assert {:error, :spawn_failed} =
+      assert {:error, {:spawn_failed, _}} =
                Sup.add_group_worker(@sup_id, group_id, {MyTest, :boom}, [])
 
       assert true == Sup.group_exists?(@sup_id, group_id)
@@ -950,7 +958,7 @@ defmodule SuperWorker.Supervisor.GroupTest do
       group_id = :"g_raise_gs_#{System.unique_integer([:positive])}"
       {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
-      assert {:error, :spawn_failed} =
+      assert {:error, {:spawn_failed, _}} =
                Sup.add_group_worker(@sup_id, group_id, {MyTest, [fail_with: :raise]}, [])
 
       assert true == Sup.group_exists?(@sup_id, group_id)
@@ -993,6 +1001,167 @@ defmodule SuperWorker.Supervisor.GroupTest do
       {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
 
       assert match?({:error, _}, Sup.add_group_worker(@sup_id, group_id, {String, []}, []))
+    end
+
+    test "check_options rejects a missing id and accepts a valid group" do
+      assert {:error, {:invalid_options, _}} = Group.check_options(restart_strategy: :one_for_one)
+      assert {:error, {:invalid_options, _}} = Group.check_options(id: nil)
+
+      assert {:ok, %Group{id: :g_ok, restart_strategy: :one_for_one}} =
+               Group.check_options(id: :g_ok, restart_strategy: :one_for_one)
+    end
+
+    test "get_worker and kill_worker unwrap {_, id} worker ids", %{table: table, group: group} do
+      {:ok, _} =
+        Group.add_worker(group, %SuperWorker.Supervisor.Worker{
+          id: :tuple_w,
+          fun: {:fun, fn -> Process.sleep(:infinity) end},
+          type: :group,
+          restart_strategy: :temporary
+        })
+
+      Process.sleep(20)
+      assert {:ok, %{id: :tuple_w}} = Group.get_worker(group, {:any, :tuple_w})
+
+      {:ok, {_ref, pid}} = Db.get_worker_by_id(table, :tuple_w, {:group, group.id})
+      Process.unlink(pid)
+
+      assert {:ok, :killed} = Group.kill_worker(group, {:any, :tuple_w}, :kill)
+    end
+
+    test "count_workers matches get_all_workers as members are added", %{
+      table: table,
+      group: group
+    } do
+      assert 0 == Group.count_workers(group)
+
+      for i <- 1..3 do
+        {:ok, _} =
+          Group.add_worker(group, %SuperWorker.Supervisor.Worker{
+            id: i,
+            fun: {:fun, fn -> Process.sleep(:infinity) end},
+            type: :group,
+            restart_strategy: :temporary
+          })
+
+        assert i == Group.count_workers(group)
+        assert {:ok, infos} = Group.get_all_workers(group)
+        assert length(infos) == Group.count_workers(group)
+      end
+
+      assert {:ok, 3} = Db.count_workers_by_parent(table, {:group, group.id})
+
+      # Workers are linked to this test process; unlink before the bulk kill.
+      {:ok, pairs} = Db.get_worker_pids_by_parent(table, {:group, group.id})
+      Enum.each(pairs, fn {_, pid} -> Process.unlink(pid) end)
+      assert :ok = Group.kill_all_workers(group)
+    end
+
+    test "send_message and broadcast report a dead worker row", %{table: table, group: group} do
+      dead = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      Db.put_worker_info(table, %SuperWorker.Supervisor.Worker{
+        id: :gone,
+        fun: {:fun, fn -> :ok end},
+        type: :group,
+        parent: group.id
+      })
+
+      ref = make_ref()
+      Db.put_worker(table, ref, :gone, {:group, group.id}, dead)
+
+      assert {:error, :worker_not_found} = Group.send_message(group, :gone, :hello)
+      assert {:error, [{:error, ^dead, :worker_not_found}]} = Group.broadcast(group, :hello)
+    end
+
+    test "restart_worker recovers a worker whose process is already dead", %{
+      table: table,
+      group: group
+    } do
+      dead = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      worker = %SuperWorker.Supervisor.Worker{
+        id: :recover,
+        fun: {:fun, fn -> Process.sleep(:infinity) end},
+        type: :group,
+        parent: group.id,
+        restart_strategy: :temporary
+      }
+
+      Db.put_worker_info(table, worker)
+      Db.put_worker(table, make_ref(), :recover, {:group, group.id}, dead)
+
+      assert {:ok, _} = Group.restart_worker(group, :recover)
+
+      {:ok, {_ref, pid}} = Db.get_worker_by_id(table, :recover, {:group, group.id})
+      assert Process.alive?(pid)
+
+      Process.unlink(pid)
+      Process.exit(pid, :kill)
+    end
+  end
+
+  describe "supervisor-level error contract" do
+    alias SuperWorker.Supervisor.Db
+
+    test "broadcast_to_group returns an error when a member is dead" do
+      group_id = :"g_bcast_err_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      %{supervisor: %{table: table}} = :sys.get_state(Process.whereis(@sup_id))
+
+      dead = spawn(fn -> :ok end)
+      Process.sleep(10)
+
+      Db.put_worker_info(table, %SuperWorker.Supervisor.Worker{
+        id: :dead_member,
+        fun: {:fun, fn -> :ok end},
+        type: :group,
+        parent: group_id
+      })
+
+      ref = make_ref()
+      Db.put_worker(table, ref, :dead_member, {:group, group_id}, dead)
+
+      assert {:error, [{:error, ^dead, :worker_not_found}]} =
+               Sup.broadcast_to_group(@sup_id, group_id, :ping)
+
+      Db.delete_worker(table, ref)
+      Db.delete_worker_info(table, :dead_member, {:group, group_id})
+    end
+
+    test "a group worker exiting normally is not restarted under either strategy" do
+      for strategy <- [:one_for_one, :one_for_all] do
+        group_id = :"g_normal_#{strategy}_#{System.unique_integer([:positive])}"
+        {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: strategy)
+
+        {:ok, _} = Sup.add_group_worker(@sup_id, group_id, fn -> :ok end, id: :done)
+        {:ok, _} = Sup.add_group_worker(@sup_id, group_id, {MyTest, :loop, [2]}, id: :sibling)
+        {:ok, sibling_pid} = Sup.get_pid_group_worker(@sup_id, group_id, :sibling)
+
+        Process.sleep(100)
+
+        assert {:error, :worker_not_found} = Sup.get_pid_group_worker(@sup_id, group_id, :done)
+        assert {:ok, ^sibling_pid} = Sup.get_pid_group_worker(@sup_id, group_id, :sibling)
+        assert Process.alive?(sibling_pid)
+
+        Sup.remove_group(@sup_id, group_id)
+      end
+    end
+
+    test "a failed spawn leaves the group empty and returns spawn_failed" do
+      group_id = :"g_clean_fail_#{System.unique_integer([:positive])}"
+      {:ok, ^group_id} = Sup.add_group(@sup_id, id: group_id, restart_strategy: :one_for_one)
+
+      assert {:error, {:spawn_failed, _}} =
+               Sup.add_group_worker(@sup_id, group_id, {FailingGenServer, []}, id: :never)
+
+      assert {:ok, 0} = Sup.count_workers_in_group(@sup_id, group_id)
+
+      assert {:error, :worker_not_found} =
+               Sup.get_pid_group_worker(@sup_id, group_id, :never)
     end
   end
 

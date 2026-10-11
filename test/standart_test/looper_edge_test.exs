@@ -86,19 +86,19 @@ defmodule SuperWorker.Supervisor.LooperTest do
     assert match?({:error, _}, Sup.get_pid_group_worker(sup_id, group_id, 1))
   end
 
-  test "standalone gen_server worker whose start returns an error is not registered", %{
-    sup_id: sup_id
-  } do
+  test "standalone gen_server worker whose start fails reports spawn_failed and registers nothing",
+       %{
+         sup_id: sup_id
+       } do
     name = :"looper_taken_name_#{System.unique_integer([:positive])}"
     {:ok, pid} = MyGenServer.start_link(name: name)
     on_exit(fn -> Process.exit(pid, :kill) end)
 
-    # Starting another instance with the same name fails; the partition
-    # swallows the failure and reports a logical :ok, but no worker is
-    # registered (documented current behaviour).
-    assert {:ok, _} = Sup.add_standalone_worker(sup_id, {MyGenServer, [name: name]})
+    # Starting another instance with the same name fails; the failure is
+    # reported with its cause and no worker is registered.
+    assert {:error, {:spawn_failed, {:already_started, _pid}}} =
+             Sup.add_standalone_worker(sup_id, {MyGenServer, [name: name]})
 
-    Process.sleep(100)
     assert match?({:error, _}, Sup.get_pid_standalone_worker(sup_id, MyGenServer))
   end
 

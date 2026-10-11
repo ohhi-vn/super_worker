@@ -402,6 +402,41 @@ defmodule SuperWorker.Pool.CoverageTest do
       Pool.stop(name)
     end
 
+    test "a crashing on_failure callback emits a callback error telemetry event" do
+      name = TestPool.unique_name()
+      test_pid = self()
+
+      handler =
+        String.to_atom("pool_cb_" <> Integer.to_string(System.unique_integer([:positive])))
+
+      # Telemetry is global: only forward this pool's events.
+      handler_fun = fn event, _measurements, meta, _config ->
+        if meta.pool == name, do: send(test_pid, {:telemetry, event, meta})
+      end
+
+      :telemetry.attach(handler, [:super_worker, :pool, :callback, :error], handler_fun, nil)
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      {:ok, _} =
+        Pool.start_link(
+          name: name,
+          worker: TestPool.RetryWorker,
+          worker_opts: [fails: 99],
+          size: 1,
+          partitions: 1,
+          retry: [max_attempts: 1, backoff: {:fixed, 10}],
+          on_failure: fn _job, _reason -> raise "dead letter boom" end
+        )
+
+      assert Pool.run(name, :job) == {:error, {:retries_exhausted, :busy}}
+
+      assert_receive {:telemetry, [:super_worker, :pool, :callback, :error], meta}, 1_000
+      assert meta.pool == name and meta.partition == 1
+      assert meta.callback == :on_failure
+
+      Pool.stop(name)
+    end
+
     test "a crashing on_result callback does not break the partition" do
       name = TestPool.unique_name()
 

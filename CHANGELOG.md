@@ -4,6 +4,56 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.0]
+
+### Changed
+
+- **BREAKING (`SuperWorker.Supervisor` standalone workers)** — standalone
+  not-found errors are unified on `:worker_not_found` (matching groups) instead
+  of the legacy `:not_found` for `send_to_standalone_worker/4`,
+  `get_pid_standalone_worker/3`, and `remove_standalone_worker/3`. Missing or
+  already-removed worker ids now return `{:error, :worker_not_found}`.
+- **BREAKING (`SuperWorker.Supervisor.add_standalone_worker/4`)** —
+  `add_standalone_worker/4` now reports the real spawn outcome: it returns
+  `{:ok, id}` only when the worker started, and `{:error, {:spawn_failed, cause}}`
+  (cause preserved) otherwise, leaving no worker info or ref row behind. It
+  previously always replied `{:ok, id}`, even when the worker never started.
+- **BREAKING (`SuperWorker.Supervisor.Group`)** — unified Group error contract
+  on `SuperWorker.Supervisor.ErrorHandler` atoms: `:worker_not_found`,
+  `:worker_already_exists`, `{:invalid_options, detail}`,
+  `{:error, {:spawn_failed, cause}}` (cause preserved). Legacy shapes are gone:
+  `:worker_exists` → `:worker_already_exists`, `:cannot_send` → `:worker_not_found`,
+  bare `:not_found`/`:not_alive` → `:worker_not_found`, bare-string invalid-strategy
+  → `{:invalid_options, _}`. `Group.check_options/1` now rejects nil/missing `id`.
+  Supervisor Group API success shapes are unchanged (`{:ok, id}`, `{:ok, :sent}`);
+  `broadcast_to_group` now propagates `{:error, errors}` instead of always
+  replying `{:ok, :sent}`.
+
+### Added
+
+- **Standalone restart intensity** — `SuperWorker.Supervisor.add_standalone_worker/4`
+  now honours `:max_restarts` (default 10), `:max_seconds` (default 10), and
+  `:auto_restart_time` (default `nil`). A `:permanent`/`:transient` worker that
+  crashes past the ceiling within the window stops being restarted (logged with
+  its cause) instead of looping forever; when `:auto_restart_time` is set, a
+  cooldown timer resumes restarts (skipped if the worker was removed meanwhile).
+  Invalid intensity options return `{:error, {:invalid_options, _}}`.
+
+### Fixed
+
+- **Supervisor standalone workers** — atomic add (a failed GenServer start no
+  longer leaves an orphan info row or reports success), removals no longer log a
+  spurious "unexpected worker data" warning for the trailing `:DOWN`, and a
+  worker stopped by restart intensity is still removable. Fresh adds use the
+  O(1) `Db.put_new_worker/5` path (no per-add full-table stale scan) and shutdown
+  and `supervisor_info` use pid/count-only selects instead of full info scans.
+- **Supervisor groups** — single-lookup worker paths (no `exists?` + `get` + `kill`
+  triple reads), `count_workers/1` via ETS `select_count`, pid-only selects for
+  `kill_all_workers/2` and `broadcast/2`, atomic spawn (no orphan ETS rows on
+  failure), joint ref+info cleanup on remove/restart, alive-checks before send,
+  atomic `Process.register` for named workers, and consistent `{_, id}` unwrapping
+  across Group and partition routing.
+
 ## [0.10.0]
 
 ### Added

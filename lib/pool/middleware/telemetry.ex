@@ -19,7 +19,10 @@ defmodule SuperWorker.Pool.Middleware.Telemetry do
   | `[:super_worker, :pool, :job, :retry]`       | pool, partition, job_id, attempts, delay, reason |
   | `[:super_worker, :pool, :job, :crash]`       | pool, partition, job_id, attempts, reason |
   | `[:super_worker, :pool, :job, :dead_letter]` | pool, partition, job_id, attempts, reason |
-  | `[:super_worker, :pool, :overloaded]`        | pool, partition, job_id (nil) |
+  | `[:super_worker, :pool, :overloaded]`        | pool, partition |
+  | `[:super_worker, :pool, :callback, :error]`  | pool, partition, callback (`:on_failure\|:on_result`), kind, reason |
+  | `[:super_worker, :pool, :circuit, :open]`    | pool, partition |
+  | `[:super_worker, :pool, :circuit, :closed]`  | pool, partition |
   """
 
   @behaviour SuperWorker.Pool.Middleware

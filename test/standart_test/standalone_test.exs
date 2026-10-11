@@ -1,6 +1,8 @@
 defmodule SuperWorker.Supervisor.StandaloneTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias SuperWorker.Supervisor, as: Sup
 
   @moduletag :capture_log
@@ -40,6 +42,34 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
     Enum.each(ids, fn id ->
       assert {:ok, _pid} = Sup.get_pid_standalone_worker(sup_id, id)
     end)
+  end
+
+  @tag :standalone_spawn_failure
+  test "failed spawn reports error and leaves no rows", %{sup_id: sup_id} do
+    failing_id = make_ref()
+
+    assert {:error, {:spawn_failed, :cannot_start}} =
+             Sup.add_standalone_worker(sup_id, FailingGenServer,
+               id: failing_id,
+               restart_strategy: :permanent
+             )
+
+    assert {:error, :worker_not_found} = Sup.get_pid_standalone_worker(sup_id, failing_id)
+
+    assert {:ok, workers} = Sup.list_standalone_workers(sup_id)
+    refute Enum.any?(workers, &(&1.id == failing_id))
+
+    # The partition still serves other workers after the failed add.
+    good_id = make_ref()
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
+        id: good_id,
+        restart_strategy: :permanent
+      )
+
+    Sup.send_to_standalone_worker(sup_id, good_id, {:ping, self()})
+    assert_receive {:pong, _sender}, 1_000
   end
 
   @tag :standalone_send_data
@@ -165,10 +195,17 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
         restart_strategy: :permanent
       )
 
-    {:ok, _} = Sup.remove_standalone_worker(sup_id, worker_id)
-    result = Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
+    log =
+      capture_log(fn ->
+        {:ok, _} = Sup.remove_standalone_worker(sup_id, worker_id)
+        # Give the trailing :DOWN a moment to be processed by the partition.
+        Process.sleep(100)
+        result = Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
 
-    assert result == {:error, :not_found}
+        assert result == {:error, :worker_not_found}
+      end)
+
+    refute log =~ "unexpected for getting worker data"
   end
 
   @tag :standalone_reuse_id_worker
@@ -183,7 +220,7 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
     {:ok, _} = Sup.remove_standalone_worker(sup_id, worker_id)
 
-    assert {:error, :not_found} =
+    assert {:error, :worker_not_found} =
              Sup.send_to_standalone_worker(sup_id, worker_id, {:ping, self()})
 
     {:ok, _} =
@@ -249,5 +286,123 @@ defmodule SuperWorker.Supervisor.StandaloneTest do
 
     Sup.send_to_standalone_worker(sup_id, worker1_id, {:get, :test, self()})
     assert_receive {:result, nil}, 1_000
+  end
+
+  @tag :standalone_shutdown
+  test "stopping the supervisor terminates standalone workers", %{sup_id: sup_id} do
+    ids =
+      for _ <- 1..10 do
+        id = make_ref()
+
+        {:ok, _} =
+          Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
+            id: id,
+            restart_strategy: :permanent
+          )
+
+        id
+      end
+
+    pids =
+      Enum.map(ids, fn id ->
+        {:ok, pid} = Sup.get_pid_standalone_worker(sup_id, id)
+        pid
+      end)
+
+    :ok = Sup.stop(sup_id)
+    wait_until(fn -> not Sup.running?(sup_id) end)
+
+    Enum.each(pids, fn pid -> refute Process.alive?(pid) end)
+  end
+
+  @tag :standalone_restart_intensity
+  test "crash-looping worker stops at the restart ceiling", %{sup_id: sup_id} do
+    worker_id = make_ref()
+    sibling_id = make_ref()
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, fn -> raise "always crashes" end,
+        id: worker_id,
+        restart_strategy: :permanent,
+        max_restarts: 2,
+        max_seconds: 10
+      )
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, {MyTest, :loop, [1]},
+        id: sibling_id,
+        restart_strategy: :permanent
+      )
+
+    # The crash loop stops once the ceiling is exceeded.
+    wait_until(fn -> match?({:error, _}, Sup.get_pid_standalone_worker(sup_id, worker_id)) end)
+
+    # It stays stopped and the partition still serves the sibling.
+    Sup.send_to_standalone_worker(sup_id, sibling_id, {:ping, self()})
+    assert_receive {:pong, _sender}, 1_000
+    assert {:error, _} = Sup.get_pid_standalone_worker(sup_id, worker_id)
+  end
+
+  @tag :standalone_auto_restart
+  test "auto_restart_time resumes a worker after the cooldown", %{sup_id: sup_id} do
+    counter = :counters.new(1, [])
+    worker_id = make_ref()
+
+    fun = fn ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      if n <= 2, do: raise("boom"), else: Process.sleep(60_000)
+    end
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, fun,
+        id: worker_id,
+        restart_strategy: :permanent,
+        max_restarts: 1,
+        max_seconds: 10,
+        auto_restart_time: 150
+      )
+
+    # Attempt 3 survives, reached only because the cooldown resumed restarts.
+    wait_until(fn -> match?({:ok, _pid}, Sup.get_pid_standalone_worker(sup_id, worker_id)) end)
+  end
+
+  @tag :standalone_auto_restart
+  test "auto_restart_time does not restart a worker removed during cooldown", %{sup_id: sup_id} do
+    counter = :counters.new(1, [])
+    worker_id = make_ref()
+
+    fun = fn ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      if n <= 2, do: raise("boom"), else: Process.sleep(60_000)
+    end
+
+    {:ok, _} =
+      Sup.add_standalone_worker(sup_id, fun,
+        id: worker_id,
+        restart_strategy: :permanent,
+        max_restarts: 1,
+        max_seconds: 10,
+        auto_restart_time: 200
+      )
+
+    wait_until(fn -> match?({:error, _}, Sup.get_pid_standalone_worker(sup_id, worker_id)) end)
+
+    assert {:ok, ^worker_id} = Sup.remove_standalone_worker(sup_id, worker_id)
+
+    # A full cooldown passes without the removed worker coming back.
+    Process.sleep(400)
+    assert {:error, _} = Sup.get_pid_standalone_worker(sup_id, worker_id)
+  end
+
+  defp wait_until(fun, tries \\ 150) do
+    if fun.() do
+      :ok
+    else
+      if tries <= 0, do: flunk("wait_until timed out")
+      Process.sleep(20)
+      wait_until(fun, tries - 1)
+    end
   end
 end

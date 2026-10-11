@@ -65,13 +65,49 @@ defmodule SuperWorker.Supervisor.WorkerTest do
     end
 
     test "rejects invalid restart strategy" do
-      assert {:error, "Invalid standalone restart strategy, :sometimes"} =
+      assert {:error, {:invalid_options, _}} =
                Worker.from_config(
                  type: :standalone,
                  id: :w1,
                  fun: {MyTest, :loop, [1]},
                  restart_strategy: :sometimes
                )
+    end
+
+    test "rejects non-positive restart intensity options" do
+      for opts <- [
+            [max_restarts: 0],
+            [max_restarts: -1],
+            [max_seconds: 0],
+            [auto_restart_time: -5]
+          ] do
+        assert {:error, {:invalid_options, _}} =
+                 Worker.from_config(
+                   [type: :standalone, id: :w1, fun: {MyTest, :loop, [1]}] ++ opts
+                 )
+      end
+    end
+
+    test "restart intensity options round-trip into the struct" do
+      {:ok, worker} =
+        Worker.from_config(
+          type: :standalone,
+          id: :w1,
+          fun: {MyTest, :loop, [1]},
+          max_restarts: 3,
+          max_seconds: 7,
+          auto_restart_time: 1_000
+        )
+
+      assert worker.max_restarts == 3
+      assert worker.max_seconds == 7
+      assert worker.auto_restart_time == 1_000
+
+      # Defaults are applied when not provided.
+      {:ok, defaulted} = Worker.from_config(type: :standalone, id: :w2, fun: {MyTest, :loop, [1]})
+      assert defaulted.max_restarts == 10
+      assert defaulted.max_seconds == 10
+      assert defaulted.auto_restart_time == nil
     end
 
     test "rejects invalid field values" do

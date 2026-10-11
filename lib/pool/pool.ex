@@ -82,18 +82,24 @@ defmodule SuperWorker.Pool do
     `{:exponential, base: 200, max: 10_000, jitter: true}`).
   - `:on_failure` — `fun/2` or `{module, function, args}` invoked as
     `(job, reason)` after retries are exhausted (the reason is not silently
-    dropped — dead-letter it, log it or alert on it).
+    dropped — dead-letter it, log it or alert on it). A crashing callback is
+    logged and emits a `[:super_worker, :pool, :callback, :error]` telemetry
+    event; it never breaks the pool.
   - `:on_result` — `fun/2` or `{module, function, args}` invoked as
     `(job, {:ok, result} | {:error, reason})` for `cast` jobs whose caller
     cannot await a result. The payload covers **both outcomes** — success,
     expected failures, and permanent failures (exhausted retries or a crash):
     the error reason is the same one `:on_failure` would receive. Without
-    `:on_result`, cast results are dropped.
+    `:on_result`, cast results are dropped. A crashing callback is logged and
+    emits a `[:super_worker, :pool, :callback, :error]` telemetry event; it
+    never breaks the pool.
   - `:middleware` — list of `SuperWorker.Pool.Middleware` modules
     (default: `[]`).
   - `:circuit_breaker` — options for
     `SuperWorker.Pool.Middleware.CircuitBreaker` when it is in `:middleware`:
     `failure_threshold:` (default 5), `reset_timeout:` ms (default 10_000).
+    Both must be positive integers, otherwise `start_link` returns
+    `{:error, {:invalid, _}}`.
   - `:max_restarts` — restart intensity ceiling shared by the pool supervisor
     and each partition supervisor (default: 10). A worker that crash-loops in
     `init/1` burns this budget and then takes its partition down instead of
@@ -108,7 +114,10 @@ defmodule SuperWorker.Pool do
     partition supervisor and its in-flight job is **requeued once** — at the
     **front** of its partition queue — and charged against its own retry
     budget; a poison-pill job cannot crash-loop the pool. A crash of the
-    worker loses its behaviour state (`init/1` runs again).
+    worker loses its behaviour state (`init/1` runs again). A
+    supervisor-initiated `:shutdown` exit (a `:rest_for_one` cascade after a
+    sibling crashed) or a `:noproc` registration race is never the job's
+    fault: the job is requeued without charging the crash budget.
   - **Expected failures** (`{:error, ...}` / `{:retry, ...}`): never crash
     anything. `{:retry, ...}` reschedules via `Process.send_after` after a
     backoff delay (sleeping inside a worker would hold it hostage); after
@@ -424,6 +433,7 @@ defmodule SuperWorker.Pool do
          {:ok, max_queue} <- validate_non_negative(opts, :max_queue, @default_max_queue),
          {:ok, retry} <- validate_retry(opts),
          {:ok, middleware} <- validate_middleware(opts),
+         {:ok, circuit_breaker} <- validate_circuit_breaker(opts),
          {:ok, max_restarts} <- validate_positive(opts, :max_restarts, @default_max_restarts),
          {:ok, max_seconds} <- validate_positive(opts, :max_seconds, @default_max_seconds) do
       {:ok,
@@ -440,7 +450,7 @@ defmodule SuperWorker.Pool do
          on_failure: validate_callback(opts, :on_failure),
          on_result: validate_callback(opts, :on_result),
          middleware: middleware,
-         circuit_breaker: Keyword.get(opts, :circuit_breaker, []),
+         circuit_breaker: circuit_breaker,
          max_restarts: max_restarts,
          max_seconds: max_seconds,
          counter: :atomics.new(1, [])
@@ -551,6 +561,31 @@ defmodule SuperWorker.Pool do
   end
 
   defp valid_middleware?(_other), do: false
+
+  defp validate_circuit_breaker(opts) do
+    breaker = Keyword.get(opts, :circuit_breaker, [])
+
+    cond do
+      not is_list(breaker) ->
+        {:error, {:invalid, {:circuit_breaker, breaker}}}
+
+      not valid_threshold?(Keyword.get(breaker, :failure_threshold, 5)) ->
+        {:error,
+         {:invalid,
+          {{:circuit_breaker, :failure_threshold}, Keyword.get(breaker, :failure_threshold, 5)}}}
+
+      not valid_threshold?(Keyword.get(breaker, :reset_timeout, 10_000)) ->
+        {:error,
+         {:invalid,
+          {{:circuit_breaker, :reset_timeout}, Keyword.get(breaker, :reset_timeout, 10_000)}}}
+
+      true ->
+        {:ok, breaker}
+    end
+  end
+
+  defp valid_threshold?(value) when is_integer(value) and value > 0, do: true
+  defp valid_threshold?(_other), do: false
 
   defp validate_callback(opts, key) do
     callback = Keyword.get(opts, key)

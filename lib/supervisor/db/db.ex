@@ -42,6 +42,16 @@ defmodule SuperWorker.Supervisor.Db do
     Ets.insert(table, {{:ref, ref}, worker_id, parent, pid})
   end
 
+  @doc """
+  Inserts the ref row of a worker that has no ref row yet (a new add). Unlike
+  `put_worker/5` it does not scan the table for stale rows, so adding N workers
+  costs O(N) in total.
+  """
+  def put_new_worker(table, ref, worker_id, parent, pid) do
+    Ets.insert(table, {{:ref, ref}, worker_id, parent, pid})
+    :ok
+  end
+
   def get_worker(table, ref) do
     with {:ok, {_, worker_id, parent, pid}} <- lookup(table, {:ref, ref}) do
       {:ok, {worker_id, parent, pid}}
@@ -108,17 +118,18 @@ defmodule SuperWorker.Supervisor.Db do
   end
 
   def get_worker_pids_by_parent(table, parent) do
-    result =
-      Ets.match_object(table, {{:ref, :_}, :_, parent, :_})
-      |> Enum.map(fn {_, worker_id, _, pid} -> {worker_id, pid} end)
+    # Pid/id-only select: avoids materializing full Worker structs and
+    # copying whole ref tuples into the caller.
+    match_spec = [{{{:ref, :_}, :"$1", parent, :"$3"}, [], [{{:"$1", :"$3"}}]}]
 
-    {:ok, result}
+    {:ok, Ets.select(table, match_spec)}
   end
 
   def get_workers_by_parent(table, parent) do
+    match_spec = [{{{:ref, :_}, :"$1", parent, :"$3"}, [], [{{:"$1", :"$3"}}]}]
+
     result =
-      Ets.match_object(table, {{:ref, :_}, :_, parent, :_})
-      |> Enum.map(fn {_, worker_id, _, pid} -> {worker_id, pid} end)
+      Ets.select(table, match_spec)
       # Remove duplicates efficiently
       |> :lists.usort()
 
@@ -162,6 +173,13 @@ defmodule SuperWorker.Supervisor.Db do
     ]
 
     {:ok, Ets.select(table, match_spec)}
+  end
+
+  def count_workers_by_parent(table, {type, parent_value}) do
+    # Count-only query: never materializes Worker structs into the caller.
+    match_spec = [{{{:worker, :_, {type, parent_value}}, :_}, [], [true]}]
+
+    {:ok, Ets.select_count(table, match_spec)}
   end
 
   def get_all_standalone_worker_infos(table) do
@@ -209,21 +227,95 @@ defmodule SuperWorker.Supervisor.Db do
     {:ok, groups}
   end
 
+  # Routing: {:chain_order, chain_id, order} -> [{worker_id, pid}] holds every
+  # replica of the node at `order`. Orders are kept contiguous 1..n by the
+  # chain module; `{:chain_nodes, chain_id}` holds n.
+
+  @doc "Adds or replaces (by worker_id) one replica in the node's routing row."
   def put_chain_order(table, worker_id, chain_id, order, pid) do
     key = {:chain_order, chain_id, order}
 
-    # Use insert (upsert) to handle chain worker restarts
-    Ets.insert(table, {key, {worker_id, pid}})
+    replicas =
+      case Ets.lookup(table, key) do
+        [{^key, existing}] -> Enum.reject(existing, fn {id, _} -> id == worker_id end)
+        [] -> []
+      end
+
+    Ets.insert(table, {key, [{worker_id, pid} | replicas]})
+    :ok
   end
 
+  @doc "Returns every replica `[{worker_id, pid}]` routed for the node at `order`."
   def get_chain_order(table, chain_id, order) do
-    with {:ok, {_, data}} <- lookup(table, {:chain_order, chain_id, order}) do
-      {:ok, data}
+    with {:ok, {_, replicas}} <- lookup(table, {:chain_order, chain_id, order}) do
+      {:ok, replicas}
+    end
+  end
+
+  @doc """
+  Removes one replica from the node's routing row. Returns `:last` when that
+  was the final replica (the row is deleted), `:more` when others remain, or
+  `:not_found` when the replica was not routed.
+  """
+  def delete_chain_replica(table, chain_id, order, worker_id) do
+    key = {:chain_order, chain_id, order}
+
+    case Ets.lookup(table, key) do
+      [{^key, replicas}] ->
+        case Enum.reject(replicas, fn {id, _} -> id == worker_id end) do
+          [] ->
+            Ets.delete(table, key)
+            :last
+
+          remaining ->
+            Ets.insert(table, {key, remaining})
+            :more
+        end
+
+      [] ->
+        :not_found
+    end
+  end
+
+  @doc "Moves a node's routing row from `from` to `to` (used to close order gaps)."
+  def move_chain_order(table, chain_id, from, to) do
+    with {:ok, replicas} <- get_chain_order(table, chain_id, from) do
+      Ets.delete(table, {:chain_order, chain_id, from})
+      Ets.insert(table, {{:chain_order, chain_id, to}, replicas})
+      :ok
     end
   end
 
   def delete_chain_order(table, chain_id, order) do
     Ets.delete(table, {:chain_order, chain_id, order})
+  end
+
+  @doc "Atomically allocates the next node order (count + 1) for a chain."
+  def next_chain_order(table, chain_id) do
+    Ets.update_counter(table, {:chain_nodes, chain_id}, {2, 1}, {{:chain_nodes, chain_id}, 0})
+  end
+
+  @doc "Releases the last allocated node order (decrements the node count)."
+  def release_chain_order(table, chain_id) do
+    Ets.update_counter(table, {:chain_nodes, chain_id}, {2, -1}, {{:chain_nodes, chain_id}, 0})
+  end
+
+  @doc "Number of nodes currently allocated in the chain."
+  def get_chain_node_count(table, chain_id) do
+    case Ets.lookup(table, {:chain_nodes, chain_id}) do
+      [{_, count}] -> count
+      [] -> 0
+    end
+  end
+
+  @doc """
+  Returns the round-robin replica index in `0..n-1` for a node, advancing
+  the shared per-node counter atomically.
+  """
+  def next_round_robin(table, chain_id, order, n) when n > 0 do
+    key = {:chain_rr, chain_id, order}
+    count = Ets.update_counter(table, key, {2, 1}, {key, 0})
+    rem(count - 1, n)
   end
 
   def put_chain(table, chain = %Chain{}) do
@@ -251,8 +343,13 @@ defmodule SuperWorker.Supervisor.Db do
     {:ok, chains}
   end
 
+  @doc "Deletes a chain row together with all of its routing and counter rows."
   def delete_chain(table, chain_id) do
+    Ets.match_delete(table, {{:chain_order, chain_id, :_}, :_})
+    Ets.match_delete(table, {{:chain_rr, chain_id, :_}, :_})
+    Ets.delete(table, {:chain_nodes, chain_id})
     Ets.delete(table, {:chain, chain_id})
+    :ok
   end
 
   def put_sup_info(table, partition_id, opts) do

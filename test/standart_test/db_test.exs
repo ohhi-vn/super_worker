@@ -348,7 +348,7 @@ defmodule SuperWorker.Supervisor.DbTest do
     test "chain order roundtrip", %{table: table} do
       Db.put_chain_order(table, :w1, :chain_x, 1, self())
 
-      assert {:ok, {:w1, pid}} = Db.get_chain_order(table, :chain_x, 1)
+      assert {:ok, [{:w1, pid}]} = Db.get_chain_order(table, :chain_x, 1)
       assert pid == self()
 
       Db.delete_chain_order(table, :chain_x, 1)

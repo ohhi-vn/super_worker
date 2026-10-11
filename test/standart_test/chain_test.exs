@@ -378,16 +378,16 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
   @tag :chain_check_options_invalid
   test "check_options rejects invalid restart strategy, send type and callback" do
-    assert {:error, "Invalid chain restart strategy, :bogus"} =
+    assert {:error, {:invalid_restart_strategy, :bogus}} =
              Chain.check_options(id: :c1, restart_strategy: :bogus)
 
-    assert {:error, "Invalid send type, :smoke_signals"} =
+    assert {:error, {:invalid_send_type, :smoke_signals}} =
              Chain.check_options(id: :c1, send_type: :smoke_signals)
 
-    assert {:error, "Invalid callback"} =
+    assert {:error, {:invalid_callback, :not_a_callback}} =
              Chain.check_options(id: :c1, finished_callback: :not_a_callback)
 
-    assert {:error, "Invalid queue length"} =
+    assert {:error, {:invalid_queue_length, 0}} =
              Chain.check_options(id: :c1, queue_length: 0)
   end
 
@@ -526,7 +526,9 @@ defmodule SuperWorker.Supervisor.ChainTest do
 
     # All replicas of one node share a single order slot.
     assert Enum.count(Enum.uniq(Enum.map(workers, & &1.order))) == 1
-    assert {:ok, {_, _}} = Db.get_chain_order(table, :chain_multi, hd(workers).order)
+    # The routing row holds every replica of the node.
+    assert {:ok, replicas} = Db.get_chain_order(table, :chain_multi, hd(workers).order)
+    assert length(replicas) == 3
   end
 
   @tag :chain_queue_full_timeout

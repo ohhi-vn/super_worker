@@ -45,6 +45,25 @@ defmodule SuperWorker.Supervisor.ChainConfigTest do
       assert {:error, {:invalid_options, [:nope]}} = Config.new(id: :chain1, nope: true)
     end
 
+    test "accepts every send type" do
+      for send_type <- [:broadcast, :random, :partition, :round_robin] do
+        assert {:ok, %Chain{send_type: ^send_type}} = Config.new(id: :c, send_type: send_type)
+      end
+    end
+
+    test "check_options/1 and Config.new/1 return the same result for the same input" do
+      for opts <- [
+            [id: :c, restart_strategy: :bogus],
+            [id: :c, send_type: :smoke_signals],
+            [id: :c, finished_callback: "not a callback"],
+            [id: :c, queue_length: 0],
+            [id: :c, nope: true],
+            [id: :c, restart_strategy: :rest_for_one, send_type: :partition]
+          ] do
+        assert Chain.check_options(opts) == Config.new(opts)
+      end
+    end
+
     test "accepts mfa callbacks" do
       {:ok, chain} = Config.new(id: :chain1, finished_callback: {String, :length, []})
       assert chain.finished_callback == {String, :length, []}

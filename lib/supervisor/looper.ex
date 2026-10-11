@@ -17,7 +17,16 @@ defmodule SuperWorker.Supervisor.Looper do
   The loop only exits when a deliberate shutdown is requested.
   """
 
-  alias SuperWorker.Supervisor.{ApiHelper, Chain, Db, Group, Message, Utils, Worker}
+  alias SuperWorker.Supervisor.{
+    ApiHelper,
+    Chain,
+    Db,
+    ErrorHandler,
+    Group,
+    Message,
+    Utils,
+    Worker
+  }
 
   require Logger
   require SuperWorker.Log
@@ -62,6 +71,12 @@ defmodule SuperWorker.Supervisor.Looper do
       {:EXIT, from, reason} ->
         process_exit_message(state, from, reason)
 
+      # Timer set by :auto_restart_time after the restart ceiling was hit.
+      {:restart_worker, worker_id} ->
+        state
+        |> handle_auto_restart(worker_id)
+        |> main_loop()
+
       unknown ->
         Logger.warning(
           "SuperWorker, Supervisor, partition #{state.id}, main_loop, unknown message: #{inspect(unknown)}"
@@ -93,15 +108,12 @@ defmodule SuperWorker.Supervisor.Looper do
       kill_owned_workers(state, {:chain, chain.id})
     end)
 
-    {:ok, workers} = Db.get_all_standalone_worker_infos(state.table)
+    {:ok, workers} = Db.get_worker_pids_by_parent(state.table, {:standalone, nil})
 
-    Enum.each(workers, fn worker ->
+    Enum.each(workers, fn {worker_id, pid} ->
       # kill worker process on current partition only
-      if partition_owns?(state, {nil, worker.id}) do
-        case Db.get_worker_by_id(state.table, worker.id, {:standalone, nil}) do
-          {:ok, {_, pid}} -> Process.exit(pid, :kill)
-          _ -> :ok
-        end
+      if partition_owns?(state, {nil, worker_id}) do
+        Process.exit(pid, :kill)
       end
     end)
 
@@ -179,9 +191,10 @@ defmodule SuperWorker.Supervisor.Looper do
     result =
       case Db.get_group(state.table, group_id) do
         {:ok, group} ->
-          Group.broadcast(group, data)
-
-          {:ok, :sent}
+          case Group.broadcast(group, data) do
+            :ok -> {:ok, :sent}
+            {:error, _} = error -> error
+          end
 
         {:error, _} = error ->
           Logger.error(
@@ -201,17 +214,19 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          message = %Message{type: :send_to_group, data: {group_id, worker_id, data}}
        ) do
+    worker_id = normalize_group_worker_id(worker_id)
+
     case Db.get_worker_by_id(state.table, worker_id, {:group, group_id}) do
       {:ok, {_ref, pid}} ->
         send(pid, data)
         ApiHelper.api_response(message, :ok)
 
-      failed ->
+      {:error, _} ->
         Logger.error(
-          "SuperWorker, Supervisor, supervisor #{state.id}, send to worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: #{inspect(failed)}"
+          "SuperWorker, Supervisor, supervisor #{state.id}, send to worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: :worker_not_found"
         )
 
-        ApiHelper.api_response(message, failed)
+        ApiHelper.api_response(message, ErrorHandler.not_found(:worker))
     end
 
     main_loop(state)
@@ -231,12 +246,12 @@ defmodule SuperWorker.Supervisor.Looper do
             {:error, _reason} = error -> error
           end
 
-        failed ->
+        {:error, _} ->
           Logger.error(
-            "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: #{inspect(failed)}"
+            "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart worker #{inspect(worker_id)} in group #{inspect(group_id)}, error: :group_not_found"
           )
 
-          failed
+          ErrorHandler.not_found(:group)
       end
 
     ApiHelper.api_response(message, result)
@@ -260,12 +275,12 @@ defmodule SuperWorker.Supervisor.Looper do
             ApiHelper.api_response(message, failed)
         end
 
-      failed ->
+      {:error, _} ->
         Logger.error(
-          "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart group #{inspect(group_id)}, error: #{inspect(failed)}"
+          "SuperWorker, Supervisor, supervisor #{state.id}, cannot restart group #{inspect(group_id)}, error: :group_not_found"
         )
 
-        ApiHelper.api_response(message, failed)
+        ApiHelper.api_response(message, ErrorHandler.not_found(:group))
     end
 
     main_loop(state)
@@ -348,7 +363,7 @@ defmodule SuperWorker.Supervisor.Looper do
             "SuperWorker, Supervisor, not found standalone worker #{inspect(worker_id)}"
           )
 
-          error
+          worker_lookup_error({:standalone, nil}, error)
       end
 
     ApiHelper.api_response(message, result)
@@ -364,16 +379,9 @@ defmodule SuperWorker.Supervisor.Looper do
     result =
       case Db.get_chain(state.table, chain_id) do
         {:ok, chain} ->
-          case Chain.get_all_workers(chain) do
-            {:ok, workers} ->
-              Enum.each(workers, &Chain.remove_worker(chain, &1.id))
-
-              Db.delete_chain(state.table, chain_id)
-              :ok
-
-            error ->
-              error
-          end
+          :ok = Chain.remove_all_workers(chain)
+          Db.delete_chain(state.table, chain_id)
+          :ok
 
         error ->
           Logger.error(
@@ -486,6 +494,12 @@ defmodule SuperWorker.Supervisor.Looper do
          state,
          message = %Message{type: :get_worker_pid, data: {worker_id, parent}}
        ) do
+    worker_id =
+      case parent do
+        {:group, _} -> normalize_group_worker_id(worker_id)
+        _ -> worker_id
+      end
+
     result =
       case Db.get_worker_by_id(state.table, worker_id, parent) do
         {:ok, {_ref, pid}} ->
@@ -496,7 +510,7 @@ defmodule SuperWorker.Supervisor.Looper do
             "SuperWorker, Supervisor, #{state.id} worker not found, worker: #{inspect(worker_id)}, group/chain/standalone: #{inspect(parent)}"
           )
 
-          error
+          worker_lookup_error(parent, error)
       end
 
     ApiHelper.api_response(message, result)
@@ -531,10 +545,7 @@ defmodule SuperWorker.Supervisor.Looper do
     result =
       case Db.get_chain(state.table, chain_id) do
         {:ok, chain} ->
-          case Chain.remove_worker(chain, worker_id) do
-            true -> :ok
-            other -> other
-          end
+          Chain.remove_worker(chain, worker_id)
 
         error ->
           Logger.error(
@@ -555,19 +566,29 @@ defmodule SuperWorker.Supervisor.Looper do
          message = %Message{type: :remove_standalone_worker, data: worker_id}
        ) do
     result =
-      case Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
-        {:ok, {ref, pid}} ->
-          Process.exit(pid, :kill)
-          Db.delete_worker(state.table, ref)
+      case Db.get_worker_info(state.table, worker_id, {:standalone, nil}) do
+        {:ok, _info} ->
+          # Kill a live process when present, then delete both rows. A worker
+          # stopped by restart intensity has an info row but no ref row, and
+          # must still be removable.
+          case Db.get_worker_by_id(state.table, worker_id, {:standalone, nil}) do
+            {:ok, {ref, pid}} ->
+              Process.exit(pid, :kill)
+              Db.delete_worker(state.table, ref)
+
+            {:error, _} ->
+              :ok
+          end
+
           Db.delete_worker_info(state.table, worker_id, {:standalone, nil})
           {:ok, worker_id}
 
-        error ->
+        {:error, _} = error ->
           Logger.error(
             "SuperWorker, Supervisor, #{state.id} standalone worker not found: #{inspect(worker_id)}"
           )
 
-          error
+          worker_lookup_error({:standalone, nil}, error)
       end
 
     ApiHelper.api_response(message, result)
@@ -669,16 +690,23 @@ defmodule SuperWorker.Supervisor.Looper do
           end
 
         :standalone ->
-          Db.put_worker_info(state.table, worker)
-          sup_start_child(state, worker)
-          {:ok, worker.id}
+          start_standalone_worker(state, worker)
       end
 
     ApiHelper.api_response(message, result)
     state
   end
 
+  defp start_standalone_worker(state, worker) do
+    with {:ok, _pid} <- sup_start_child(state, worker, :fresh) do
+      Db.put_worker_info(state.table, worker)
+      {:ok, worker.id}
+    end
+  end
+
   defp worker_start_status(state, %Worker{type: :group, parent: parent, id: id}) do
+    id = normalize_group_worker_id(id)
+
     case {has_group?(state, parent), has_group_worker?(state, parent, id)} do
       {false, _} -> :group_not_found
       {true, true} -> :worker_already_exists
@@ -726,45 +754,73 @@ defmodule SuperWorker.Supervisor.Looper do
       "SuperWorker, Supervisor, #{state.id}, process died: #{inspect(pid)}, ref: #{inspect(ref)}, reason: #{inspect(reason)}"
     end)
 
-    with {:ok, {worker_id, parent, _info}} <- Db.get_worker(state.table, ref),
-         {:ok, worker} <- Db.get_worker_info(state.table, worker_id, parent) do
-      SuperWorker.Log.debug(fn ->
-        "SuperWorker, Supervisor, worker found: #{inspect({worker_id, parent})}, orig_pid: #{inspect(pid)}, restarting..."
-      end)
+    state =
+      case Db.get_worker(state.table, ref) do
+        {:ok, {worker_id, parent, _info}} ->
+          handle_tracked_worker_down(state, ref, worker_id, parent, pid, reason)
 
-      # clean up old data
-      Db.delete_worker(state.table, ref)
-
-      case parent do
-        {:standalone, nil} ->
-          restart_standalone(state, worker, {pid, reason})
-
-        {:group, group_id} ->
+        # The ref row is already gone: the worker was removed (or its rows were
+        # cleaned) before this DOWN arrived — nothing to restart, no warning.
+        {:error, :not_found} ->
           SuperWorker.Log.debug(fn ->
-            "SuperWorker, Supervisor, restart worker for group #{inspect(group_id)}"
+            "SuperWorker, Supervisor, #{inspect(state.id)} ignored DOWN for already-cleaned ref #{inspect(ref)}"
           end)
 
-          with {:ok, group} <- Db.get_group(state.table, group_id) do
-            restart_group(state, group, worker_id, {pid, reason})
-          end
+          state
 
-        {:chain, chain_id} ->
-          SuperWorker.Log.debug(fn ->
-            "SuperWorker, Supervisor, restart worker for chain #{inspect(chain_id)}"
-          end)
+        other ->
+          Logger.warning(
+            "SuperWorker, Supervisor, #{inspect(state.id)} unexpected for getting worker data, reason: #{inspect(other)}"
+          )
 
-          with {:ok, chain} <- Db.get_chain(state.table, chain_id) do
-            restart_chain(state, chain, worker, {pid, reason})
-          end
+          state
       end
-    else
-      other ->
-        Logger.warning(
-          "SuperWorker, Supervisor, #{inspect(state.id)} unexpected for getting worker data, reason: #{inspect(other)}"
-        )
-    end
 
     main_loop(state)
+  end
+
+  defp handle_tracked_worker_down(state, ref, worker_id, parent, pid, reason) do
+    case Db.get_worker_info(state.table, worker_id, parent) do
+      {:ok, worker} ->
+        SuperWorker.Log.debug(fn ->
+          "SuperWorker, Supervisor, worker found: #{inspect({worker_id, parent})}, orig_pid: #{inspect(pid)}, restarting..."
+        end)
+
+        # clean up old data
+        Db.delete_worker(state.table, ref)
+
+        case parent do
+          {:standalone, nil} ->
+            restart_standalone(state, worker, {pid, reason})
+
+          {:group, group_id} ->
+            SuperWorker.Log.debug(fn ->
+              "SuperWorker, Supervisor, restart worker for group #{inspect(group_id)}"
+            end)
+
+            with {:ok, group} <- Db.get_group(state.table, group_id) do
+              restart_group(state, group, worker_id, {pid, reason})
+            end
+
+          {:chain, chain_id} ->
+            SuperWorker.Log.debug(fn ->
+              "SuperWorker, Supervisor, restart worker for chain #{inspect(chain_id)}"
+            end)
+
+            with {:ok, chain} <- Db.get_chain(state.table, chain_id) do
+              restart_chain(state, chain, worker, {pid, reason})
+            end
+        end
+
+      other ->
+        # The ref row exists but its worker info is missing — real corruption.
+        Logger.warning(
+          "SuperWorker, Supervisor, #{inspect(state.id)} ref row present but worker info missing for #{inspect({worker_id, parent})}, reason: #{inspect(other)}"
+        )
+
+        Db.delete_worker(state.table, ref)
+        state
+    end
   end
 
   # get group info from api.
@@ -829,8 +885,20 @@ defmodule SuperWorker.Supervisor.Looper do
 
   @spec has_group_worker?(map(), any(), any()) :: boolean()
   defp has_group_worker?(state = %{}, group_id, worker_id) do
+    worker_id = normalize_group_worker_id(worker_id)
     match?({:ok, _}, Db.get_worker_info(state.table, worker_id, {:group, group_id}))
   end
+
+  # Group worker ids may arrive as {_, id} tuples; resolve to the same
+  # canonical id Group stores.
+  defp normalize_group_worker_id({_, id}), do: id
+  defp normalize_group_worker_id(id), do: id
+
+  # Group and standalone lookups use the documented worker-not-found contract;
+  # chain lookups keep their existing reply shape.
+  defp worker_lookup_error({:group, _}, _), do: ErrorHandler.not_found(:worker)
+  defp worker_lookup_error({:standalone, nil}, _), do: ErrorHandler.not_found(:worker)
+  defp worker_lookup_error(_parent, error), do: error
 
   @spec has_chain_worker?(map(), any(), any()) :: boolean()
   defp has_chain_worker?(state = %{}, chain_id, worker_id) do
@@ -842,48 +910,13 @@ defmodule SuperWorker.Supervisor.Looper do
     match?({:ok, _}, Db.get_worker_info(state.table, worker_id, {:standalone, nil}))
   end
 
-  defp sup_start_child(state, worker = %Worker{id: id, type: :standalone}) do
+  defp sup_start_child(state, worker = %Worker{id: id, type: :standalone}, mode) do
     # Start a child process
     SuperWorker.Log.debug(fn ->
       "SuperWorker, Supervisor, starting standalone worker process(#{inspect(id)})"
     end)
 
-    result =
-      case worker.fun do
-        {:gen_server, {m, f, a}} ->
-          case apply(m, f, a) do
-            {:ok, pid} ->
-              ref = Process.monitor(pid)
-              {:ok, {pid, ref}}
-
-            {:error, reason} ->
-              Logger.error("Failed to start gen_server: #{inspect(reason)}")
-
-              {:error, reason}
-          end
-
-        _ ->
-          result =
-            spawn_monitor(fn ->
-              # Store for user can directly access to the worker.
-              # Store the supervisor id (not the partition id) so user code
-              # can resolve its supervisor via get_my_supervisor/0.
-              Process.put({:supervisor, :sup_id}, state.master)
-              Process.put({:supervisor, :worker_id}, id)
-
-              case worker.fun do
-                {:fun, fun} ->
-                  fun.()
-
-                {m, f, a} ->
-                  apply(m, f, a)
-              end
-            end)
-
-          {:ok, result}
-      end
-
-    case result do
+    case do_start_standalone(worker, state.master) do
       {:ok, {pid, ref}} ->
         try do
           Process.link(pid)
@@ -894,15 +927,59 @@ defmodule SuperWorker.Supervisor.Looper do
             )
         end
 
-        Db.put_worker(state.table, ref, worker.id, {:standalone, nil}, pid)
+        persist_ref_row(state, worker, mode, ref, pid)
+        {:ok, pid}
 
-      # ignore failed worker
-      failed ->
-        Logger.error("SuperWorker, Looper, cannot start standalone worker, #{inspect(failed)}")
-        :ok
+      {:error, cause} ->
+        Logger.error(
+          "SuperWorker, Looper, cannot start standalone worker #{inspect(id)}, reason: #{inspect(cause)}"
+        )
+
+        {:error, {:spawn_failed, cause}}
     end
+  end
 
-    state
+  # Fresh adds have no competing row, so skip the stale-row scan; restarts keep
+  # the scanning write as a defensive purge (not on the add hot path).
+  defp persist_ref_row(state, %Worker{id: id}, :fresh, ref, pid) do
+    Db.put_new_worker(state.table, ref, id, {:standalone, nil}, pid)
+  end
+
+  defp persist_ref_row(state, %Worker{id: id}, :restart, ref, pid) do
+    Db.put_worker(state.table, ref, id, {:standalone, nil}, pid)
+  end
+
+  # Starts the worker process itself. GenServer starts can fail (and may raise
+  # or exit); function/mfa spawns cannot fail to spawn, so an immediately dying
+  # process is a later DOWN, not a spawn failure.
+  defp do_start_standalone(%Worker{fun: {:gen_server, {m, f, a}}}, _sup_id) do
+    try do
+      case apply(m, f, a) do
+        {:ok, pid} -> {:ok, {pid, Process.monitor(pid)}}
+        {:error, reason} -> {:error, reason}
+        other -> {:error, {:unexpected_start, other}}
+      end
+    catch
+      kind, reason -> {:error, {kind, reason}}
+    end
+  end
+
+  defp do_start_standalone(%Worker{id: id, fun: fun}, sup_id) do
+    result =
+      spawn_monitor(fn ->
+        # Store for user can directly access to the worker.
+        # Store the supervisor id (not the partition id) so user code
+        # can resolve its supervisor via get_my_supervisor/0.
+        Process.put({:supervisor, :sup_id}, sup_id)
+        Process.put({:supervisor, :worker_id}, id)
+
+        case fun do
+          {:fun, fun} -> fun.()
+          {m, f, a} -> apply(m, f, a)
+        end
+      end)
+
+    {:ok, result}
   end
 
   defp add_new_group(state, group = %Group{}) do
@@ -919,34 +996,100 @@ defmodule SuperWorker.Supervisor.Looper do
     state
   end
 
-  defp restart_standalone(state, child = %Worker{}, {_pid, reason}) do
-    case child.restart_strategy do
-      :permanent ->
+  defp restart_standalone(state, child = %Worker{restart_strategy: :permanent}, {_pid, reason}) do
+    restart_with_intensity(state, child, reason)
+  end
+
+  defp restart_standalone(state, %Worker{restart_strategy: :transient}, {_pid, :normal}) do
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, #{inspect(state.id)}, :transient, ignore restarting standalone worker"
+    end)
+
+    state
+  end
+
+  defp restart_standalone(state, child = %Worker{restart_strategy: :transient}, {_pid, reason}) do
+    restart_with_intensity(state, child, reason)
+  end
+
+  defp restart_standalone(state, %Worker{restart_strategy: :temporary}, _child_exit) do
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, #{inspect(state.id)}, :temporary, ignore restarting standalone worker"
+    end)
+
+    state
+  end
+
+  # Restart the worker unless it has crashed :max_restarts times within
+  # :max_seconds. Once the ceiling is exceeded the worker stays stopped and,
+  # when :auto_restart_time is set, a timer resumes restart attempts later.
+  defp restart_with_intensity(state, child = %Worker{}, reason) do
+    now = System.monotonic_time(:millisecond)
+    window_ms = child.max_seconds * 1_000
+
+    recent =
+      state.restarts
+      |> Map.get(child.id, [])
+      |> Enum.filter(&(&1 > now - window_ms))
+
+    if length(recent) < child.max_restarts do
+      state
+      |> put_restart_timestamps(child.id, [now | recent])
+      |> do_restart_standalone(child)
+    else
+      Logger.error(
+        "SuperWorker, Supervisor, #{inspect(state.id)} standalone worker #{inspect(child.id)} exceeded max_restarts (#{child.max_restarts}) within #{child.max_seconds}s, stopping restarts. last reason: #{inspect(reason)}"
+      )
+
+      state
+      |> put_restart_timestamps(child.id, recent)
+      |> schedule_auto_restart(child)
+    end
+  end
+
+  defp do_restart_standalone(state, child) do
+    SuperWorker.Log.debug(fn ->
+      "SuperWorker, Supervisor, #{inspect(state.id)}, restarting standalone worker #{inspect(child.id)}"
+    end)
+
+    case sup_start_child(state, child, :restart) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, error} ->
+        Logger.error(
+          "SuperWorker, Supervisor, #{inspect(state.id)} failed to restart standalone worker #{inspect(child.id)}, reason: #{inspect(error)}"
+        )
+    end
+
+    state
+  end
+
+  defp schedule_auto_restart(state, %Worker{auto_restart_time: nil}), do: state
+
+  defp schedule_auto_restart(state, %Worker{id: id, auto_restart_time: ms})
+       when is_integer(ms) and ms > 0 do
+    Process.send_after(self(), {:restart_worker, id}, ms)
+    state
+  end
+
+  defp put_restart_timestamps(state, worker_id, timestamps) do
+    %{state | restarts: Map.put(state.restarts, worker_id, timestamps)}
+  end
+
+  # Resumes a worker whose restart ceiling was exceeded. The window is cleared
+  # so the worker gets a fresh restart budget, and restart is skipped if the
+  # worker was removed during the cooldown.
+  defp handle_auto_restart(state, worker_id) do
+    state = put_restart_timestamps(state, worker_id, [])
+
+    case Db.get_worker_info(state.table, worker_id, {:standalone, nil}) do
+      {:ok, worker} ->
+        do_restart_standalone(state, worker)
+
+      {:error, _} ->
         SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, :permanent, restarting standalone worker"
-        end)
-
-        # Restart the child process
-        sup_start_child(state, child)
-
-      :transient when reason != :normal ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, :transient, reason down: #{inspect(reason)} restarting standalone worker"
-        end)
-
-        # Restart the child process
-        sup_start_child(state, child)
-
-      :transient ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, :transient, ignore restarting standalone worker"
-        end)
-
-        state
-
-      :temporary ->
-        SuperWorker.Log.debug(fn ->
-          "SuperWorker, Supervisor, #{inspect(state.id)}, :temporary, ignore restarting standalone worker"
+          "SuperWorker, Supervisor, #{inspect(state.id)} auto-restart skipped, worker #{inspect(worker_id)} no longer exists"
         end)
 
         state
@@ -1021,46 +1164,58 @@ defmodule SuperWorker.Supervisor.Looper do
 
   # TO-DO: Follow restart strategy for child group & chain.
 
+  defp restart_chain(state, %Chain{}, %Worker{}, {_child_pid, :normal}) do
+    SuperWorker.Log.debug("SuperWorker, Supervisor, chain worker is normal, ignore restarting.")
+
+    state
+  end
+
   defp restart_chain(
          state,
          chain = %Chain{restart_strategy: :one_for_one},
          worker = %Worker{},
-         {_child_pid, child_reason}
+         _child_exit
        ) do
-    case child_reason do
-      :normal ->
-        SuperWorker.Log.debug(
-          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) is normal, ignore restarting."
-        )
+    SuperWorker.Log.debug(
+      "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) is down, restarting."
+    )
 
-        state
-
-      _ ->
-        SuperWorker.Log.debug(
-          "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) is down, restarting."
-        )
-
-        Chain.restart_worker(chain, worker.id)
-    end
+    log_chain_restart(chain, Chain.restart_worker(chain, worker.id))
+    state
   end
 
   defp restart_chain(
          state,
          chain = %Chain{restart_strategy: :one_for_all},
          %Worker{},
-         {_child_pid, child_reason}
+         _child_exit
        ) do
-    case child_reason do
-      :normal ->
-        SuperWorker.Log.debug("SuperWorker, Supervisor, child is normal, ignore restarting.")
+    SuperWorker.Log.debug("SuperWorker, Supervisor, child is down, restarting...")
 
-        state
+    log_chain_restart(chain, Chain.restart_all_workers(chain))
+    state
+  end
 
-      _ ->
-        SuperWorker.Log.debug("SuperWorker, Supervisor, child is down, restarting...")
+  defp restart_chain(
+         state,
+         chain = %Chain{restart_strategy: :rest_for_one},
+         worker = %Worker{},
+         _child_exit
+       ) do
+    SuperWorker.Log.debug(
+      "SuperWorker, Supervisor, worker(#{inspect(worker.id)}) is down, restarting it and later nodes."
+    )
 
-        Chain.restart_all_workers(chain)
-    end
+    log_chain_restart(chain, Chain.restart_from_worker(chain, worker.id))
+    state
+  end
+
+  defp log_chain_restart(_chain, {:ok, _}), do: :ok
+
+  defp log_chain_restart(chain, {:error, reason}) do
+    Logger.error(
+      "SuperWorker, Supervisor, chain #{inspect(chain.id)} restart failed: #{inspect(reason)}"
+    )
   end
 
   defp get_target_partition(state, data) do
